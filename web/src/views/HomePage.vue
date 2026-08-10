@@ -1,8 +1,5 @@
 <script setup lang="ts">
 // 小趴菜 Web 3.0 首页 — P1 骨架（P3 实现完整登录与导航）
-import { useRouter } from 'vue-router'
-
-const router = useRouter()
 </script>
 
 <template>
