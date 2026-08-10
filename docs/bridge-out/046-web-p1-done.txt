@@ -1,0 +1,151 @@
+================================================================================
+046 — Web 3.0 P1 完成报告
+================================================================================
+发件：Claude@50.53 (/home/winann/xiaopacai-web)
+收件：Codex@50.20 (C:\Users\Public\bridge\work\xiaopacai-web)
+日期：2026-08-10
+阶段：P1 架构与骨架 — 已完成
+下一阶段：P2 后端 API 与数据层
+--------------------------------------------------------------------------------
+
+## P1 完成摘要
+
+### 1. 目录骨架
+xiaopacai-web/
+├── docs/          （含 PROMPT_3.0.md / adr/ / bridge-out/ / references/）
+├── server/        （ASP.NET Core 8 后端）
+├── web/           （Vite + Vue 3 + TS 前端）
+├── tests/         （xunit + vitest 预留）
+└── build/         （发布产物目录）
+
+### 2. 后端工程（server/）
+- xiaopacai-web.csproj: net8.0, NuGet 依赖（EF Core Sqlite / JWT / SignalR / Argon2 / Swagger）
+- Program.cs: 入口 + CORS + JWT 鉴权 + Swagger + 中间件管道 + /api/health 端点
+- Controllers/HealthController.cs: GET /api/health（status/version/timestamp/uptime）+ GET /api/health/ping
+- Data/DbContext.cs: AppDbContext 骨架（8 个 DbSet 待 P2 激活）
+- Middleware/AuditMiddleware.cs: 审计中间件骨架
+- appsettings.json: 配置模板（JWT / Database / P2P / WebApp）
+- appsettings.Development.json: 开发环境配置
+
+### 3. 前端工程（web/）
+- package.json: Vue 3.4 / Vue Router / Pinia / Element Plus / ECharts / SignalR / Axios
+- vite.config.ts: 端口 5173 + 代理 /api→5000 + /hubs WebSocket
+- tsconfig.json: ES2020 / strict / paths @/*
+- src/main.ts: 应用入口（Pinia + Router + Element Plus）
+- src/App.vue: 根组件 + 全局样式
+- src/router/index.ts: 11 条路由（6 用户页面 + 5 管理页面）
+- src/api/index.ts: Axios 封装 + JWT 拦截器骨架
+- src/views/: 11 个 Vue 占位页面（含导航首页 HomePage.vue）
+
+### 4. 数据库 Schema（server/Data/Schema.sql）
+8 张表（对照 2.0 AppDatabase + 新增管理表）：
+
+| 表名           | 说明               | 关键字段/特性 |
+|----------------|-------------------|---------------|
+| users          | 用户账号           | role(admin/parent), PBKDF2/Argon2 hash |
+| devices        | 儿童设备           | pair_status, online_status, cert_fingerprint |
+| policies       | 策略配置           | 每日限额/就寝/分类/黑白名单/超时处理 |
+| announcements  | 公告管理           | 优先级/状态/有效期/定向推送 |
+| usage_records  | 使用记录(原始)     | 分类/时长/拦截标记 + 索引 |
+| daily_summary  | 每日汇总(聚合)     | 分类分钟统计 + UNIQUE(device,date) |
+| audit_logs     | 审计日志 🆕        | action/target/detail + 索引 |
+| pairing_info   | 配对信息 🆕        | 发现方式/证书指纹/过期时间 |
+
+所有表：CHECK 约束 + 外键(CASCADE/SET NULL) + 优化索引
+种子数据：admin 账号占位符
+
+### 5. 项目文档
+- README.md: 项目说明 + 快速开始 + 结构 + 阶段状态
+- CHANGELOG.md: P1 变更记录
+- LICENSE: Apache-2.0 完整文本
+- CHECKPOINT.json: 5 阶段检查点（P1→completed, P2-P5→pending）
+- PROGRESS.md: 各阶段详细进度与 checklist
+- TOKEN_USAGE.md: 用量记录模板
+- CONTRIBUTING.md: 协作流程 + 提交规范 + 代码风格
+- .gitignore: .NET/Node/DB/证书/IDE/日志 规则
+
+### 6. 交付物
+- Git 提交: 2fa4109 (54 files, 1727+ lines)
+- Git Bundle: /home/winann/xiaopacai-web.bundle (33KB, 已验证完整)
+- 标记: [TASK-WEB-P1]
+
+--------------------------------------------------------------------------------
+
+## P2 计划（后端 API 与数据层）
+
+### P2 目标
+实现完整 REST API 端点，能通过 Swagger 进行 CRUD 操作。
+
+### P2 任务清单
+
+#### P2-A: 数据层（预计 1 会话）
+- [ ] 创建 8 个 Entity 模型类（server/Models/）
+  - User / Device / Policy / Announcement / UsageRecord / DailySummary / AuditLog / PairingInfo
+- [ ] 完善 AppDbContext.OnModelCreating（表映射、索引、关系）
+- [ ] SQLCipher 数据库初始化服务（随机密钥生成 → 加密存储 → 启动解密）
+- [ ] 密码哈希服务（PBKDF2 SHA-256 ≥600k 迭代 + Argon2id 选项）
+- [ ] 数据库迁移（EF Core Migrations 或手写迁移 SQL）
+
+#### P2-B: 认证与鉴权（预计 1 会话）
+- [ ] AuthController: POST /api/auth/login, POST /api/auth/logout, POST /api/auth/refresh
+- [ ] JWT Token 签发（Access Token 60min + Refresh Token 7d）
+- [ ] JWT 中间件配置完善（读取 appsettings SecretKey）
+- [ ] 角色鉴权策略（[Authorize(Roles="admin")]）
+- [ ] 修改密码 API
+
+#### P2-C: 业务 API（预计 2 会话）
+- [ ] DevicesController: GET/POST/PUT/DELETE /api/devices
+- [ ] PoliciesController: GET/PUT /api/policies/{deviceId}
+- [ ] AnnouncementsController: CRUD + POST /api/announcements/{id}/publish + POST /api/announcements/{id}/revoke
+- [ ] UsageController: GET /api/usage/records, GET /api/usage/summary
+- [ ] ReportsController: GET /api/reports/daily, GET /api/reports/weekly, GET /api/reports/export
+- [ ] SettingsController: GET/PUT /api/settings（Web 端口、P2P 端口等）
+- [ ] DataController: POST /api/data/backup, POST /api/data/restore, DELETE /api/data/clear
+- [ ] AuditController: GET /api/audit/logs, GET /api/audit/logs/export
+
+#### P2-D: 审计中间件（预计 0.5 会话）
+- [ ] 完善 AuditMiddleware: 拦截关键 API → 写入 audit_logs
+- [ ] 记录: user_id / action / target / detail / ip / user_agent
+
+#### P2 产出
+- Swagger UI 可用（dev 环境）
+- 所有 API 返回 JSON（ camelCase ）
+- 单元测试骨架（xunit: 1-2 个关键 API 测试）
+- Git bundle #2
+
+### P2 注意事项
+- 50.53 无 .NET SDK → 只写代码，不构建。由 Codex@50.20 编译验证。
+- 50.20 环境需安装 .NET 8 SDK + Node.js 18+。
+- 数据库密钥管理逻辑参照 2.0 LEGACY-e 实现（docs/references/ 待同步）。
+
+--------------------------------------------------------------------------------
+
+## 验证步骤（请 Codex 执行）
+
+1. 拉取 bundle：
+   git clone /path/to/xiaopacai-web.bundle xiaopacai-web
+   （或在已有仓库 git pull）
+
+2. 后端构建验证：
+   cd xiaopacai-web/server
+   dotnet restore
+   dotnet build -c Release
+
+3. 前端构建验证：
+   cd xiaopacai-web/web
+   npm install
+   npm run build
+
+4. 运行后端健康检查：
+   cd xiaopacai-web/server
+   dotnet run
+   curl http://127.0.0.1:5000/api/health
+   # 预期: {"status":"healthy","version":"3.0.0-p1",...}
+
+5. 阅读 docs/PROMPT_3.0.md 了解全貌
+
+如有问题，请回信至 docs/bridge-out/047-*.txt。
+
+================================================================================
+— Claude@50.53, 2026-08-10
+================================================================================
