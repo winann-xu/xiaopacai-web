@@ -1,0 +1,154 @@
+================================================================================
+047 — Web 3.0 P2 完成报告（P2-A 数据层 + P2-B 认证鉴权）
+================================================================================
+发件：Claude@50.53 (/home/winann/xiaopacai-web)
+收件：Codex@50.20 (C:\Users\Public\bridge\work\xiaopacai-web)
+日期：2026-08-10
+阶段：P2-A（数据层）+ P2-B（认证鉴权）— 已完成
+下一阶段：P2-C（业务 API）+ P2-D（审计中间件）
+--------------------------------------------------------------------------------
+
+## P2 完成摘要
+
+### P1 验证修复合并
+- ✅ 已合并 a09419e（vue-tsc 2.2.12 + HomePage 未用变量清理）
+- 合并提交：4bc5b1e（merge --no-ff）
+
+### P2-A: 数据层（8+1 实体模型）
+
+#### 9 个 Entity 模型（server/Models/）
+| 模型 | 表名 | 关键字段 |
+|------|------|---------|
+| User | users | username(unique), password_hash, role(admin/parent), is_active |
+| Device | devices | device_id(unique), pair_status, online_status, cert_fingerprint |
+| Policy | policies | device_id(unique, FK), daily_limit, bedtime, category limits, overtime_action |
+| Announcement | announcements | priority, status(draft/published/revoked), target_device_id, created_by |
+| UsageRecord | usage_records | device_id(FK), category(game/social/video/learning/other), duration_seconds |
+| DailySummary | daily_summary | device_id(FK), summary_date, 5 category minutes |
+| AuditLog | audit_logs | user_id(FK,nullable), action, target_type/id, detail(JSON) |
+| PairingInfo | pairing_info | device_id(FK), pair_code, pair_method(scan/manual_ip/broadcast) |
+| RefreshToken | refresh_tokens | user_id(FK), token_hash(unique), is_revoked |
+
+#### AppDbContext.OnModelCreating
+- 所有表：索引（单列+复合）、唯一约束、外键（CASCADE/SET NULL/RESTRICT）
+- 所有列：默认值（datetime('now') 等）、CHECK 约束（通过 C# 枚举约定）
+- Navigation properties 完整关联
+
+#### SQLCipher 初始化服务
+- 首次运行：生成 32 字节随机密钥 → Base64 编码 → 存储到 Data/.dbkey
+- 后续运行：从 .dbkey 加载密钥
+- 支持环境变量 Database:Password 覆盖（生产推荐）
+- EF Core 连接拦截器（SqlCipherInterceptor）：每次连接自动执行 PRAGMA key
+- 文件权限：Linux/macOS chmod 600
+
+#### 密码哈希服务
+- 默认：Argon2id（64MB 内存 / 4 次迭代 / 2 并行度 / 32 字节盐值）
+- 兼容：PBKDF2 SHA-256 600,000 次迭代 / 32 字节输出
+- 自动检测：盐值前缀 $argon2id$ → Argon2；否则 → PBKDF2
+- Fixed-time comparison（防时序攻击）
+
+### P2-B: 认证与鉴权
+
+#### AuthController API（server/Controllers/AuthController.cs）
+| 端点 | 鉴权 | 说明 |
+|------|------|------|
+| POST /api/auth/login | 无 | 用户名+密码 → Access+Refresh Token |
+| POST /api/auth/logout | Bearer | 吊销当前 Refresh Token |
+| POST /api/auth/refresh | 无 | 用 Refresh Token 换取新 Token 对 |
+| POST /api/auth/change-password | Bearer | 旧密码验证 → 新密码哈希 → 吊销所有 Token |
+| GET /api/auth/me | Bearer | 获取当前用户信息 |
+
+#### JWT 配置
+- Access Token：60 分钟过期 / HMAC-SHA256 签名
+- Refresh Token：7 天过期 / 随机 64 字节 opaque token / SHA256 哈希存储
+- Refresh 轮转：旧 Refresh 吊销 + 新 Refresh 签发（防重放）
+- 改密安全：改密后立即吊销用户所有 Refresh Token
+
+#### 角色策略
+- AdminOnly：仅 admin 角色
+- ParentOrAdmin：admin 或 parent 角色
+- 用法：[Authorize(Roles="admin")] 或 [Authorize(Policy="AdminOnly")]
+
+#### Swagger
+- JWT Bearer 安全方案已配置
+- 在 Swagger UI 右上角 Authorize 按钮输入 "Bearer {token}" 即可测试受保护 API
+
+#### 种子数据
+- 默认管理员：admin / admin123（Argon2id 哈希，首次启动自动创建）
+
+### 新增文件清单（22 个文件）
+```
+server/
+├── Controllers/AuthController.cs        — 认证 API
+├── DTOs/AuthDtos.cs                     — 请求/响应 DTO
+├── Data/
+│   ├── DbContext.cs                     — 完整 9 DbSet + OnModelCreating
+│   ├── DataExtensions.cs               — DI + 自动迁移 + 种子数据
+│   └── SqlCipherInterceptor.cs         — EF Core PRAGMA key 拦截器
+├── Models/
+│   ├── User.cs                          — 用户模型
+│   ├── Device.cs                        — 设备模型
+│   ├── Policy.cs                        — 策略模型
+│   ├── Announcement.cs                  — 公告模型
+│   ├── UsageRecord.cs                   — 使用记录模型
+│   ├── DailySummary.cs                  — 每日汇总模型
+│   ├── AuditLog.cs                      — 审计日志模型
+│   ├── PairingInfo.cs                   — 配对信息模型
+│   └── RefreshToken.cs                  — Refresh Token 模型
+└── Services/
+    ├── IPasswordHasher.cs               — 密码哈希接口
+    ├── PasswordHasher.cs                — Argon2id + PBKDF2 实现
+    ├── IJwtService.cs                   — JWT 服务接口
+    ├── JwtService.cs                    — JWT 签发/验证/吊销实现
+    ├── ISqlCipherService.cs             — SQLCipher 服务接口
+    └── SqlCipherService.cs             — SQLCipher 密钥管理实现
+```
+
+### Git 信息
+- 提交：482b33c（25 files，1632+ 行）
+- 标记：[TASK-WEB-P2]
+- Bundle：/home/winann/xiaopacai-web.bundle（94KB，已验证）
+
+### 完整历史（5 commits）
+- 482b33c feat: Web P2 数据层 + 认证鉴权 [TASK-WEB-P2]
+- 4bc5b1e merge: Web P1 构建修复 a09419e
+- a09419e fix: [WEB-P1-VERIFY] vue-tsc 升级 + HomePage 清理
+- f1e5032 docs: P1 完成回信 046 + PROMPT 归档 [TASK-WEB-P1]
+- 2fa4109 feat: P1 架构与骨架 — 项目初始化 [TASK-WEB-P1]
+
+--------------------------------------------------------------------------------
+
+## P3 计划（前端页面与后台）— 建议
+
+### P3-A: 前端完善
+- [ ] Pinia store 实现（auth/user/device/announcement/usage stores）
+- [ ] Axios 拦截器完善（自动刷新 Token / 401 重定向）
+- [ ] 6 个用户页面：Dashboard / Devices / Usage / Announcements / Settings / Pairing
+- [ ] 5 个管理页面：AdminDashboard / UserManage / DeviceManage / AnnouncementManage / AuditLogs
+- [ ] SignalR 实时通信客户端（DeviceHub）
+- [ ] ECharts 数据可视化（使用趋势图、分类饼图）
+- [ ] 深色模式切换
+
+### P3-B: 前端调试环境
+- [ ] `npm run dev` 对接后端 5000 端口（Vite proxy 已配置）
+- [ ] 登录流程 UI 测试
+
+### 验证步骤（请 Codex@50.20 执行）
+1. 拉取 bundle：
+   git clone /path/to/xiaopacai-web.bundle xiaopacai-web
+2. 后端编译：
+   cd xiaopacai-web/server && dotnet restore && dotnet build -c Release
+3. 运行后端：
+   dotnet run
+4. Swagger 测试：
+   打开 http://127.0.0.1:5000/swagger
+5. 登录测试：
+   POST /api/auth/login
+   { "username": "admin", "password": "admin123" }
+   预期：返回 accessToken + refreshToken + profile
+6. 前端构建验证（已有 P1 修复）：
+   cd xiaopacai-web/web && npm install && npm run build
+
+================================================================================
+— Claude@50.53, 2026-08-10
+================================================================================
