@@ -18,7 +18,7 @@ public class HealthController : ControllerBase
         return Ok(new
         {
             status = "healthy",
-            version = "3.0.0-p1",
+            version = "3.0.0-p2",
             timestamp = DateTime.UtcNow.ToString("O"),
             service = "xiaopacai-web",
             uptime = TimeSpan.FromMilliseconds(Environment.TickCount64).ToString(@"dd\.hh\:mm\:ss")

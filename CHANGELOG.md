@@ -4,6 +4,36 @@
 
 ---
 
+## [3.0.0-p2] — 2026-08-10
+
+### P2 后端 API 与数据层（P2-A + P2-B）
+
+#### 新增
+- 9 个 Entity 模型：User / Device / Policy / Announcement / UsageRecord / DailySummary / AuditLog / PairingInfo / RefreshToken
+- 完整 AppDbContext.OnModelCreating（表映射、索引、外键、级联删除、默认值）
+- SQLCipher 数据库初始化服务（随机密钥 → 加密存储 → PRAGMA key 拦截器）
+- 密码哈希服务：Argon2id（64MB/4iter/2parallel） + PBKDF2 SHA-256 600k（兼容模式）
+- JWT Token 服务：Access 60min + Refresh 7d（签发/存储/验证/吊销）
+- AuthController：POST login/logout/refresh/change-password + GET me
+- 角色鉴权策略：AdminOnly / ParentOrAdmin
+- EF Core SQLCipher 连接拦截器（SqlCipherInterceptor）
+- 数据库自动迁移 + 种子数据（admin/admin123 Argon2id 哈希）
+- 认证 DTOs：LoginRequest / RefreshRequest / ChangePasswordRequest / AuthResponse / UserProfile
+- Swagger JWT Bearer 安全方案文档配置
+
+#### 变更
+- Program.cs：完整 DI 注册（DB/JWT/Auth/Swagger）+ 数据库初始化管道
+- HealthController：版本号更新为 3.0.0-p2
+- CHECKPOINT.json：P2 → completed
+- PROGRESS.md：P2-A/P2-B 完成标记
+
+#### 依赖
+- 新增：System.IdentityModel.Tokens.Jwt（已在 csproj）
+- 新增：Konscious.Security.Cryptography.Argon2（已在 csproj）
+- EF Core / Sqlite / JwtBearer / SignalR / Swashbuckle 保持 P1 版本
+
+---
+
 ## [3.0.0-p1] — 2026-08-10
 
 ### P1 架构与骨架

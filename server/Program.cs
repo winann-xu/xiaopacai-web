@@ -1,14 +1,21 @@
 // 小趴菜 Web 3.0 — ASP.NET Core 8 入口
 // 自托管单进程：REST API + SignalR + P2P TCP/TLS 监听
+// P2 阶段：数据层 + 认证鉴权 完成
 
+using System.Text;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Middleware;
+using XiaopacaiWeb.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // ========== 服务注册 ==========
 
-// 控制器 + JSON 序列化
+// ---- 控制器 + JSON 序列化 ----
 builder.Services.AddControllers()
     .AddJsonOptions(opts =>
     {
@@ -16,7 +23,7 @@ builder.Services.AddControllers()
         opts.JsonSerializerOptions.WriteIndented = false;
     });
 
-// Swagger（仅开发环境）
+// ---- Swagger（开发环境） ----
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -26,9 +33,33 @@ builder.Services.AddSwaggerGen(c =>
         Version = "v1",
         Description = "儿童守护 Web 端 REST API"
     });
+
+    // JWT Bearer 认证（Swagger UI 中输入 Token）
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Description = "JWT Authorization header. Example: \"Bearer {token}\"",
+        Name = "Authorization",
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.ApiKey,
+        Scheme = "Bearer",
+    });
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer",
+                },
+            },
+            Array.Empty<string>()
+        },
+    });
 });
 
-// CORS（开发阶段宽松，生产收紧）
+// ---- CORS（开发阶段宽松，生产收紧） ----
 builder.Services.AddCors(opts =>
 {
     opts.AddDefaultPolicy(policy =>
@@ -40,33 +71,71 @@ builder.Services.AddCors(opts =>
     });
 });
 
-// SignalR 实时通信
+// ---- SignalR 实时通信 ----
 builder.Services.AddSignalR();
 
-// JWT 鉴权（P2 阶段配置完整）
-builder.Services.AddAuthentication("Bearer")
-    .AddJwtBearer(opts =>
-    {
-        opts.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            // P2 阶段从配置读取实际值
-            ValidIssuer = "xiaopacai-web",
-            ValidAudience = "xiaopacai-client",
-        };
-    });
-builder.Services.AddAuthorization();
+// ---- 密码哈希服务（无状态，Singleton） ----
+builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 
-// 数据库上下文（P2 阶段配置 SQLCipher 连接）
-// builder.Services.AddDbContext<AppDbContext>(...);
+// ---- SQLCipher 服务（Singleton：密钥管理 + 连接字符串提供） ----
+var sqlCipherService = SqlCipherService.CreateFromConfig(builder.Configuration);
+builder.Services.AddSingleton<ISqlCipherService>(sqlCipherService);
+
+// ---- 数据库（EF Core + SQLCipher 加密拦截器） ----
+builder.Services.AddDbContext<AppDbContext>(opts =>
+{
+    opts.UseSqlite(
+        sqlCipherService.GetPlainConnectionString(),
+        sqlOpts =>
+        {
+            // SQLCipher PRAGMA key 拦截器 — 每次连接打开时自动设置加密密钥
+            sqlOpts.CommandTimeout(30);
+        });
+    opts.AddInterceptors(new SqlCipherInterceptor(sqlCipherService.GetDbPassword()));
+});
+
+// ---- JWT 服务 ----
+builder.Services.AddScoped<IJwtService, JwtService>();
+
+// ---- JWT 鉴权 ----
+var jwtSecretKey = builder.Configuration["Jwt:SecretKey"] ?? "dev-secret-key-32chars-minimum!";
+var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "xiaopacai-web";
+var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "xiaopacai-client";
+
+builder.Services.AddAuthentication(opts =>
+{
+    opts.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    opts.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(opts =>
+{
+    opts.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        ValidIssuer = jwtIssuer,
+        ValidAudience = jwtAudience,
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecretKey)),
+        ClockSkew = TimeSpan.FromMinutes(1), // 1 分钟时钟偏差容忍
+    };
+});
+
+// ---- 角色策略 ----
+builder.Services.AddAuthorization(opts =>
+{
+    opts.AddPolicy("AdminOnly", policy => policy.RequireRole("admin"));
+    opts.AddPolicy("ParentOrAdmin", policy => policy.RequireRole("admin", "parent"));
+});
 
 // P2P 服务（P4 阶段接入）
 // builder.Services.AddSingleton<P2PListenerService>();
 
 var app = builder.Build();
+
+// ========== 数据库初始化（密钥 + 迁移 + 种子数据） ==========
+await app.Services.InitializeDatabaseAsync();
 
 // ========== 中间件管道 ==========
 
@@ -85,11 +154,11 @@ app.MapControllers();
 // SignalR Hub 路由（P3 阶段激活）
 // app.MapHub<DeviceHub>("/hubs/device");
 
-// ========== 健康检查端点（P1 验证） ==========
+// ========== 健康检查端点 ==========
 app.MapGet("/api/health", () => Results.Ok(new
 {
     status = "healthy",
-    version = "3.0.0-p1",
+    version = "3.0.0-p2",
     timestamp = DateTime.UtcNow.ToString("O"),
     service = "xiaopacai-web"
 }));
@@ -99,6 +168,7 @@ var urls = app.Configuration["Urls"] ?? "http://127.0.0.1:5000";
 app.Urls.Add(urls);
 
 Console.WriteLine($"[小趴菜 Web 3.0] 启动成功 → {urls}");
+Console.WriteLine($"[小趴菜 Web 3.0] Swagger → {urls}/swagger");
 Console.WriteLine($"[小趴菜 Web 3.0] 健康检查 → {urls}/api/health");
 
 app.Run();
