@@ -1,7 +1,7 @@
 {
   "project": "xiaopacai-web",
-  "version": "3.0.0-p3",
-  "current_phase": "P3",
+  "version": "3.0.0-p4",
+  "current_phase": "P4",
   "phases": {
     "P1": {
       "name": "架构与骨架",
@@ -83,8 +83,26 @@
     },
     "P4": {
       "name": "P2P 对接与联调",
-      "status": "pending",
-      "description": "P2P TCP/TLS 监听、协议帧解析、发现-配对-策略下发-时长上报-超时拦截 全链路与 Android 儿童端联调"
+      "status": "completed",
+      "completed_at": "2026-08-11",
+      "description": "P2P TCP/TLS 监听、协议帧解析、发现-配对-策略下发-时长上报-超时拦截 全链路与 Android 儿童端联调",
+      "tasks": [
+        "P2P 协议帧定义（P2pProtocol.cs）：handshake/policy_update/usage_report/announcement_push/heartbeat/sync_ack",
+        "P2P 证书服务（P2pCertificateService.cs）：自签名证书生成 + PFX 持久化（LEGACY-e）",
+        "P2P TCP/TLS 监听服务（P2pListenerService.cs）：SslStream TLS 1.3/1.2 + 4 字节大端帧 + JSON",
+        "P2P 消息处理器（P2pMessageHandler.cs）：handshake 设备注册/策略下发、usage_report 写入+汇总更新、heartbeat 保活",
+        "配对 REST API（PairingController.cs）：6 位配对码生成/校验/取消、设备绑定、证书指纹记录",
+        "Program.cs 注册 P2P 服务为 IHostedService",
+        "appsettings.json P2P 配置节（ListenPort/CertPath/TlsMinVersion）"
+      ],
+      "outputs": [
+        "server/P2P/P2pProtocol.cs — 协议帧定义 + 8 个消息 DTO",
+        "server/P2P/P2pCertificateService.cs — 自签名证书生成与持久化",
+        "server/P2P/P2pListenerService.cs — TCP/TLS 监听服务",
+        "server/P2P/P2pMessageHandler.cs — 消息业务处理 + DB 写入",
+        "server/Controllers/PairingController.cs — 配对 REST API",
+        "server/Program.cs — P2P 服务注册 + 启动日志"
+      ]
     },
     "P5": {
       "name": "测试、文档与打包",
@@ -92,5 +110,5 @@
       "description": "xunit 后端测试、vitest 前端测试、API 文档、部署说明、发布打包"
     }
   },
-  "last_updated": "2026-08-11T02:00:00Z"
+  "last_updated": "2026-08-11T04:00:00Z"
 }

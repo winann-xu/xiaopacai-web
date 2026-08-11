@@ -9,6 +9,7 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Middleware;
+using XiaopacaiWeb.P2P;
 using XiaopacaiWeb.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -129,8 +130,11 @@ builder.Services.AddAuthorization(opts =>
     opts.AddPolicy("ParentOrAdmin", policy => policy.RequireRole("admin", "parent"));
 });
 
-// P2P 服务（P4 阶段接入）
-// builder.Services.AddSingleton<P2PListenerService>();
+// ========== P2P 服务（P4 阶段） ==========
+builder.Services.AddSingleton<P2pCertificateService>();
+builder.Services.AddSingleton<P2pMessageHandler>();
+builder.Services.AddSingleton<P2pListenerService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<P2pListenerService>());
 
 var app = builder.Build();
 
@@ -161,5 +165,6 @@ app.Urls.Add(urls);
 Console.WriteLine($"[小趴菜 Web 3.0] 启动成功 → {urls}");
 Console.WriteLine($"[小趴菜 Web 3.0] Swagger → {urls}/swagger");
 Console.WriteLine($"[小趴菜 Web 3.0] 健康检查 → {urls}/api/health");
+Console.WriteLine($"[小趴菜 Web 3.0] P2P TCP/TLS → 0.0.0.0:{builder.Configuration.GetValue<int>("P2P:ListenPort", 9527)} (TLS 1.2/1.3)");
 
 app.Run();

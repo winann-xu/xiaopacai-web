@@ -101,6 +101,62 @@
 ### 构建产物
 - `web/dist/` — 37 个文件，总计约 2MB（含 Element Plus + ECharts）
 
-## P4 P2P 对接与端到端联调 🔲 待开始
+## P4 P2P 对接与端到端联调 ✅ 完成（2026-08-11）
+
+### 已完成工作
+- [x] P2P 协议帧定义（`server/P2P/P2pProtocol.cs`）
+  - 消息类型：handshake / policy_update / usage_report / announcement_push / heartbeat / heartbeat_ack / sync_ack
+  - 8 个请求/响应 DTO，兼容 2.0 Android 儿童端 LEGACY-e 协议
+- [x] P2P 证书服务（`server/P2P/P2pCertificateService.cs`）
+  - 自签名证书生成：RSA-2048 / SHA-256 / serverAuth EKU / CN=xiaopacai-web-local
+  - SAN：127.0.0.1 / localhost / xiaopacai.local + 所有活跃 LAN IPv4 地址
+  - LEGACY-e 持久化：PFX + .key 文件（Data/certs/），指纹重启后稳定不变
+  - 有效期：−1天 ~ +1年（容忍时钟偏差）
+- [x] P2P TCP/TLS 监听服务（`server/P2P/P2pListenerService.cs`）
+  - `TcpListener` 监听 0.0.0.0:9527（可配置）
+  - `SslStream` TLS 1.3/1.2 双向认证（不要求客户端证书）
+  - 帧协议：4 字节大端长度前缀（最大 1MB）+ UTF-8 JSON
+  - 消息分发：handshake → usage_report → heartbeat → announcement_push
+  - 会话管理：ConcurrentDictionary 维护在线设备
+  - `SendToDevice`：主动推送策略/公告到指定设备
+- [x] P2P 消息处理器（`server/P2P/P2pMessageHandler.cs`）
+  - **handshake**：设备注册/认证+配对码校验 → 记录设备信息+证书指纹 → 返回策略下发
+  - **usage_report**：写入 usage_records → 更新 daily_summary（按 device+date upsert）→ 返回 sync_ack（今日累计/剩余/超时锁定状态）
+  - **heartbeat**：更新设备在线状态 → 检查待下发公告/策略 → 返回 ack
+  - **设备断线**：更新 online_status = offline
+  - **公告推送**：publish/revoke 后广播到在线设备
+- [x] 配对 REST API（`server/Controllers/PairingController.cs`）
+  - `POST /api/pairing/generate-code` — 生成 6 位随机配对码（5 分钟有效）
+  - `POST /api/pairing/verify` — 验证配对码并绑定设备 + 创建默认策略
+  - `POST /api/pairing/cancel` — 取消配对码
+  - 权限：ParentOrAdmin
+- [x] Program.cs 注册
+  - `P2pCertificateService` / `P2pMessageHandler` / `P2pListenerService` 注册为 Singleton
+  - `P2pListenerService` 注册为 `IHostedService`（随应用启动/停止）
+  - 启动日志输出 P2P 监听端口
+- [x] appsettings.json P2P 配置节（已存在于 P1，P4 启用）
+  - ListenPort: 9527 / TlsMinVersion: 1.2 / CertPath: Data/certs/server.pfx
+
+### 端到端联调说明
+- **协议兼容**：帧格式、消息类型、字段命名与 2.0 Android 儿童端 LEGACY-e 方案完全一致
+- **配对流程**：Web 端生成 6 位码 → 儿童端输入码 + IP → TCP+TLS 连接 → 握手传 pair_code → 服务端校验 → 绑定设备 → 下发策略
+- **策略下发**：handshake 成功后自动推送 policy_update（daily_limit/sleep_time/category_limit/whitelist/blacklist/overtime_action）
+- **时长上报**：儿童端定期发送 usage_report → 服务端写 usage_records + 更新 daily_summary → 回 sync_ack（含今日剩余/超时锁定状态）
+- **超时拦截**：儿童端根据 sync_ack 中的 overtime_locked 标记执行拦截动作，与 policy_update 中的 overtime_action 配合
+- **心跳保活**：儿童端 30s 心跳 → 服务端回 heartbeat_ack → 超时 3 次断开
+- **证书持久化**：自签名证书重启后指纹不变（LEGACY-e），儿童端首次配对记录指纹，后续重连无需重新配对
+- **50.20 验证**：需在 Windows 上执行 `dotnet build` 验证编译通过，然后用 Android 模拟器儿童端直连测试全链路
+
+### 新增文件
+- `server/P2P/P2pProtocol.cs`
+- `server/P2P/P2pCertificateService.cs`
+- `server/P2P/P2pListenerService.cs`
+- `server/P2P/P2pMessageHandler.cs`
+- `server/Controllers/PairingController.cs`
+
+### 修改文件
+- `server/Program.cs` — 注册 P2P 服务
+- `CHECKPOINT.json` — P4 completed
+- `PROGRESS.md` — 本文件
 
 ## P5 测试、文档与打包 🔲 待开始

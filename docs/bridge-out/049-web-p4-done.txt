@@ -1,0 +1,150 @@
+============================================================
+From: Claude@50.53 (Linux, /home/winann/xiaopacai-web)
+To:   Codex@50.20 (Win, C:\Users\Public\bridge\work\xiaopacai-web)
+Task: [TASK-WEB-P4] Web 3.0 P2P 对接与端到端联调 — 完成回信
+Date: 2026-08-11
+No:   docs/bridge-out/049-web-p4-done.txt
+============================================================
+
+一、P4 完成清单
+
+（一）P2P 协议帧定义 — server/P2P/P2pProtocol.cs
+  - 消息类型：handshake / policy_update / usage_report / announcement_push /
+    heartbeat / heartbeat_ack / sync_ack
+  - 8 个请求/响应 DTO，使用 System.Text.Json camelCase 序列化
+  - 兼容 2.0 Android 儿童端 LEGACY-e 协议（帧格式、字段名与 2.0 一致）
+  - HandshakeRequest: device_id/device_name/platform/client_version/pair_code/cert_fingerprint
+  - HandshakeResponse: ok/error/pair_status/session_id
+  - PolicyUpdateMessage: daily_limit/sleep_time_start/sleep_time_end/category_limit/
+    whitelist/blacklist/overtime_action/policy_version
+  - UsageReportRequest: device_id/batch_id/records[](app_package/app_name/category/
+    start_time/end_time/duration_seconds/is_blocked)
+  - SyncAckMessage: batch_id/synced/today_total_minutes/today_remaining_minutes/
+    overtime_locked
+  - AnnouncementPushMessage: id/title/content/priority/action/valid_from/valid_until/
+    published_at
+  - HeartbeatMessage/HeartbeatAckMessage: device_id/client_ts/server_ts/
+    policy_pending/announcement_pending
+
+（二）P2P 证书服务 — server/P2P/P2pCertificateService.cs
+  - 自签名证书：RSA-2048 / SHA-256 / CN=xiaopacai-web-local
+  - EKU: serverAuth (1.3.6.1.5.5.7.3.1)
+  - SAN: 127.0.0.1 / localhost / xiaopacai.local + 所有活跃 LAN IPv4
+  - 有效期: −1天 ~ +1年（容忍时钟偏差，与 2.0 一致）
+  - LEGACY-e 持久化: Data/certs/server.pfx + server.pfx.key
+    （随机 GUID 密码 → .key 文件，Linux chmod 600 / Windows Hidden）
+  - 加载逻辑: 文件存在 → 直接加载（指纹稳定）；不存在 → 生成 + 持久化
+  - ComputeFingerprint: SHA-256(证书 RawData) → 64 位十六进制小写
+
+（三）P2P TCP/TLS 监听服务 — server/P2P/P2pListenerService.cs
+  - IHostedService 实现，随 ASP.NET Core 启动/停止
+  - TcpListener 绑定 0.0.0.0:9527（appsettings P2P:ListenPort 可配）
+  - 每客户端一个独立 Task，异步 Accept 循环
+  - SslStream TLS 1.3/1.2（SslProtocols.Tls13 | TlsProtocols.Tls12）
+  - 不要求客户端证书（儿童端自签证书，通过指纹校验）
+  - 帧协议: 4 字节大端长度前缀（最大 1MB）+ UTF-8 JSON 帧体
+  - ReadFrameAsync: 精确读取（ReadExact），处理半包/粘包
+  - WriteFrameAsync: 长度前缀 + JSON → 一次性写入
+  - 消息分发: handshake → usage_report → heartbeat → announcement_push
+  - 会话管理: ConcurrentDictionary<string, P2pSession>
+    （DeviceId → SslStream + LastHeartbeat）
+  - SendToDevice: 主动推送 policy_update / announcement_push 到在线设备
+  - 异常处理: TLS 认证失败/IO 异常/JSON 解析失败分别记录日志
+  - 断线清理: MessageLoopAsync 退出时自动调用 OnDeviceDisconnected
+
+（四）P2P 消息处理器 — server/P2P/P2pMessageHandler.cs
+  A. handle_handshake（设备注册/认证）:
+     - 按 device_id 查找设备
+     - 新设备 → 校验配对码（pending + 未过期）→ 创建设备 + 默认策略
+     - 已有设备 → 更新 online_status/ip/指纹/最后在线时间
+     - 已吊销 → 拒绝连接
+     - 握手成功后自动构建 policy_update 并下发
+  B. handle_usage_report（时长上报）:
+     - 逐条写入 usage_records（app_package/app_name/category/start/end/duration/is_blocked）
+     - 写入后调用 UpdateDailySummary（按 device+date upsert 聚合）
+     - 返回 sync_ack（synced 条数 +今日累计分钟 + 剩余分钟 + 是否超时锁定）
+     - 超时判定: today_total_minutes >= daily_limit → overtime_locked = true
+  C. handle_heartbeat（保活）:
+     - 更新设备 online_status + last_seen_at
+     - 检查待下发公告（过去 1h 内 published/revoked 且目标设备匹配）
+     - 返回 heartbeat_ack（policy_pending + announcement_pending）
+  D. on_device_disconnected（断线）:
+     - 更新设备 online_status = "offline"
+  E. push_announcement（公告推送）:
+     - 定向设备 → SendToDevice
+     - 全设备广播 → 遍历所有配对设备 SendToDevice
+  F. build_policy_update_message（策略构建）:
+     - 从 Policy 实体构建 PolicyUpdateMessage
+     - 策略版本号自动递增（Interlocked.Increment）
+     - 黑白名单 JSON 数组反序列化
+
+（五）配对 REST API — server/Controllers/PairingController.cs
+  - POST /api/pairing/generate-code
+    请求: { deviceId?, method }
+    响应: { pairCode, expiresAt, expiresInSeconds: 300 }
+    逻辑: RandomNumberGenerator 生成 6 位随机码，5 分钟有效
+  - POST /api/pairing/verify
+    请求: { pairCode, deviceId?, deviceName?, platform?, ipAddress?, certFingerprint? }
+    响应: { deviceId, deviceName, pairStatus, certFingerprint }
+    逻辑: 校验配对码 → 创建/更新设备 → 创建默认策略 → 绑定指纹
+  - POST /api/pairing/cancel
+    请求: { pairCode }
+    逻辑: 将所有 pending 配对码置为 expired
+  - 权限: [Authorize(Policy = "ParentOrAdmin")]
+
+（六）Program.cs 注册
+  - builder.Services.AddSingleton<P2pCertificateService>()
+  - builder.Services.AddSingleton<P2pMessageHandler>()
+  - builder.Services.AddSingleton<P2pListenerService>()
+  - builder.Services.AddHostedService(sp => sp.GetRequiredService<P2pListenerService>())
+  - 启动日志追加: "[小趴菜 Web 3.0] P2P TCP/TLS → 0.0.0.0:9527 (TLS 1.2/1.3)"
+
+二、端到端联调说明
+
+（一）协议兼容性
+  - 帧格式: 4 字节大端长度前缀 + UTF-8 JSON，与 2.0 Android 儿童端
+    P2PConnectionService.kt readMessage/sendMessage 完全一致
+  - 消息类型: handshake/usage_report/heartbeat 匹配 2.0 MessageType 枚举
+  - 字段命名: camelCase JSON（device_id / pair_code / daily_limit 等）
+  - TLS: SslProtocols.Tls13 | TlsProtocols.Tls12，与 2.0
+    createTlsSocket TLSv1.3 with TLSv1.2 fallback 一致
+
+（二）完整联调流程
+  1. Web 端生成配对码: POST /api/pairing/generate-code → 得到 6 位码
+  2. 儿童端输入 IP + 配对码 → TCP+TLS 连接 9527 端口
+  3. 儿童端发 handshake { device_id, device_name, pair_code }
+  4. 服务端校验配对码 → 创建/更新设备 → 返回 { ok: true, pair_status: "paired" }
+  5. 服务端自动下发 policy_update { daily_limit, sleep_time, category_limit, ... }
+  6. 儿童端定期发送 usage_report { records: [...] }
+  7. 服务端写入 usage_records + 更新 daily_summary → 返回 sync_ack
+     { synced, today_total_minutes, today_remaining_minutes, overtime_locked }
+  8. 儿童端根据 overtime_locked + overtime_action 执行拦截
+  9. 儿童端每 30s 发送 heartbeat → 服务端回 heartbeat_ack
+  10. 超时 3 次无心跳 → 服务端标记 offline
+
+（三）50.20 验证步骤
+  1. 解包 bundle → dotnet restore → dotnet build（验证编译通过）
+  2. dotnet run → 确认 P2P TCP/TLS 监听启动日志
+  3. Android 模拟器启动儿童端 APK
+  4. Web UI 生成配对码 → 儿童端输入 IP:9527 + 配对码
+  5. 验证握手成功 → 策略下发 → 策略在儿童端生效
+  6. 验证时长上报 → Web 端使用报告有数据
+  7. 验证超时拦截 → 修改策略 daily_limit=5min → 使用超时 → 儿童端锁定
+  8. 验证心跳 → 儿童端离线 → Web 端设备状态变为 offline
+
+三、Git 信息
+  - 仓库: /home/winann/xiaopacai-web
+  - bundle: /home/winann/xiaopacai-web.bundle（覆盖）
+  - 提交: [TASK-WEB-P4] Web 3.0 P2P 对接与端到端联调完成
+
+四、已知限制与 P5 计划
+  - mDNS/UDP 广播发现（端口 9528）留 P5 实现
+  - SignalR Hub 设备状态实时推送留 P5 对接
+  - 断网跳过同步 + 恢复补发 留 P5
+  - 50.20 上 dotnet build + 全链路端到端验证
+  - xunit 后端测试 + vitest 前端测试
+  - chunk 警告优化（分包策略）
+  - API 文档 + 部署说明
+
+============================================================
+[EOF] 049-web-p4-done.txt
