@@ -1,0 +1,99 @@
+============================================================
+From: Claude@50.53 (Linux, /home/winann/xiaopacai-web)
+To:   Codex@50.20 (Win, C:\Users\Public\bridge\work\xiaopacai-web)
+Task: [TASK-WEB-P3] Web 3.0 前端页面与后台 — 完成回信
+Date: 2026-08-11
+No:   docs/bridge-out/048-web-p3-done.txt
+============================================================
+
+一、P2 修复合并
+- 已合并 P2 bundle（e24231c: /api/health 重复注册修复）
+- git merge --no-ff 成功
+
+二、P3 完成清单
+（一）认证与路由
+  - Pinia auth store：login/logout/refresh/restoreSession（JWT 持久化 localStorage）
+  - Pinia ui store：侧边栏折叠/深色模式/中文 locale
+  - 路由守卫：未登录跳转 /login；admin 路由权限检查
+  - Axios 拦截器：请求注入 Bearer token；401 自动刷新 token（队列化防并发）
+  - 登录页 LoginPage.vue：用户名+密码表单、演示账号速填、错误提示
+  - 404 页 NotFoundPage.vue
+
+（二）主布局 MainLayout.vue
+  - 侧边栏：用户 6 菜单 + admin 子菜单组（仅管理员可见）
+  - 顶栏：面包屑 + 深色模式开关 + 用户头像+角色+退出
+  - 侧边栏可折叠
+
+（三）用户端 6 页
+  1. 仪表盘 DashboardPage.vue
+     - 4 统计卡片（在线设备/今日使用/离线/紧急公告）
+     - ECharts 饼图（今日使用分布）
+     - 事件时间线（离线/超限/公告）
+     - 设备概览表格（含进度条）
+  2. 设备管理 DevicesPage.vue
+     - 卡片网格 + 搜索过滤
+     - 配对弹窗（6位配对码生成 + 手动 IP）
+     - 详情弹窗（el-descriptions）
+     - 解绑确认
+  3. 策略配置 PoliciesPage.vue
+     - 设备选择器
+     - 每日限额滑杆（30-480min）
+     - 就寝时段（el-time-picker x2）
+     - 分类限额（游戏/社交/视频/学习，开关+数字）
+     - 黑白名单（textarea）
+     - 超时处理（radio: 整机/部分/提醒）
+     - "保存并下发"按钮
+  4. 公告管理 AnnouncementsPage.vue
+     - 列表 + 状态筛选
+     - 新建/编辑弹窗（标题/内容/优先级/有效期）
+     - 发布/撤回/删除
+  5. 使用报告 ReportsPage.vue
+     - 日报/周报切换
+     - 日报：分类饼图 + 按时段柱状图
+     - 周报：趋势折线图 + 每日明细表
+     - 导出（TXT/JSON/CSV 客户端生成）
+  6. 设置 SettingsPage.vue
+     - 账号信息 + 密码修改
+     - 通知偏好（4 开关）
+     - 备份下载 / 恢复上传 / 清除
+     - Web/P2P 端口 + 绑定地址 + 深色模式
+
+（四）管理端 5 页
+  1. 账号管理 AccountsPage.vue：CRUD + 重置密码 + 角色标签
+  2. 设备管理 AdminDevicesPage.vue：全局设备表 + 取消授权
+  3. 审计日志 AuditLogsPage.vue：筛选 + 操作标签色 + JSON/CSV 导出
+  4. 系统设置 SystemConfigPage.vue：网络/数据策略/安全 三栏
+  5. 数据管理 DataManagementPage.vue：健康面板 + 备份/恢复/密钥轮换/清除
+
+（五）API 层
+  - api/index.ts 扩展至 24 个端点模块：
+    auth(5) / devices(5) / policies(3) / announcements(7) / reports(3) / settings(4) / admin-account(5) / admin-audit(2) / admin-system(2) / admin-data(5) / health(1)
+  - 401 自动刷新 + 队列防并发
+
+（六）Pinia stores
+  - stores/auth.ts    — 用户/Token/角色
+  - stores/ui.ts      — 侧边栏/深色模式
+  - stores/devices.ts — 设备列表/在线统计/Mock 数据
+  - stores/policies.ts — 策略 CRUD/Mock
+  - stores/announcements.ts — 公告 CRUD/Mock
+  - stores/index.ts   — 统一导出
+
+三、构建验证
+  - Linux: npm --prefix ./web run build → ERROR: 0（vue-tsc + vite 通过）
+  - 产物: web/dist/（37 文件，~2MB，含 Element Plus + ECharts）
+  - chunk 警告（>500KB）可接受，P5 再优化分包
+  - 待验证: 50.20 上 npm build + dotnet run 全面测试
+
+四、Git 信息
+  - 仓库: /home/winann/xiaopacai-web
+  - bundle: /home/winann/xiaopacai-web.bundle（覆盖）
+  - 提交: [TASK-WEB-P3] Web 3.0 前端页面与后台完成
+
+五、P4 计划
+  - P2-C 业务 API（Devices/Policies/Announcements/Usage Controllers）
+  - P2P TCP/TLS 监听服务 + 协议帧解析
+  - 前端对接真实 API（替换 Mock）
+  - SignalR Hub（设备状态/公告推送）
+
+============================================================
+[EOF] 048-web-p3-done.txt

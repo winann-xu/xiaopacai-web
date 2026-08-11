@@ -1,4 +1,6 @@
-// 小趴菜 Web 3.0 — Pinia 状态管理入口（P1 骨架）
-// P3 阶段创建各模块 store：auth / devices / policies / announcements / ui
-
-export {}
+// 小趴菜 Web 3.0 — Pinia 状态管理入口（P3 完整版）
+export { useAuthStore } from './auth'
+export { useUiStore } from './ui'
+export { useDeviceStore } from './devices'
+export { usePolicyStore } from './policies'
+export { useAnnouncementStore } from './announcements'

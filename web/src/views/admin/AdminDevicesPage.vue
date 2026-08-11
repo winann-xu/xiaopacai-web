@@ -1,16 +1,63 @@
 <script setup lang="ts">
-// 设备管理（管理端） — P1 骨架（P3 实现完整功能）
+// 小趴菜 Web 3.0 — 管理端：设备管理
+import { onMounted } from 'vue'
+import { useDeviceStore } from '@/stores/devices'
+import { ElMessage, ElMessageBox } from 'element-plus'
+
+const deviceStore = useDeviceStore()
+onMounted(() => deviceStore.fetchDevices())
+
+async function handleDeauthorize(deviceId: number) {
+  try {
+    await ElMessageBox.confirm('确定取消该设备授权？设备将无法连接。', '确认', { type: 'warning' })
+    await deviceStore.unpairDevice(deviceId)
+    ElMessage.success('已取消授权')
+  } catch { /* */ }
+}
 </script>
 
 <template>
-  <div class="page-placeholder">
-    <h2>🖥️ 设备管理（管理端）</h2>
-    <p>设备注册/授权/解绑 · 在线总览</p>
-    <p class="note">P3 阶段实现完整功能</p>
+  <div class="admin-page">
+    <div class="page-header">
+      <h2 class="page-title">设备管理（总览）</h2>
+      <div class="header-stats">
+        <el-tag type="success">在线 {{ deviceStore.onlineCount }}</el-tag>
+        <el-tag type="info" style="margin-left:8px">总数 {{ deviceStore.totalCount }}</el-tag>
+      </div>
+    </div>
+
+    <el-table :data="deviceStore.devices" v-loading="deviceStore.loading" stripe>
+      <el-table-column prop="name" label="设备名称" min-width="140" />
+      <el-table-column prop="deviceId" label="设备 ID" width="130" />
+      <el-table-column prop="osVersion" label="系统" width="110" />
+      <el-table-column label="状态" width="90">
+        <template #default="{ row }">
+          <el-tag :type="row.status==='online'?'success':row.status==='reconnecting'?'warning':'info'" size="small">
+            {{ row.status==='online'?'在线':row.status==='reconnecting'?'重连':'离线' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="ipAddress" label="IP" width="140" />
+      <el-table-column label="今日使用" width="150">
+        <template #default="{ row }">{{ row.todayUsageMinutes }} / {{ row.todayLimitMinutes }} min</template>
+      </el-table-column>
+      <el-table-column label="配对时间" width="180">
+        <template #default="{ row }">{{ new Date(row.pairedAt).toLocaleString('zh-CN') }}</template>
+      </el-table-column>
+      <el-table-column label="最后在线" width="180">
+        <template #default="{ row }">{{ new Date(row.lastSeen).toLocaleString('zh-CN') }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="120" fixed="right">
+        <template #default="{ row }">
+          <el-button size="small" text type="danger" @click="handleDeauthorize(row.id)">取消授权</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
   </div>
 </template>
 
 <style scoped>
-.page-placeholder { padding: 40px; text-align: center; }
-.note { color: #999; font-size: 13px; margin-top: 12px; }
+.admin-page { max-width: 1400px; }
+.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.page-title { font-size: 22px; font-weight: 600; margin: 0; }
 </style>

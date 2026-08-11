@@ -1,7 +1,7 @@
 {
   "project": "xiaopacai-web",
-  "version": "3.0.0-p2",
-  "current_phase": "P2",
+  "version": "3.0.0-p3",
+  "current_phase": "P3",
   "phases": {
     "P1": {
       "name": "架构与骨架",
@@ -42,8 +42,8 @@
         "数据库自动迁移 + 种子数据（admin/admin123）"
       ],
       "outputs": [
-        "server/Models/ — 9 个 Entity 类（User/Device/Policy/Announcement/UsageRecord/DailySummary/AuditLog/PairingInfo/RefreshToken）",
-        "server/DTOs/AuthDtos.cs — 认证 DTO（LoginRequest/RefreshRequest/ChangePasswordRequest/AuthResponse/UserProfile）",
+        "server/Models/ — 9 个 Entity 类",
+        "server/DTOs/AuthDtos.cs — 认证 DTO",
         "server/Services/IPasswordHasher + PasswordHasher — Argon2id + PBKDF2",
         "server/Services/IJwtService + JwtService — JWT 签发/验证/吊销",
         "server/Services/ISqlCipherService + SqlCipherService — SQLCipher 密钥管理",
@@ -56,8 +56,30 @@
     },
     "P3": {
       "name": "前端页面与后台",
-      "status": "pending",
-      "description": "实现 6 大用户页面 + 5 个管理页面、SignalR 实时通信、ECharts 图表、深色模式"
+      "status": "completed",
+      "completed_at": "2026-08-11",
+      "description": "实现 6 大用户页面 + 5 个管理页面 + 登录页 + 路由守卫 + Axios 拦截器",
+      "tasks": [
+        "Pinia 状态管理（auth/ui/devices/policies/announcements）",
+        "API 层完整端点（auth/devices/policies/announcements/reports/settings/admin-*）",
+        "路由守卫（登录检查 + 角色鉴权 + token 刷新）",
+        "主布局（侧边栏/顶栏/面包屑/深色模式/角色菜单）",
+        "登录页（家长/管理员合一 + 演示账号）",
+        "用户端 6 页：仪表盘/设备管理/策略配置/公告管理/使用报告/设置",
+        "管理端 5 页：账号/设备/审计/系统/数据管理",
+        "ECharts 图表集成（饼图/柱状图/折线图）",
+        "Element Plus 中文 locale + 深色模式",
+        "npm build 0 错误验证"
+      ],
+      "outputs": [
+        "web/src/stores/ — 5 个 Pinia store（auth/ui/devices/policies/announcements）",
+        "web/src/api/index.ts — 完整 API 服务层（24 个端点）",
+        "web/src/router/index.ts — 13 条路由 + 守卫",
+        "web/src/layouts/MainLayout.vue — 主布局",
+        "web/src/views/ — 13 个 Vue 页面组件",
+        "web/dist/ — 前端构建产物（37 文件）",
+        "/home/winann/xiaopacai-web.bundle — Git bundle"
+      ]
     },
     "P4": {
       "name": "P2P 对接与联调",
@@ -70,5 +92,5 @@
       "description": "xunit 后端测试、vitest 前端测试、API 文档、部署说明、发布打包"
     }
   },
-  "last_updated": "2026-08-10T23:59:00Z"
+  "last_updated": "2026-08-11T02:00:00Z"
 }
