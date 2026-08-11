@@ -153,6 +153,6 @@
       ]
     }
   },
-  "last_updated": "2026-08-11T11:05:00Z",
-  "note": "OPT12 全部完成并验证：中继 E2E 全链路（usage_report 经 Web 投递到家长端）、诊断 REST 闭环、静态文件托管（/ 与 /login 200）、30 分钟长稳 0 异常；dotnet test 178/178 + npm build 通过；dist/xiaopacai-web3 发布版已更新。Codex 修复：900b8da（UpdateDailySummary SQLite 翻译）、ebc48fe（静态文件服务+SPA 回退）。遗留：Web P2P 未处理 diagnostics_report；relay/register 重复调用累积会话行（建议 upsert）。"
+  "last_updated": "2026-08-11T15:30:00Z",
+  "note": "深夜深度验收：局域网1:1/一拖二/Windows互联/Web中继全链路（双儿童在线、中继转发1499字节到家长端、诊断、分类API）通过；隐私边界审计完成。Codex 修复：900b8da（SQLite 翻译）、ebc48fe（静态文件）、4e9f574（已有设备重连关联配对码，修复 owner 绑定导致中继路由失效）。dotnet 178/178。遗留：Web P2P 未处理 diagnostics_report；relay/register 重复会话行（建议 upsert）。"
 }
