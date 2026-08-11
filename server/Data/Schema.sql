@@ -176,7 +176,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_action
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pairing_info (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id       INTEGER NOT NULL,
+    device_id       INTEGER DEFAULT NULL,                   -- 关联设备（NULL=尚未分配，避免 FK 约束失败）
     pair_code       TEXT    NOT NULL,                       -- 6 位配对码
     pair_method     TEXT    NOT NULL DEFAULT 'manual'       -- 配对方式：scan / manual_ip / broadcast
                             CHECK(pair_method IN ('scan', 'manual_ip', 'broadcast')),

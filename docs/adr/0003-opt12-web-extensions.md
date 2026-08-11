@@ -83,6 +83,22 @@ TODO(P4)：保存后触发 policy_push 携带 app_categories 下发儿童端。
 - `AuthController` 构造函数新增 `TicketStore` 依赖（DI Singleton），测试构造同步更新。
 - 既有 178 项 xunit 测试全部通过。
 
+## 冒烟测试中发现并修复的既有缺陷（P1 附带修复）
+
+1. **JWT 开发密钥不足 32 字节**（HS256 最低 256 位）：
+   - `appsettings.Development.json` 的 `Jwt:SecretKey` 为 31 字符（248 位），
+     `Program.cs` / `JwtService.cs` 兜底默认值同为 31 字符；Development 环境下
+     一切 JWT 签发（登录/刷新/扫码登录确认）均 500。
+   - 修复：三个位置密钥补足 32 字节以上，仅改配置与兜底常量，不动任何端点逻辑。
+
+2. **`POST /api/pairing/generate-code` 在真实 SQLite 下必然 500**：
+   - 生成配对码时 `PairingInfo.DeviceId = 0`，而 `device_id` 外键指向
+     `devices(id)`（不存在 id=0），SQLite 外键约束失败（InMemory 测试不校验外键，
+     故未被既有测试覆盖）。
+   - 修复：`PairingInfo.DeviceId` 改为可空 `int?`，未分配设备时存 NULL；
+     `verify` 判断同步改为 `is > 0`；Schema.sql 的 `device_id` 列允许 NULL。
+     `GeneratePairCodeRequest.DeviceId` 语义不变，P2P 握手确认后仍回填真实设备 ID。
+
 ## 后果
 
 - 新端点已具备可验收的最小实现；依赖 P2P 中继写入、policy_push 下发、设备级鉴权、

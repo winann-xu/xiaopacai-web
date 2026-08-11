@@ -37,7 +37,7 @@ public class PairingController : ControllerBase
 
         var pairingInfo = new PairingInfo
         {
-            DeviceId = deviceId > 0 ? deviceId : 0, // 0 表示尚未分配设备
+            DeviceId = deviceId > 0 ? deviceId : null, // NULL 表示尚未分配设备（避免 FK 约束失败）
             PairCode = pairCode,
             PairMethod = request?.Method ?? "manual",
             PairStatus = "pending",
@@ -85,7 +85,7 @@ public class PairingController : ControllerBase
 
         // 创建或更新设备
         Device device;
-        if (pairingInfo.DeviceId > 0)
+        if (pairingInfo.DeviceId is > 0)
         {
             device = await _db.Devices.FindAsync(pairingInfo.DeviceId);
             if (device == null)

@@ -13,8 +13,8 @@ public class PairingInfo
     [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
     public int Id { get; set; }
 
-    [Required]
-    public int DeviceId { get; set; }
+    /// <summary>关联设备（NULL=尚未分配，生成配对码时预置）</summary>
+    public int? DeviceId { get; set; }
 
     [Required]
     [MaxLength(6)]

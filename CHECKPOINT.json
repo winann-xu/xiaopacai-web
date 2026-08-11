@@ -17,6 +17,8 @@
         "应用分类：GET/PUT /api/devices/{id}/app-categories（devices 表新增 app_categories JSON 列）",
         "Schema.sql 同步（V3.0-OPT12-P1，2 新表 + 2 新列）、DbContext 11 DbSet、Program.cs 注册 TicketStore",
         "ADR 文档 docs/adr/0003-opt12-web-extensions.md + API.md 更新",
+        "冒烟测试全端点验证（login-ticket 确认后返回 JWT 且一次性消费、reset-ticket 全流程、diagnostics 上报/列表/导出、relay sessions、app-categories 增查与校验）",
+        "附带修复 2 个既有缺陷：JWT 开发密钥 31 字节（<256 位，开发环境登录 500）、pairing generate-code DeviceId=0 违反 SQLite 外键",
         "全量 178 项 xunit 测试通过，0 错误构建"
       ],
       "outputs": [
