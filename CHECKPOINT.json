@@ -153,6 +153,6 @@
       ]
     }
   },
-  "last_updated": "2026-08-11T08:30:00Z",
-  "note": "P5 完成。OPT12-P1 完成：diagnostics / login-ticket / reset-ticket / relay sessions / app-categories 已实现并通过 178 项测试。业务 CRUD 控制器（devices/policies/announcements/reports/settings/admin-*）仍为规划中接口，前端使用 Mock 数据。待办（P4/P5）：P2P 握手写入 relay_sessions 与中继路由、policy_push 携带 app_categories、设备级 Token 鉴权、Ticket 失败限速、审计日志落库。"
+  "last_updated": "2026-08-11T09:10:00Z",
+  "note": "OPT12 集成完成：Claude P1/P4 + Codex WEB-BASE/WEB-BASE2/OPT-9 已合并（82cd8cd + 66dc3fc + 709fe6a），dotnet test 178/178 通过，npm build 通过，既有库补表引导（diagnostics/relay_sessions/devices 新列）已入库。待办（Claude P4 深化）：P2P 握手写入 relay_sessions 与中继路由、policy_push 携带 app_categories、设备级 Token 鉴权、Ticket 失败限速、审计日志落库。"
 }
