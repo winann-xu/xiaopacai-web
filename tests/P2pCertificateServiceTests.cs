@@ -196,6 +196,7 @@ public class P2pCertificateServiceTests : IDisposable
 
         // 破坏密钥文件（写入无效内容）
         var keyPath = Path.ChangeExtension(_certPath, ".key");
+        if (File.Exists(keyPath)) File.SetAttributes(keyPath, FileAttributes.Normal);
         File.WriteAllText(keyPath, "corrupted-password-data");
 
         var service2 = CreateService();
