@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import {
   Odometer, Monitor, Setting, Notification, DataAnalysis, Tools,
-  UserFilled, DocumentChecked, SetUp, FolderOpened,
+  UserFilled, DocumentChecked, SetUp, FolderOpened, FirstAidKit, Connection,
   Expand, Fold, Moon, Sunny, SwitchButton,
 } from '@element-plus/icons-vue'
 
@@ -38,6 +38,8 @@ const adminMenuItems: MenuItem[] = [
   { path: '/admin/audit', title: '审计日志', icon: DocumentChecked, role: 'admin' },
   { path: '/admin/system', title: '系统设置', icon: SetUp, role: 'admin' },
   { path: '/admin/data', title: '数据管理', icon: FolderOpened, role: 'admin' },
+  { path: '/admin/diagnostics', title: '故障诊断', icon: FirstAidKit, role: 'admin' },
+  { path: '/admin/relay-sessions', title: '云端中继', icon: Connection, role: 'admin' },
 ]
 
 const isAdmin = computed(() => auth.isAdmin)

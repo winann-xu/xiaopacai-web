@@ -83,6 +83,23 @@ export const authApi = {
     apiClient.put('/auth/password', { oldPassword: oldPwd, newPassword: newPwd }),
 }
 
+// ==================== 扫码登录 / 忘记密码 Ticket（OPT12 需求 10/12） ====================
+export const ticketApi = {
+  // 生成扫码登录 Ticket（未登录可调用，90 秒有效）
+  createLogin: (clientId?: string) =>
+    apiClient.post('/auth/login-ticket', { clientId }),
+  // 轮询扫码登录状态（pending/confirmed/expired，confirmed 时首次返回 JWT）
+  pollLogin: (ticket: string) => apiClient.get(`/auth/login-ticket/${ticket}`),
+  // 生成重置密码 Ticket（未登录可调用，10 分钟有效）
+  createReset: (username: string) =>
+    apiClient.post('/auth/reset-ticket', { username }),
+  // 轮询重置 Ticket 状态（pending/confirmed/expired）
+  pollReset: (ticket: string) => apiClient.get(`/auth/reset-ticket/${ticket}`),
+  // 设置新密码（需 Ticket 已确认，成功后吊销全部 refresh token）
+  resetPassword: (ticket: string, newPassword: string) =>
+    apiClient.post(`/auth/reset-ticket/${ticket}/reset`, { newPassword }),
+}
+
 // ==================== 设备 ====================
 export const deviceApi = {
   list: () => apiClient.get('/devices'),
@@ -91,6 +108,10 @@ export const deviceApi = {
   generatePairingCode: () => apiClient.post('/devices/pairing-code'),
   pair: (code: string, ip: string) =>
     apiClient.post('/devices/pair', { pairingCode: code, ipAddress: ip }),
+  // 设备应用分类（OPT12 需求 1，分类口径：game/social/video/learning/other）
+  getAppCategories: (id: number) => apiClient.get(`/devices/${id}/app-categories`),
+  saveAppCategories: (id: number, categories: any[]) =>
+    apiClient.put(`/devices/${id}/app-categories`, { categories }),
 }
 
 // ==================== 策略 ====================
@@ -148,6 +169,21 @@ export const adminAuditApi = {
   list: (params?: any) => apiClient.get('/admin/audit-logs', { params }),
   exportData: (format: string, params?: any) =>
     apiClient.get('/admin/audit-logs/export', { params: { format, ...params }, responseType: 'blob' }),
+}
+
+// ==================== 管理端：故障诊断（OPT12 需求 5） ====================
+export const adminDiagnosticsApi = {
+  // 诊断记录列表 / 筛选（deviceId、from/to 时间范围、limit）
+  list: (params?: any) => apiClient.get('/admin/diagnostics', { params }),
+  // 导出诊断数据（JSON 文件下载）
+  exportData: (params?: any) =>
+    apiClient.get('/admin/diagnostics/export', { params, responseType: 'blob' }),
+}
+
+// ==================== 管理端：云端中继会话（OPT12 需求 3） ====================
+export const relayApi = {
+  // 中继会话列表（status/role 筛选）
+  sessions: (params?: any) => apiClient.get('/relay/sessions', { params }),
 }
 
 // ==================== 管理端：系统配置 ====================

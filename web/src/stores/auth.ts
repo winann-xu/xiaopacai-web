@@ -43,6 +43,24 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /** 扫码登录确认后：直接使用 Ticket 返回的 JWT 与用户档案完成登录（OPT12 需求 10） */
+  async function loginWithAuthResponse(data: {
+    accessToken: string
+    refreshToken: string
+    profile?: UserProfile | null
+  }): Promise<void> {
+    accessToken.value = data.accessToken
+    refreshToken.value = data.refreshToken
+    user.value = data.profile ?? null
+    localStorage.setItem('access_token', data.accessToken)
+    localStorage.setItem('refresh_token', data.refreshToken)
+    if (data.profile) {
+      // 路由守卫读取角色（admin 路由仅 admin 可访问）
+      localStorage.setItem('user_role', data.profile.role)
+    }
+    apiClient.defaults.headers.common['Authorization'] = `Bearer ${data.accessToken}`
+  }
+
   /** 登出 */
   async function logout(): Promise<void> {
     try {
@@ -103,6 +121,6 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     user, accessToken, refreshToken, loading,
     isAuthenticated, isAdmin, isParent,
-    login, logout, refreshAccessToken, restoreSession,
+    login, loginWithAuthResponse, logout, refreshAccessToken, restoreSession,
   }
 })

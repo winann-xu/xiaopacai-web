@@ -16,6 +16,8 @@ const AdminDevicesPage = () => import('@/views/admin/AdminDevicesPage.vue')
 const AuditLogsPage = () => import('@/views/admin/AuditLogsPage.vue')
 const SystemConfigPage = () => import('@/views/admin/SystemConfigPage.vue')
 const DataManagementPage = () => import('@/views/admin/DataManagementPage.vue')
+const DiagnosticsView = () => import('@/views/admin/DiagnosticsView.vue')
+const RelaySessionsView = () => import('@/views/admin/RelaySessionsView.vue')
 const NotFoundPage = () => import('@/views/auth/NotFoundPage.vue')
 
 // 用户端路由（parent）
@@ -35,6 +37,8 @@ const adminRoutes: RouteRecordRaw[] = [
   { path: 'admin/audit', name: 'adminAudit', component: AuditLogsPage, meta: { title: '审计日志', icon: 'DocumentChecked', role: 'admin' } },
   { path: 'admin/system', name: 'adminSystem', component: SystemConfigPage, meta: { title: '系统设置', icon: 'SetUp', role: 'admin' } },
   { path: 'admin/data', name: 'adminData', component: DataManagementPage, meta: { title: '数据管理', icon: 'FolderOpened', role: 'admin' } },
+  { path: 'admin/diagnostics', name: 'adminDiagnostics', component: DiagnosticsView, meta: { title: '故障诊断', icon: 'FirstAidKit', role: 'admin' } },
+  { path: 'admin/relay-sessions', name: 'adminRelaySessions', component: RelaySessionsView, meta: { title: '云端中继', icon: 'Connection', role: 'admin' } },
 ]
 
 const router = createRouter({
