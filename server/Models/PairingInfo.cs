@@ -13,8 +13,8 @@ public class PairingInfo
     [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
     public int Id { get; set; }
 
-    [Required]
-    public int DeviceId { get; set; }
+    // 可空：配对码可先于设备绑定生成（DeviceId=null 表示尚未分配设备）
+    public int? DeviceId { get; set; }
 
     [Required]
     [MaxLength(6)]
@@ -39,5 +39,5 @@ public class PairingInfo
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     [ForeignKey("DeviceId")]
-    public Device Device { get; set; } = null!;
+    public Device? Device { get; set; }
 }

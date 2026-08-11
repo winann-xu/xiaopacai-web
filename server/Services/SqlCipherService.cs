@@ -24,12 +24,9 @@ public class SqlCipherService : ISqlCipherService
         _logger = logger ?? NullLogger<SqlCipherService>.Instance;
 
         var dbConfigPath = config["Database:Path"] ?? "Data/xiaopacai.db";
-        // 相对路径解析：相对于项目根目录（server/ 的父目录）
+        // 相对路径固定解析到内容根目录（dll 所在目录），避免依赖启动时的工作目录
         var contentRoot = AppContext.BaseDirectory;
-        // 在开发环境下 BaseDirectory 是 bin/ 子目录，向上找项目根
-        // 使用当前目录作为 fallback
-        var projectDir = Directory.GetCurrentDirectory();
-        _dbPath = Path.GetFullPath(Path.Combine(projectDir, dbConfigPath));
+        _dbPath = Path.GetFullPath(Path.Combine(contentRoot, dbConfigPath));
         _keyPath = Path.Combine(Path.GetDirectoryName(_dbPath)!, ".dbkey");
     }
 
