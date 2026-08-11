@@ -1,12 +1,11 @@
 using System.Security.Cryptography;
-using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
+using XiaopacaiWeb.DTOs;
 using XiaopacaiWeb.Models;
 using XiaopacaiWeb.Security;
-using XiaopacaiWeb.DTOs;
 
 namespace XiaopacaiWeb.Controllers;
 
@@ -259,6 +258,74 @@ public class DevicesController : ControllerBase
                  ?? User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
         return int.TryParse(claim, out var id) ? id : null;
     }
+
+    /// <summary>
+    /// GET /api/devices/{id}/app-categories — 查看设备应用分类列表（OPT12 需求 1）
+    /// </summary>
+    [HttpGet("{id:int}/app-categories")]
+    public async Task<IActionResult> GetAppCategories(int id)
+    {
+        var device = await _db.Devices.FindAsync(id);
+        if (device == null)
+            return NotFound(new { error = "设备不存在" });
+
+        var categories = DeserializeCategories(device.AppCategories);
+        return Ok(new { deviceId = device.DeviceId, categories });
+    }
+
+    /// <summary>
+    /// PUT /api/devices/{id}/app-categories — 保存设备应用分类（全量覆盖）
+    /// </summary>
+    [HttpPut("{id:int}/app-categories")]
+    public async Task<IActionResult> PutAppCategories(int id, [FromBody] AppCategoriesRequest request)
+    {
+        var device = await _db.Devices.FindAsync(id);
+        if (device == null)
+            return NotFound(new { error = "设备不存在" });
+
+        var valid = new HashSet<string> { "game", "social", "video", "learning", "other" };
+        var invalid = request.Categories
+            .Where(c => !valid.Contains(c.Category.ToLowerInvariant()))
+            .Select(c => c.PackageName)
+            .ToList();
+        if (invalid.Count > 0)
+            return BadRequest(new { error = $"非法分类值: {string.Join(", ", invalid)}" });
+
+        var normalized = request.Categories
+            .Select(c => new AppCategoryItem
+            {
+                PackageName = c.PackageName,
+                AppName = c.AppName ?? string.Empty,
+                Category = c.Category.ToLowerInvariant(),
+            })
+            .ToList();
+
+        device.AppCategories = System.Text.Json.JsonSerializer.Serialize(normalized);
+        device.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        _logger.LogInformation("[Devices] 设备 {DeviceId} 应用分类已保存 {Count} 条",
+            device.DeviceId, normalized.Count);
+
+        return Ok(new { deviceId = device.DeviceId, categories = normalized, message = "应用分类已保存" });
+    }
+
+    /// <summary>
+    /// 反序列化应用分类 JSON（容错：损坏数据返回空列表）
+    /// </summary>
+    private static List<AppCategoryItem> DeserializeCategories(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new List<AppCategoryItem>();
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<List<AppCategoryItem>>(json)
+                   ?? new List<AppCategoryItem>();
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return new List<AppCategoryItem>();
+        }
+    }
 }
 
 /// <summary>
@@ -270,65 +337,4 @@ public class ManualPairRequest
     public string? IpAddress { get; set; }
     public string? DeviceName { get; set; }
     public string? Platform { get; set; }
-
-    public async Task<IActionResult> GetAppCategories(int id)
-    {
-        var device = await _db.Devices.FindAsync(id);
-        if (device == null)
-            return NotFound(new { error = "设备不存在" });
-
-        var categories = DeserializeCategories(device.AppCategories);
-
-        return Ok(new
-        {
-            deviceId = device.DeviceId,
-            categories,
-        });
-    }
-    public async Task<IActionResult> PutAppCategories(int id, [FromBody] AppCategoriesRequest request)
-    {
-        var device = await _db.Devices.FindAsync(id);
-        if (device == null)
-            return NotFound(new { error = "设备不存在" });
-
-        // 校验分类值合法性
-        var invalid = request.Categories
-            .Where(c => !ValidCategories.Contains(c.Category.ToLowerInvariant()))
-            .Select(c => c.PackageName)
-            .ToList();
-
-        if (invalid.Count > 0)
-            return BadRequest(new { error = $"非法分类值: {string.Join(", ", invalid)}" });
-
-        // 归一化后落库（JSON 数组）
-        var normalized = request.Categories
-            .Select(c => new AppCategoryItem
-            {
-                PackageName = c.PackageName,
-                AppName = c.AppName ?? string.Empty,
-                Category = c.Category.ToLowerInvariant(),
-            })
-            .ToList();
-
-        device.AppCategories = JsonSerializer.Serialize(normalized);
-        device.UpdatedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync();
-
-        _logger.LogInformation("[Devices] 设备 {DeviceId} 应用分类已保存 {Count} 条",
-            device.DeviceId, normalized.Count);
-
-        return Ok(new
-        {
-            deviceId = device.DeviceId,
-            categories = normalized,
-            message = "应用分类已保存",
-        });
-    }
-    var categories = DeserializeCategories(device.AppCategories);
-
-        return Ok(new
-        {
-            deviceId = device.DeviceId,
-            categories,
-        }
 }
