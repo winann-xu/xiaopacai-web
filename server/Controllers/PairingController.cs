@@ -139,6 +139,10 @@ public class PairingController : ControllerBase
             device.CertFingerprint = request.CertFingerprint;
         if (!string.IsNullOrEmpty(request.IpAddress))
             device.IpAddress = request.IpAddress;
+        // [TASK-OPT-12-P4-DEEPEN] 绑定当前家长账号到设备
+        var currentUserId = GetUserId();
+        if (currentUserId != null && string.IsNullOrEmpty(device.OwnerUserId))
+            device.OwnerUserId = currentUserId.ToString();
         device.UpdatedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync();

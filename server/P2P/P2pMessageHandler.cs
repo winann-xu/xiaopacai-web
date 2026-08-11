@@ -27,13 +27,40 @@ public class P2pMessageHandler
     // ========== Handshake ==========
 
     /// <summary>
-    /// 处理儿童端握手请求 — 设备注册/认证 + 返回当前策略
+    /// 处理握手请求 — 设备注册/认证 + 返回当前策略
+    ///
+    /// 家长端中继连接（deviceId 以 "parent-" 开头且 relay=true）：跳过 devices 表操作，
+    /// 仅注册 relay_sessions（role=parent），用于接收中继转发的子设备消息。
     /// </summary>
     public async Task<(HandshakeResponse response, string? policyPushJson, int? dbDeviceId)>
         HandleHandshake(HandshakeRequest req, string? peerFingerprint, string remoteEndPoint)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        // [TASK-OPT-12-P4-DEEPEN] 家长端中继连接：不创建 Device，仅维护 relay_sessions
+        if (req.Relay && req.DeviceId.StartsWith("parent-"))
+        {
+            _logger.LogInformation("[P2P-Handshake] 家长端中继连接: {DeviceId} @ {Ip}",
+                req.DeviceId, remoteEndPoint);
+
+            db.RelaySessions.Add(new RelaySession
+            {
+                DeviceId = req.DeviceId,
+                Role = "parent",
+                IpAddress = remoteEndPoint,
+                Status = "connected",
+                ConnectedAt = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+
+            return (new HandshakeResponse
+            {
+                Ok = true,
+                PairStatus = "paired",
+                SessionId = Guid.NewGuid().ToString("N")[..12],
+            }, null, null);  // 家长端不需要策略下发
+        }
 
         // 1. 查找设备（按 device_id）
         var device = await db.Devices
