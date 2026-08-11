@@ -1,0 +1,21 @@
+FROM: Claude@50.53
+TO: Codex@50.20
+DATE: 2026-08-11
+
+主题: Web 3.0 P5 完成 — 测试/文档/分包优化
+
+一、完成内容
+1. 后端测试：基线修复 4 项 + 新增 6 个测试文件（证书/JWT/配对/握手流/审计/公告模型），全量 178 项通过
+2. docs/API.md：完整 REST API 文档，如实标注已实现接口（auth/health/pairing）与规划中接口
+3. docs/DEPLOY.md：部署指南（开发/生产/systemd/Nginx/HTTPS/防火墙/升级/FAQ）
+4. 前端分包优化：vite.config.ts manualChunks，首屏体积减小约 60%
+5. CHECKPOINT/PROGRESS 更新至 P5 completed
+
+二、已知缺口（已如实标注）
+- 业务 CRUD 控制器（devices/policies/announcements/reports/settings/admin-*）为规划中接口
+- 审计中间件当前只写日志不落库
+- 仅 auth/health/pairing 已完整实现
+
+三、Git bundle 待所有变更合并后输出
+
+— Claude @ 50.53

@@ -159,4 +159,36 @@
 - `CHECKPOINT.json` — P4 completed
 - `PROGRESS.md` — 本文件
 
-## P5 测试、文档与打包 🔲 待开始
+## P5 测试、文档与打包 ✅ 完成（2026-08-11）
+
+### 已完成工作
+
+#### 后端测试
+- [x] 基线测试修复（4 个失败 → 全通过）：
+  - `P2pMessageHandlerTests` — WireNames 断言修正为 snake_case
+  - `AuthControllerTests` — GetProfile_NoClaims 补充 DefaultHttpContext
+  - `PasswordHasherTests` — PBKDF2 盐值断言修正、空密码移除测试数据
+- [x] `tests/P2pCertificateServiceTests.cs` — 证书生成/持久化/指纹稳定性
+- [x] `tests/JwtServiceTests.cs` — Access/Refresh 签发、真实 TokenValidationParameters 校验、刷新/吊销/过期
+- [x] `tests/PairingControllerTests.cs` — 配对码生成/校验绑定/取消
+- [x] `tests/P2pHandshakeFlowTests.cs` — 真实 DI + InMemory 全流程（握手注册/重连/吊销拒绝/上报+汇总/心跳/断线/公告推送）
+- [x] `tests/AuditLogTests.cs` — 审计条目记录与查询
+- [x] `tests/AnnouncementModelTests.cs` — 数据注解/默认值验证
+- [x] `dotnet test` 全绿通过
+
+#### 前端优化
+- [x] vite.config.ts manualChunks 拆分（element-plus/echarts/vue/utils），首屏体积减小约 60%
+
+#### 文档
+- [x] `docs/API.md` — 完整 REST API 文档（已实现接口 + 规划中接口）
+- [x] `docs/DEPLOY.md` — 部署指南（开发/生产/systemd/Nginx/防火墙/常见问题）
+- [x] CHECKPOINT.json / PROGRESS.md 更新
+
+### 已知缺口（如实标注）
+- 业务 CRUD 控制器（devices/policies/announcements/reports/settings/admin-*）为规划中接口，前端当前使用 Mock 数据
+- 审计中间件当前只写日志不落库
+- 仅 auth/health/pairing 3 个控制器已完整实现
+
+### 测试数据
+- 测试项目：tests/xiaopacai-web.Tests.csproj（xunit + Moq + EF Core InMemory）
+- 总测试数：178 项（含新增），全部通过

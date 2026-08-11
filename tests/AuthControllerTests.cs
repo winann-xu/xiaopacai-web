@@ -407,7 +407,11 @@ public class AuthControllerTests
     {
         var db = CreateInMemoryDbContext();
         var controller = CreateController(db);
-        // 不设置 Claims
+        // 设置空 HttpContext（无任何 Claims），模拟未登录请求
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext(),
+        };
 
         var result = await controller.GetProfile();
         Assert.IsType<UnauthorizedResult>(result);

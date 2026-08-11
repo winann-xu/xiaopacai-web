@@ -106,9 +106,24 @@
     },
     "P5": {
       "name": "测试、文档与打包",
-      "status": "pending",
-      "description": "xunit 后端测试、vitest 前端测试、API 文档、部署说明、发布打包"
+      "status": "completed",
+      "completed_at": "2026-08-11",
+      "description": "xunit 后端测试（认证/策略/P2P/密码/JWT/配对/握手流/审计）、API 文档、部署说明、前端分包优化",
+      "tasks": [
+        "基线测试修复（P2pMessageHandler/PwdHasher/AuthController 4 个 bug 修复）",
+        "P2pCertificateService 测试（证书生成/持久化/指纹稳定）",
+        "JwtService 测试（签发/校验/刷新/吊销/过期）",
+        "PairingController 测试（配对码生成/校验/取消）",
+        "P2pHandshakeFlow 测试（真实 DI + 全流程）",
+        "AuditLog 测试（审计条目记录与查询）",
+        "AnnouncementModel 测试（数据注解/默认值）",
+        "前端分包优化（vite.config.ts manualChunks）",
+        "API 文档（docs/API.md）",
+        "部署指南（docs/DEPLOY.md）",
+        "全量 dotnet test 通过"
+      ]
     }
   },
-  "last_updated": "2026-08-11T04:00:00Z"
+  "last_updated": "2026-08-11T06:30:00Z",
+  "note": "P5 完成。业务 CRUD 控制器（devices/policies/announcements/reports/settings/admin-*）为规划中接口，前端当前使用 Mock 数据。仅 auth/health/pairing 已完整实现。审计中间件当前只写日志不落库。"
 }

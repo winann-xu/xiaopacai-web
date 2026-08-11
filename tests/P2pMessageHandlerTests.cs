@@ -204,16 +204,18 @@ public class P2pMessageHandlerTests
 
         var result = handler.BuildPolicyUpdateMessage(policy);
 
-        // 验证 JSON 序列化使用 snake_case
+        // PolicyUpdateMessage 使用 [JsonPropertyName] 显式声明 snake_case 字段名，
+        // 与 2.0 Android 儿童端协议一致（PropertyNamingPolicy 不会覆盖 JsonPropertyName）
         var json = System.Text.Json.JsonSerializer.Serialize(result, new System.Text.Json.JsonSerializerOptions
         {
             PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
         });
 
-        Assert.Contains("dailyLimit", json);
-        Assert.Contains("sleepTimeStart", json);
-        Assert.Contains("overtimeAction", json);
-        Assert.Contains("policyVersion", json);
+        Assert.Contains("daily_limit", json);
+        Assert.Contains("sleep_time_start", json);
+        Assert.Contains("overtime_action", json);
+        Assert.Contains("policy_version", json);
+        Assert.DoesNotContain("dailyLimit", json);
     }
 
     // ==================== Usage Report 数据模型验证 ====================

@@ -85,8 +85,8 @@ public class PasswordHasherTests
         Assert.NotNull(salt);
         Assert.NotEmpty(salt);
 
-        // PBKDF2 盐前缀
-        Assert.StartsWith("$pbkdf2-sha256$", salt);
+        // PBKDF2 盐值无前缀（与实现约定一致：$argon2id$ 前缀 = Argon2，无前缀 = PBKDF2）
+        Assert.False(_hasher.IsArgon2Hash(salt));
     }
 
     [Fact]
@@ -141,14 +141,23 @@ public class PasswordHasherTests
     [InlineData("p@ssw0rd!#$%^&*()")]
     [InlineData("中文密码测试123")]
     [InlineData("emoji🔐password")]
-    [InlineData("")]
     [InlineData("a")]
     [InlineData("this is a very long password that exceeds normal length limits 1234567890!@#$%^&*()")]
     public void HashAndVerify_SpecialCharacters(string password)
     {
+        // 注意：空密码不被 Argon2 库接受（业务层 MinLength(6) 也拒绝空密码），因此不在此测试
         var (hash, salt) = _hasher.HashPassword(password);
         Assert.True(_hasher.VerifyPassword(password, hash, salt));
         Assert.False(_hasher.VerifyPassword(password + "x", hash, salt));
+    }
+
+    [Fact]
+    public void VerifyPassword_EmptyPassword_ReturnsFalse()
+    {
+        // 空密码直接拒绝（Argon2 库不接受空密码输入）
+        var (hash, salt) = _hasher.HashPassword("valid-password");
+        Assert.False(_hasher.VerifyPassword("", hash, salt));
+        Assert.False(_hasher.VerifyPassword("", "", ""));
     }
 
     // ==================== 跨算法兼容性 ====================
