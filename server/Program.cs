@@ -164,7 +164,16 @@ app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
+// ========== 前端静态文件（单进程自托管，wwwroot = Vue 构建产物）==========
+// [TASK-OPT-12-P4] 修复：此前未配置静态文件服务，发布版根路径 404；
+// DEPLOY.md 单进程部署（publish + 复制 web/dist 到 wwwroot）现在可直接访问
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.MapControllers();
+
+// SPA 路由回退：前端路由（如 /login、/admin/devices）交给 index.html 处理
+app.MapFallbackToFile("index.html");
 
 // SignalR Hub 路由（P3 阶段激活）
 // app.MapHub<DeviceHub>("/hubs/device");
