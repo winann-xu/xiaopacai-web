@@ -267,7 +267,9 @@ public class P2pListenerService : IHostedService
             if (envelope == null || string.IsNullOrEmpty(envelope.Type))
                 continue;
 
-            await HandleMessageAsync(sslStream, envelope, ref deviceId, peerFingerprint, remoteEndPoint, ct);
+        var deviceIdHolder = new DeviceIdHolder { Value = deviceId };
+        await HandleMessageAsync(sslStream, envelope, deviceIdHolder, peerFingerprint, remoteEndPoint, ct);
+        deviceId = deviceIdHolder.Value;
         }
 
         // 连接断开，清理会话
@@ -283,7 +285,7 @@ public class P2pListenerService : IHostedService
     /// 消息分发
     /// </summary>
     private async Task HandleMessageAsync(SslStream sslStream, P2pEnvelope envelope,
-        ref string? deviceId, string? peerFingerprint, string remoteEndPoint, CancellationToken ct)
+        DeviceIdHolder deviceIdHolder, string? peerFingerprint, string remoteEndPoint, CancellationToken ct)
     {
         try
         {
@@ -298,10 +300,10 @@ public class P2pListenerService : IHostedService
 
                         if (response.Ok)
                         {
-                            deviceId = req.DeviceId;
-                            _sessions[deviceId] = new P2pSession
+                            deviceIdHolder.Value = req.DeviceId;
+                            _sessions[deviceIdHolder.Value] = new P2pSession
                             {
-                                DeviceId = deviceId,
+                                DeviceId = deviceIdHolder.Value,
                                 SslStream = sslStream,
                                 TcpClient = null,
                                 ConnectedAt = DateTime.UtcNow,
@@ -312,7 +314,7 @@ public class P2pListenerService : IHostedService
                         await WriteEnvelopeAsync(sslStream, P2pMessageType.Handshake, envelope.Seq, response);
 
                         // 握手成功后立即下发策略
-                        if (response.Ok && policy != null && deviceId != null)
+                        if (response.Ok && policy != null && deviceIdHolder.Value != null)
                         {
                             await WriteEnvelopeAsync(sslStream, P2pMessageType.PolicyUpdate, 0, policy);
                         }
@@ -337,7 +339,7 @@ public class P2pListenerService : IHostedService
                             var ack = await _messageHandler.HandleHeartbeat(req);
 
                             // 更新会话心跳时间
-                            if (deviceId != null && _sessions.TryGetValue(deviceId, out var session))
+                            if (deviceIdHolder.Value != null && _sessions.TryGetValue(deviceIdHolder.Value, out var session))
                             {
                                 session.LastHeartbeat = DateTime.UtcNow;
                             }
@@ -474,4 +476,12 @@ public class P2pSession
     public TcpClient? TcpClient { get; set; }
     public DateTime ConnectedAt { get; set; }
     public DateTime LastHeartbeat { get; set; }
+}
+
+/// <summary>
+/// 连接级 deviceId 可变持有者（异步方法内无法使用 ref 参数，改用引用类型传递）
+/// </summary>
+public sealed class DeviceIdHolder
+{
+    public string? Value { get; set; }
 }
