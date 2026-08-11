@@ -75,6 +75,91 @@ public static class DataExtensions
                 """);
             logger.LogInformation("[DB] 已补齐 system_configs 表");
         }
+
+        // diagnostics 表（OPT12 需求 5：故障诊断上报）
+        var hasDiagnostics = await db.Database.SqlQueryRaw<long>(
+            "SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name='diagnostics'"
+        ).FirstOrDefaultAsync() > 0;
+        if (!hasDiagnostics)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE "diagnostics" (
+                    "Id" INTEGER PRIMARY KEY AUTOINCREMENT,
+                    "DeviceId" TEXT NOT NULL,
+                    "AppVersion" TEXT NULL,
+                    "AndroidVersion" TEXT NULL,
+                    "DeviceModel" TEXT NULL,
+                    "Manufacturer" TEXT NULL,
+                    "PermissionStatus" TEXT NULL,
+                    "ServiceStatus" TEXT NULL,
+                    "RecentCrashes" TEXT NULL,
+                    "P2pHistory" TEXT NULL,
+                    "DbSizeBytes" INTEGER NULL,
+                    "NetworkType" TEXT NULL,
+                    "ReportedAt" TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS "IX_diagnostics_DeviceId_ReportedAt"
+                    ON "diagnostics" ("DeviceId", "ReportedAt");
+                """);
+            logger.LogInformation("[DB] 已补齐 diagnostics 表");
+        }
+
+        // relay_sessions 表（OPT12 需求 3：云端中继会话）
+        var hasRelay = await db.Database.SqlQueryRaw<long>(
+            "SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name='relay_sessions'"
+        ).FirstOrDefaultAsync() > 0;
+        if (!hasRelay)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE "relay_sessions" (
+                    "Id" INTEGER PRIMARY KEY AUTOINCREMENT,
+                    "DeviceId" TEXT NOT NULL,
+                    "Role" TEXT NOT NULL DEFAULT 'child',
+                    "UserId" INTEGER NULL,
+                    "IpAddress" TEXT NULL,
+                    "Status" TEXT NOT NULL DEFAULT 'connected',
+                    "ConnectedAt" TEXT NOT NULL DEFAULT (datetime('now')),
+                    "DisconnectedAt" TEXT NULL,
+                    "CreatedAt" TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS "IX_relay_sessions_DeviceId_Status"
+                    ON "relay_sessions" ("DeviceId", "Status");
+                CREATE INDEX IF NOT EXISTS "IX_relay_sessions_Status_ConnectedAt"
+                    ON "relay_sessions" ("Status", "ConnectedAt");
+                """);
+            logger.LogInformation("[DB] 已补齐 relay_sessions 表");
+        }
+
+        // devices 表补列（已存在库 EnsureCreated 不补新列；列已存在时忽略异常）
+        await TryAddColumnAsync(db, "devices", "app_categories", "TEXT NULL", logger);
+        await TryAddColumnAsync(db, "devices", "owner_user_id", "TEXT NULL", logger);
+    }
+
+    /// <summary>
+    /// 尝试给表补列，列已存在时静默忽略
+    /// </summary>
+    private static async Task TryAddColumnAsync(
+        AppDbContext db, string table, string column, string ddl, ILogger logger)
+    {
+        try
+        {
+            // 表名/列名均为内部常量（非用户输入），EF1002 可安全抑制
+#pragma warning disable EF1002
+            await db.Database.ExecuteSqlRawAsync(
+                $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {ddl}");
+#pragma warning restore EF1002
+            logger.LogInformation("[DB] {Table} 表已补 {Column} 列", table, column);
+        }
+        catch (Exception ex) when (ex.Message.Contains("duplicate column"))
+        {
+            // 列已存在，忽略
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[DB] 补列失败 {Table}.{Column}", table, column);
+        }
     }
 
     private static async Task SeedDefaultAdmin(AppDbContext db, IPasswordHasher hasher)
