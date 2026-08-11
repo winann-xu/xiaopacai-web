@@ -9,8 +9,8 @@ namespace XiaopacaiWeb.Controllers;
 /// 云端中继 REST API（OPT12 需求 3）
 ///
 /// 管理端查看中继会话（在线中继设备）。
-/// TODO(P4)：P2pMessageHandler 握手/断线时写入 relay_sessions 记录，
-/// 并在 P2P 消息层实现 usage_report / policy_update / announcement_push 的中继路由。
+/// relay_sessions 记录由 P2pMessageHandler 在握手（TASK-OPT-12-P4-DEEPEN：握手写入 / 断线更新）时维护；
+/// usage_report / announcement_ack 的中继转发由 P2pMessageHandler.RelayMessageToParent 完成。
 /// </summary>
 [ApiController]
 [Route("api/relay")]

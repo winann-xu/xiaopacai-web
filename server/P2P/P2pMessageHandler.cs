@@ -103,6 +103,19 @@ public class P2pMessageHandler
             };
             db.Policies.Add(policy);
 
+            // [TASK-OPT-12-P4-DEEPEN] 中继连接：握手成功后写入 relay_sessions 会话记录
+            if (req.Relay)
+            {
+                db.RelaySessions.Add(new RelaySession
+                {
+                    DeviceId = req.DeviceId,
+                    Role = "child",
+                    IpAddress = remoteEndPoint,
+                    Status = "connected",
+                    ConnectedAt = DateTime.UtcNow,
+                });
+            }
+
             await db.SaveChangesAsync();
 
             _logger.LogInformation("[P2P-Handshake] 新设备已配对: {DeviceId} ({DeviceName})", req.DeviceId, req.DeviceName);
@@ -115,7 +128,7 @@ public class P2pMessageHandler
                 Ok = true,
                 PairStatus = "paired",
                 SessionId = Guid.NewGuid().ToString("N")[..12],
-            }, BuildPolicyPushMessage(device.DeviceId, device.Policy), device.Id);
+            }, BuildPolicyPushMessage(device.DeviceId, device.Policy, device.AppCategories), device.Id);
         }
 
         // 2. 已有设备 — 检查配对状态
@@ -150,10 +163,24 @@ public class P2pMessageHandler
             device.CertFingerprint = req.CertFingerprint;
 
         device.UpdatedAt = DateTime.UtcNow;
+
+        // [TASK-OPT-12-P4-DEEPEN] 中继连接：写入 relay_sessions 会话记录
+        if (req.Relay)
+        {
+            db.RelaySessions.Add(new RelaySession
+            {
+                DeviceId = req.DeviceId,
+                Role = "child",
+                IpAddress = remoteEndPoint,
+                Status = "connected",
+                ConnectedAt = DateTime.UtcNow,
+            });
+        }
+
         await db.SaveChangesAsync();
 
         // 构建策略下发
-        var policyMsg = BuildPolicyPushMessage(device.DeviceId, device.Policy);
+        var policyMsg = BuildPolicyPushMessage(device.DeviceId, device.Policy, device.AppCategories);
 
         _logger.LogInformation("[P2P-Handshake] 设备已连接: {DeviceId} ({DeviceName}), status={PairStatus}",
             req.DeviceId, req.DeviceName, device.PairStatus);
@@ -282,7 +309,7 @@ public class P2pMessageHandler
     // ========== 设备断线 ==========
 
     /// <summary>
-    /// 设备断开连接时更新状态
+    /// 设备断开连接时更新状态（含中继会话状态）
     /// </summary>
     public async Task OnDeviceDisconnected(string deviceId)
     {
@@ -297,25 +324,85 @@ public class P2pMessageHandler
             device.UpdatedAt = DateTime.UtcNow;
             await db.SaveChangesAsync();
         }
+
+        // [TASK-OPT-12-P4-DEEPEN] 更新该设备最近一条在线中继会话为断开
+        var relaySession = await db.RelaySessions
+            .Where(r => r.DeviceId == deviceId && r.Status == "connected")
+            .OrderByDescending(r => r.ConnectedAt)
+            .FirstOrDefaultAsync();
+        if (relaySession != null)
+        {
+            relaySession.Status = "disconnected";
+            relaySession.DisconnectedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync();
+        }
+    }
+
+    // [TASK-OPT-12-P4-DEEPEN] ========== 消息中继转发 ==========
+
+    /// <summary>
+    /// 将儿童端消息中继转发给绑定家长端（家长端 APP 通过云端中继连接）
+    ///
+    /// 查找链路：儿童端 devices.owner_user_id → 家长账号 → relay_sessions 中该账号下在线家长端会话
+    /// （ParentDeviceId 为家长端 APP 自己的设备 ID，家长端握手时以该 ID 注册会话）
+    /// </summary>
+    public async Task RelayMessageToParent(string childDeviceId, string messageJson, P2pListenerService? p2pService)
+    {
+        if (p2pService == null) return;
+
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        // 1. 找到儿童设备绑定的家长账号（owner_user_id 兼容存用户 ID 或用户名的两种格式）
+        var device = await db.Devices.FirstOrDefaultAsync(d => d.DeviceId == childDeviceId);
+        if (device == null || string.IsNullOrEmpty(device.OwnerUserId))
+            return;
+
+        int? ownerUserId = int.TryParse(device.OwnerUserId, out var uid)
+            ? uid
+            : (await db.Users.FirstOrDefaultAsync(u => u.Username == device.OwnerUserId))?.Id;
+        if (ownerUserId == null)
+            return;
+
+        // 2. 找该家长账号下最近在线的家长端中继会话
+        var parentSession = await db.RelaySessions
+            .Where(r => r.Role == "parent" && r.UserId == ownerUserId.Value && r.Status == "connected")
+            .OrderByDescending(r => r.ConnectedAt)
+            .FirstOrDefaultAsync();
+        if (parentSession == null)
+            return;
+
+        // 3. 转发给家长端（家长端在线则实时收到；离线静默丢弃）
+        await p2pService.SendToDevice(parentSession.DeviceId, messageJson);
+        _logger.LogDebug("[P2P-Relay] 已中继转发 {Bytes} 字节到家长端 {ParentDevice}",
+            messageJson.Length, parentSession.DeviceId);
     }
 
     // ========== 2.0 协议格式构建（兼容 Android 儿童端） ==========
 
     /// <summary>
     /// 构建 2.0 policy_update 完整消息 JSON（payload.policies 为 PolicyConfig JSON 字符串数组）
+    /// appCategoriesJson 可选：devices.app_categories JSON 列，随策略一并下发（payload.app_categories）
     /// </summary>
-    public string BuildPolicyPushMessage(string deviceId, Policy? policy)
+    public string BuildPolicyPushMessage(string deviceId, Policy? policy, string? appCategoriesJson = null)
     {
         var policies = BuildPolicyConfigItems(deviceId, policy);
+        var payload = new Dictionary<string, object>
+        {
+            ["deviceId"] = deviceId,
+            ["policies"] = policies,
+            ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        };
+
+        // [TASK-OPT-12-P4-DEEPEN] 携带设备应用分类（下发格式：packageName/appName/category）
+        var appCategories = ParseAppCategories(appCategoriesJson);
+        if (appCategories is { Count: > 0 })
+            payload["app_categories"] = appCategories;
+
         var message = new Dictionary<string, object>
         {
             ["type"] = P2pMessageType.PolicyUpdate,
-            ["payload"] = new Dictionary<string, object>
-            {
-                ["deviceId"] = deviceId,
-                ["policies"] = policies,
-                ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            },
+            ["payload"] = payload,
         };
         return JsonSerializer.Serialize(message);
     }
@@ -724,6 +811,38 @@ public class P2pMessageHandler
             return JsonSerializer.Deserialize<List<string>>(json);
         }
         catch
+        {
+            return null;
+        }
+    }
+
+    // [TASK-OPT-12-P4-DEEPEN] ========== 应用分类解析 ==========
+
+    /// <summary>
+    /// 解析设备 app_categories JSON（兼容 PascalCase / camelCase 字段名，损坏数据返回 null）
+    /// 输出格式：{"packageName": "...", "appName": "...", "category": "game"} 数组
+    /// </summary>
+    private static List<Dictionary<string, object>>? ParseAppCategories(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return null;
+
+            var result = new List<Dictionary<string, object>>();
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                result.Add(new Dictionary<string, object>
+                {
+                    ["packageName"] = GetString(item, "packageName") ?? GetString(item, "PackageName") ?? string.Empty,
+                    ["appName"] = GetString(item, "appName") ?? GetString(item, "AppName") ?? string.Empty,
+                    ["category"] = GetString(item, "category") ?? GetString(item, "Category") ?? "other",
+                });
+            }
+            return result;
+        }
+        catch (JsonException)
         {
             return null;
         }

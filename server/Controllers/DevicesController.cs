@@ -5,7 +5,9 @@ using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.DTOs;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.P2P;
 using XiaopacaiWeb.Security;
+using XiaopacaiWeb.Services;
 
 namespace XiaopacaiWeb.Controllers;
 
@@ -18,11 +20,22 @@ namespace XiaopacaiWeb.Controllers;
 public class DevicesController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly P2pMessageHandler _messageHandler;
+    private readonly P2pListenerService _p2p;
+    private readonly IJwtService _jwt;
     private readonly ILogger<DevicesController> _logger;
 
-    public DevicesController(AppDbContext db, ILogger<DevicesController> logger)
+    public DevicesController(
+        AppDbContext db,
+        P2pMessageHandler messageHandler,
+        P2pListenerService p2p,
+        IJwtService jwt,
+        ILogger<DevicesController> logger)
     {
         _db = db;
+        _messageHandler = messageHandler;
+        _p2p = p2p;
+        _jwt = jwt;
         _logger = logger;
     }
 
@@ -304,10 +317,59 @@ public class DevicesController : ControllerBase
         device.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 
-        _logger.LogInformation("[Devices] 设备 {DeviceId} 应用分类已保存 {Count} 条",
-            device.DeviceId, normalized.Count);
+        // [TASK-OPT-12-P4-DEEPEN] 保存后立即推送策略（含 app_categories）到在线设备
+        try
+        {
+            var policy = await _db.Policies.FirstOrDefaultAsync(p => p.DeviceId == device.Id);
+            var pushJson = _messageHandler.BuildPolicyPushMessage(device.DeviceId, policy, device.AppCategories);
+            var pushed = await _p2p.SendToDevice(device.DeviceId, pushJson);
+            _logger.LogInformation("[Devices] 设备 {DeviceId} 应用分类已推送, pushed={Pushed}",
+                device.DeviceId, pushed);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Devices] 应用分类推送失败: {DeviceId}", device.DeviceId);
+        }
+
+        await AuditAsync("device.app-categories", "Device", device.Id,
+            $"{{\"deviceId\":\"{device.DeviceId}\",\"count\":{normalized.Count}}}");
 
         return Ok(new { deviceId = device.DeviceId, categories = normalized, message = "应用分类已保存" });
+    }
+
+    /// <summary>
+    /// POST /api/devices/{id}/token — 生成/轮换设备级访问令牌（TASK-OPT-12-P4-DEEPEN）
+    /// 返回：
+    /// - deviceToken：设备令牌（POST /api/diagnostics 请求体 device_token 字段校验）
+    /// - jwt：设备级 JWT（限定 scope=diagnostics+usage_report，Authorization: Bearer 头校验）
+    /// </summary>
+    [HttpPost("{id:int}/token")]
+    public async Task<IActionResult> GenerateDeviceToken(int id)
+    {
+        var device = await _db.Devices.FindAsync(id);
+        if (device == null)
+            return NotFound(new { error = "设备不存在" });
+
+        // 生成随机设备令牌（重新生成即轮换旧令牌）
+        device.DeviceToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+        device.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        // 生成设备级 JWT（限定 scope：diagnostics + usage_report，24 小时有效）
+        var (jwt, expiresAt) = _jwt.GenerateDeviceToken(device.DeviceId);
+
+        await AuditAsync("device.token", "Device", device.Id,
+            $"{{\"deviceId\":\"{device.DeviceId}\"}}");
+
+        _logger.LogInformation("[Devices] 设备 {DeviceId} 令牌已生成", device.DeviceId);
+
+        return Ok(new
+        {
+            deviceToken = device.DeviceToken,
+            jwt,
+            expiresAt,
+            message = "设备令牌已生成",
+        });
     }
 
     /// <summary>

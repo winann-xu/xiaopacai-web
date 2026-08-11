@@ -16,6 +16,8 @@ public static class P2pMessageType
     public const string PolicyUpdate = "policy_update";
     public const string UsageReport = "usage_report";
     public const string AnnouncementPush = "announcement_push";
+    // [TASK-OPT-12-P4-DEEPEN] 儿童端公告确认回执（确认后中继转发给家长端）
+    public const string AnnouncementAck = "announcement_ack";
     public const string Heartbeat = "heartbeat";
     public const string HeartbeatAck = "heartbeat_ack";
     public const string SyncAck = "sync_ack";
@@ -75,6 +77,10 @@ public class HandshakeRequest
     /// <summary>客户端时间戳（秒）</summary>
     [JsonPropertyName("timestamp")]
     public long Timestamp { get; set; }
+
+    // [TASK-OPT-12-P4-DEEPEN] 是否通过云端中继连接（true 时服务端写入 relay_sessions 会话记录）
+    [JsonPropertyName("relay")]
+    public bool Relay { get; set; }
 }
 
 /// <summary>

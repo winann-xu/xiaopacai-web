@@ -143,6 +143,10 @@ public class PairingController : ControllerBase
 
         await _db.SaveChangesAsync();
 
+        // [TASK-OPT-12-P4-DEEPEN] 审计日志：设备配对确认
+        await AuditAsync("pairing.verify", "Device", device.Id,
+            $"{{\"deviceId\":\"{device.DeviceId}\",\"code\":\"{request.PairCode}\"}}");
+
         _logger.LogInformation("[Pairing] 配对确认: device={DeviceId}, code={Code}",
             device.DeviceId, request.PairCode);
 
@@ -185,6 +189,31 @@ public class PairingController : ControllerBase
     {
         var code = RandomNumberGenerator.GetInt32(0, 1_000_000);
         return code.ToString("D6");
+    }
+
+    // [TASK-OPT-12-P4-DEEPEN] ========== 审计日志 ==========
+
+    private async Task AuditAsync(string action, string? targetType, int? targetId, string? detail)
+    {
+        _db.AuditLogs.Add(new AuditLog
+        {
+            UserId = GetUserId(),
+            Action = action,
+            TargetType = targetType,
+            TargetId = targetId,
+            Detail = detail,
+            IpAddress = HttpContext?.Connection?.RemoteIpAddress?.ToString(),
+            CreatedAt = DateTime.UtcNow,
+        });
+        await _db.SaveChangesAsync();
+    }
+
+    private int? GetUserId()
+    {
+        // 兼容测试环境无 HttpContext 的场景（User 为 null）
+        var claim = User?.FindFirst("sub")?.Value
+                 ?? User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        return int.TryParse(claim, out var id) ? id : null;
     }
 }
 

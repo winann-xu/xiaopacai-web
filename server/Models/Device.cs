@@ -54,6 +54,10 @@ public class Device
     /// <summary>应用分类配置（OPT12 需求 1，JSON 数组，随 policy_push 下发）</summary>
     public string? AppCategories { get; set; }
 
+    /// <summary>设备级访问令牌（TASK-OPT-12-P4-DEEPEN：诊断上报鉴权，可空；由 /api/devices/{id}/token 生成/轮换）</summary>
+    [MaxLength(64)]
+    public string? DeviceToken { get; set; }
+
     public bool IsActive { get; set; } = true;
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

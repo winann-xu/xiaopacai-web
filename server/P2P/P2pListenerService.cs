@@ -317,6 +317,24 @@ public class P2pListenerService : IHostedService
                             var recordsJson = GetPayloadString(usagePayload, "records") ?? "[]";
                             var ack = await _messageHandler.HandleUsageReportLegacy(deviceId, recordsJson);
                             await WriteFrameAsync(sslStream, _messageHandler.BuildSyncAckJson(ack.Synced));
+
+                            // [TASK-OPT-12-P4-DEEPEN] 中继转发：儿童端使用上报实时转发给绑定家长端
+                            if (!string.IsNullOrEmpty(deviceId))
+                            {
+                                await _messageHandler.RelayMessageToParent(
+                                    deviceId, EnvelopeToJson(envelope), this);
+                            }
+                        }
+                        break;
+                    }
+
+                // [TASK-OPT-12-P4-DEEPEN] 儿童端公告确认回执 → 中继转发给绑定家长端
+                case P2pMessageType.AnnouncementAck:
+                    {
+                        if (deviceIdHolder.Value != null)
+                        {
+                            await _messageHandler.RelayMessageToParent(
+                                deviceIdHolder.Value, EnvelopeToJson(envelope), this);
                         }
                         break;
                     }
@@ -469,6 +487,19 @@ public class P2pListenerService : IHostedService
                 return value.GetRawText();
         }
         return null;
+    }
+
+    // [TASK-OPT-12-P4-DEEPEN] ========== 中继转发辅助 ==========
+
+    /// <summary>
+    /// 将信封重新序列化为 JSON（用于中继转发给家长端，字段名与原帧一致）
+    /// </summary>
+    private static string EnvelopeToJson(P2pEnvelope envelope)
+    {
+        return JsonSerializer.Serialize(envelope, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        });
     }
 }
 

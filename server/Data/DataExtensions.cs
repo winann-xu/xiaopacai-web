@@ -135,6 +135,8 @@ public static class DataExtensions
         // devices 表补列（已存在库 EnsureCreated 不补新列；列已存在时忽略异常）
         await TryAddColumnAsync(db, "devices", "app_categories", "TEXT NULL", logger);
         await TryAddColumnAsync(db, "devices", "owner_user_id", "TEXT NULL", logger);
+        // [TASK-OPT-12-P4-DEEPEN] 设备级访问令牌（诊断上报鉴权）
+        await TryAddColumnAsync(db, "devices", "device_token", "TEXT NULL", logger);
     }
 
     /// <summary>

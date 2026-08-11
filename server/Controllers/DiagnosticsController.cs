@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.Services;
 
 namespace XiaopacaiWeb.Controllers;
 
@@ -18,17 +19,23 @@ namespace XiaopacaiWeb.Controllers;
 public class DiagnosticsController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly IJwtService _jwt;
     private readonly ILogger<DiagnosticsController> _logger;
 
-    public DiagnosticsController(AppDbContext db, ILogger<DiagnosticsController> logger)
+    public DiagnosticsController(AppDbContext db, IJwtService jwt, ILogger<DiagnosticsController> logger)
     {
         _db = db;
+        _jwt = jwt;
         _logger = logger;
     }
 
     /// <summary>
     /// POST /api/diagnostics — 儿童端上报诊断信息
-    /// 儿童端无 JWT，走 P2P 证书链路 / 未鉴权 HTTP；TODO(P4 安全审查)：接入设备级 Token 校验
+    /// 设备级鉴权（TASK-OPT-12-P4-DEEPEN）：
+    /// 1. 设备必须已注册（devices 表存在该 device_id），否则 403；
+    /// 2. 设备已配置 DeviceToken 时必须携带有效凭证：
+    ///    - Authorization: Bearer 设备级 JWT（scope 含 diagnostics），或
+    ///    - 请求体 device_token 与设备存储令牌一致。
     /// </summary>
     [HttpPost("api/diagnostics")]
     [AllowAnonymous]
@@ -39,6 +46,21 @@ public class DiagnosticsController : ControllerBase
 
         if (request.DeviceId.Length > 128)
             return BadRequest(new { error = "device_id 过长" });
+
+        // [TASK-OPT-12-P4-DEEPEN] 设备级鉴权：设备必须已注册
+        var device = await _db.Devices.FirstOrDefaultAsync(d => d.DeviceId == request.DeviceId);
+        if (device == null)
+        {
+            _logger.LogWarning("[Diagnostics] 未注册设备尝试上报被拒绝: {DeviceId}", request.DeviceId);
+            return StatusCode(403, new { error = "设备未注册，拒绝上报" });
+        }
+
+        // [TASK-OPT-12-P4-DEEPEN] 设备 Token / 设备 JWT 校验（已配置令牌的设备必须携带有效凭证）
+        if (!IsDeviceAuthenticated(request, device))
+        {
+            _logger.LogWarning("[Diagnostics] 设备令牌校验失败被拒绝: {DeviceId}", request.DeviceId);
+            return StatusCode(403, new { error = "设备令牌无效" });
+        }
 
         var record = new DiagnosticRecord
         {
@@ -178,6 +200,25 @@ public class DiagnosticsController : ControllerBase
 
     // ========== 辅助 ==========
 
+    // [TASK-OPT-12-P4-DEEPEN] 设备级鉴权：设备 JWT（Authorization 头）或设备 Token（请求体）任一通过即可
+    private bool IsDeviceAuthenticated(DiagnosticReportRequest request, Device device)
+    {
+        // 1. Authorization: Bearer 设备级 JWT 校验（优先级最高；提供了但无效则直接拒绝，不降级）
+        var authHeader = Request.Headers.Authorization.ToString();
+        if (!string.IsNullOrEmpty(authHeader) &&
+            authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            var jwt = authHeader["Bearer ".Length..].Trim();
+            return _jwt.TryValidateDeviceToken(jwt, device.DeviceId, "diagnostics");
+        }
+
+        // 2. 请求体 device_token 校验（设备未配置令牌时兼容放行，已配置则必须一致）
+        if (string.IsNullOrEmpty(device.DeviceToken))
+            return true;
+
+        return !string.IsNullOrEmpty(request.DeviceToken) && request.DeviceToken == device.DeviceToken;
+    }
+
     private static string? Truncate(string? value, int maxLength)
     {
         if (string.IsNullOrEmpty(value)) return null;
@@ -194,6 +235,9 @@ public class DiagnosticReportRequest
 {
     /// <summary>儿童端设备唯一标识（必填）</summary>
     public string DeviceId { get; set; } = string.Empty;
+
+    /// <summary>设备访问令牌（TASK-OPT-12-P4-DEEPEN：由 /api/devices/{id}/token 生成，设备已配置令牌时必填）</summary>
+    public string? DeviceToken { get; set; }
 
     /// <summary>儿童端 APP 版本号</summary>
     public string? AppVersion { get; set; }

@@ -112,7 +112,8 @@ public class PoliciesController : ControllerBase
 
     private async Task<bool> TryPush(Device device, Policy? policy)
     {
-        var json = _messageHandler.BuildPolicyPushMessage(device.DeviceId, policy);
+        // [TASK-OPT-12-P4-DEEPEN] 推送时携带设备应用分类（app_categories）
+        var json = _messageHandler.BuildPolicyPushMessage(device.DeviceId, policy, device.AppCategories);
         return await _p2p.SendToDevice(device.DeviceId, json);
     }
 

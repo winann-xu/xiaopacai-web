@@ -151,6 +151,83 @@ public class JwtService : IJwtService
         }
     }
 
+    // [TASK-OPT-12-P4-DEEPEN] ========== 设备级 Token ==========
+
+    /// <summary>
+    /// 生成设备级 JWT（限定 scope：diagnostics + usage_report，24 小时有效）
+    /// 儿童端随 POST /api/diagnostics 以 Authorization: Bearer 携带
+    /// </summary>
+    public (string token, DateTime expiresAt) GenerateDeviceToken(string deviceId)
+    {
+        var secretKey = _config["Jwt:SecretKey"] ?? "CHANGE-ME-IN-PRODUCTION-32CHARS-MIN!";
+        var issuer = _config["Jwt:Issuer"] ?? "xiaopacai-web";
+        var audience = _config["Jwt:Audience"] ?? "xiaopacai-client";
+
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
+        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        var expiresAt = DateTime.UtcNow.AddHours(24);
+        var claims = new[]
+        {
+            new Claim(JwtRegisteredClaimNames.Sub, deviceId),
+            new Claim(ClaimTypes.Role, "device"),
+            new Claim("scope", "diagnostics usage_report"),
+            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+        };
+
+        var token = new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken(
+            issuer: issuer,
+            audience: audience,
+            claims: claims,
+            notBefore: DateTime.UtcNow,
+            expires: expiresAt,
+            signingCredentials: credentials));
+
+        return (token, expiresAt);
+    }
+
+    /// <summary>
+    /// 校验设备级 JWT：签名/有效期合法 + role=device + scope 包含所需权限 + sub 与设备 ID 一致
+    /// </summary>
+    public bool TryValidateDeviceToken(string token, string expectedDeviceId, string requiredScope)
+    {
+        var secretKey = _config["Jwt:SecretKey"] ?? "CHANGE-ME-IN-PRODUCTION-32CHARS-MIN!";
+        var issuer = _config["Jwt:Issuer"] ?? "xiaopacai-web";
+        var audience = _config["Jwt:Audience"] ?? "xiaopacai-client";
+
+        try
+        {
+            var principal = new JwtSecurityTokenHandler().ValidateToken(token,
+                new TokenValidationParameters
+                {
+                    ValidateIssuer = true,
+                    ValidateAudience = true,
+                    ValidateLifetime = true,
+                    ValidateIssuerSigningKey = true,
+                    ValidIssuer = issuer,
+                    ValidAudience = audience,
+                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
+                    ClockSkew = TimeSpan.FromMinutes(1),
+                }, out _);
+
+            // sub 必须与上报设备 ID 一致
+            if (principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value != expectedDeviceId)
+                return false;
+
+            // role 必须是 device（拒绝用户 Token 冒充设备上报）
+            if (principal.FindFirst(ClaimTypes.Role)?.Value != "device")
+                return false;
+
+            // scope 必须包含所需权限（空格分隔的 scope 列表）
+            var scopes = principal.FindAll("scope").Select(c => c.Value).ToList();
+            return scopes.Any(s => s.Split(' ', StringSplitOptions.RemoveEmptyEntries).Contains(requiredScope));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     // ========== helpers ==========
 
     private static string HashToken(string token)
