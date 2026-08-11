@@ -68,22 +68,26 @@ public class AuthController : ControllerBase
 
         _logger.LogInformation("[Auth] 登录成功: {U} (role={R})", user.Username, user.Role);
 
-        return Ok(new AuthResponse
+        var profile = new UserProfile
         {
-            AccessToken = accessToken,
-            RefreshToken = refreshToken,
-            ExpiresAt = accessExpiry,
-            TokenType = "Bearer",
-            Profile = new UserProfile
-            {
-                Id = user.Id,
-                Username = user.Username,
-                DisplayName = user.DisplayName,
-                Role = user.Role,
-                Email = user.Email,
-                AvatarUrl = user.AvatarUrl,
-                LastLoginAt = user.LastLoginAt,
-            },
+            Id = user.Id,
+            Username = user.Username,
+            DisplayName = user.DisplayName,
+            Role = user.Role,
+            Email = user.Email,
+            AvatarUrl = user.AvatarUrl,
+            LastLoginAt = user.LastLoginAt,
+        };
+
+        // 同时返回 profile 与 user 字段，兼容新旧前端调用
+        return Ok(new
+        {
+            accessToken,
+            refreshToken,
+            expiresAt = accessExpiry,
+            tokenType = "Bearer",
+            profile,
+            user = profile,
         });
     }
 
@@ -130,6 +134,17 @@ public class AuthController : ControllerBase
     [HttpPost("change-password")]
     [Authorize]
     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
+        => await DoChangePassword(request);
+
+    /// <summary>
+    /// PUT /api/auth/password — 修改密码（前端兼容路由）
+    /// </summary>
+    [HttpPut("password")]
+    [Authorize]
+    public async Task<IActionResult> ChangePasswordCompat([FromBody] ChangePasswordRequest request)
+        => await DoChangePassword(request);
+
+    private async Task<IActionResult> DoChangePassword(ChangePasswordRequest request)
     {
         if (!ModelState.IsValid)
             return BadRequest(ModelState);
@@ -168,6 +183,7 @@ public class AuthController : ControllerBase
     /// GET /api/auth/me — 获取当前用户信息
     /// </summary>
     [HttpGet("me")]
+    [HttpGet("profile")]
     [Authorize]
     public async Task<IActionResult> GetProfile()
     {

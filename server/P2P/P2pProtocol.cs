@@ -49,28 +49,32 @@ public class P2pEnvelope
 public class HandshakeRequest
 {
     /// <summary>设备唯一标识（Android device ID）</summary>
-    [JsonPropertyName("device_id")]
+    [JsonPropertyName("deviceId")]
     public string DeviceId { get; set; } = string.Empty;
 
     /// <summary>设备名称（如"小明手机"）</summary>
-    [JsonPropertyName("device_name")]
+    [JsonPropertyName("deviceName")]
     public string DeviceName { get; set; } = string.Empty;
 
     /// <summary>平台：android</summary>
-    [JsonPropertyName("platform")]
+    [JsonPropertyName("deviceType")]
     public string Platform { get; set; } = "android";
 
     /// <summary>客户端版本号</summary>
-    [JsonPropertyName("client_version")]
+    [JsonPropertyName("version")]
     public string ClientVersion { get; set; } = string.Empty;
 
     /// <summary>配对码（6 位，首次连接或重新配对时携带）</summary>
-    [JsonPropertyName("pair_code")]
+    [JsonPropertyName("pairingCode")]
     public string? PairCode { get; set; }
 
     /// <summary>客户端证书指纹（首次握手传递，用于后续校验）</summary>
-    [JsonPropertyName("cert_fingerprint")]
+    [JsonPropertyName("certFingerprint")]
     public string? CertFingerprint { get; set; }
+
+    /// <summary>客户端时间戳（秒）</summary>
+    [JsonPropertyName("timestamp")]
+    public long Timestamp { get; set; }
 }
 
 /// <summary>

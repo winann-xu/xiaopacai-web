@@ -62,29 +62,14 @@ public class P2pListenerService : IHostedService
     /// <summary>
     /// 向指定设备主动推送消息（策略更新/公告推送）
     /// </summary>
-    public async Task<bool> SendToDevice(string deviceId, string messageType, object payload, int seq = 0)
+    public async Task<bool> SendToDevice(string deviceId, string messageJson)
     {
         if (!_sessions.TryGetValue(deviceId, out var session) || session.SslStream == null)
             return false;
 
         try
         {
-            var envelope = new P2pEnvelope
-            {
-                Type = messageType,
-                Seq = seq,
-                Ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            };
-
-            var json = JsonSerializer.Serialize(new
-            {
-                type = messageType,
-                seq = seq,
-                ts = envelope.Ts,
-                payload = payload
-            }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-
-            await WriteFrameAsync(session.SslStream, json);
+            await WriteFrameAsync(session.SslStream, messageJson);
             return true;
         }
         catch (Exception ex)
@@ -296,7 +281,7 @@ public class P2pListenerService : IHostedService
                         var req = DeserializePayload<HandshakeRequest>(envelope.Payload);
                         if (req == null) break;
 
-                        var (response, policy, dbDeviceId) = await _messageHandler.HandleHandshake(req, peerFingerprint, remoteEndPoint);
+                        var (response, policyPushJson, dbDeviceId) = await _messageHandler.HandleHandshake(req, peerFingerprint, remoteEndPoint);
 
                         if (response.Ok)
                         {
@@ -311,41 +296,47 @@ public class P2pListenerService : IHostedService
                             };
                         }
 
-                        await WriteEnvelopeAsync(sslStream, P2pMessageType.Handshake, envelope.Seq, response);
-
-                        // 握手成功后立即下发策略
-                        if (response.Ok && policy != null && deviceIdHolder.Value != null)
+                        // 2.0 协议：握手成功直接回 policy_update 完整消息（儿童端不等待 handshake_ack）
+                        if (response.Ok && !string.IsNullOrEmpty(policyPushJson) && deviceIdHolder.Value != null)
                         {
-                            await WriteEnvelopeAsync(sslStream, P2pMessageType.PolicyUpdate, 0, policy);
+                            await WriteFrameAsync(sslStream, policyPushJson);
+                        }
+                        else if (!response.Ok)
+                        {
+                            _logger.LogWarning("[P2P] 握手被拒绝: {DeviceId}, 原因={Error}",
+                                req.DeviceId, response.Error);
                         }
                         break;
                     }
 
                 case P2pMessageType.UsageReport:
                     {
-                        var req = DeserializePayload<UsageReportRequest>(envelope.Payload);
-                        if (req == null) break;
-
-                        var ack = await _messageHandler.HandleUsageReport(req);
-                        await WriteEnvelopeAsync(sslStream, P2pMessageType.SyncAck, envelope.Seq, ack);
+                        if (envelope.Payload is JsonElement usagePayload)
+                        {
+                            var deviceId = GetPayloadString(usagePayload, "deviceId") ?? string.Empty;
+                            var recordsJson = GetPayloadString(usagePayload, "records") ?? "[]";
+                            var ack = await _messageHandler.HandleUsageReportLegacy(deviceId, recordsJson);
+                            await WriteFrameAsync(sslStream, _messageHandler.BuildSyncAckJson(ack.Synced));
+                        }
                         break;
                     }
 
                 case P2pMessageType.Heartbeat:
                     {
-                        var req = DeserializePayload<HeartbeatMessage>(envelope.Payload);
-                        if (req != null)
+                        // Android 心跳 payload 仅含 timestamp，deviceId 从握手会话中获取
+                        if (deviceIdHolder.Value != null)
                         {
-                            var ack = await _messageHandler.HandleHeartbeat(req);
+                            await _messageHandler.HandleHeartbeat(new HeartbeatMessage
+                            {
+                                DeviceId = deviceIdHolder.Value,
+                            });
 
-                            // 更新会话心跳时间
-                            if (deviceIdHolder.Value != null && _sessions.TryGetValue(deviceIdHolder.Value, out var session))
+                            if (_sessions.TryGetValue(deviceIdHolder.Value, out var session))
                             {
                                 session.LastHeartbeat = DateTime.UtcNow;
                             }
-
-                            await WriteEnvelopeAsync(sslStream, P2pMessageType.HeartbeatAck, envelope.Seq, ack);
                         }
+                        await WriteFrameAsync(sslStream, _messageHandler.BuildHeartbeatAckJson());
                         break;
                     }
 
@@ -463,6 +454,21 @@ public class P2pListenerService : IHostedService
         {
             return default;
         }
+    }
+
+    /// <summary>
+    /// 读取 payload 中的字符串字段（大小写容错：优先精确匹配，其次尝试 camelCase 变体）
+    /// </summary>
+    private static string? GetPayloadString(JsonElement payload, string name)
+    {
+        if (payload.TryGetProperty(name, out var value))
+        {
+            if (value.ValueKind == JsonValueKind.String)
+                return value.GetString();
+            if (value.ValueKind == JsonValueKind.Number)
+                return value.GetRawText();
+        }
+        return null;
     }
 }
 

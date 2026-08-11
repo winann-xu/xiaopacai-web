@@ -20,6 +20,7 @@ public class AppDbContext : DbContext
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<PairingInfo> PairingInfos => Set<PairingInfo>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<SystemConfig> SystemConfigs => Set<SystemConfig>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -157,6 +158,12 @@ public class AppDbContext : DbContext
              .WithMany(u => u.RefreshTokens)
              .HasForeignKey(rt => rt.UserId)
              .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // ---- SystemConfigs ----
+        modelBuilder.Entity<SystemConfig>(e =>
+        {
+            e.Property(c => c.UpdatedAt).HasDefaultValueSql("datetime('now')");
         });
     }
 }

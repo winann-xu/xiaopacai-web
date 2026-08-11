@@ -102,6 +102,11 @@ public class SqlCipherService : ISqlCipherService
         return _dbPassword;
     }
 
+    /// <summary>
+    /// 获取数据库文件完整路径
+    /// </summary>
+    public string GetDatabasePath() => _dbPath;
+
     // ========== private ==========
 
     private void LoadOrCreateKey()

@@ -16,4 +16,7 @@ public interface ISqlCipherService
 
     /// <summary>获取数据库加密密码</summary>
     string GetDbPassword();
+
+    /// <summary>获取数据库文件完整路径</summary>
+    string GetDatabasePath();
 }

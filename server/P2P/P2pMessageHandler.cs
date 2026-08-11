@@ -29,7 +29,7 @@ public class P2pMessageHandler
     /// <summary>
     /// 处理儿童端握手请求 — 设备注册/认证 + 返回当前策略
     /// </summary>
-    public async Task<(HandshakeResponse response, PolicyUpdateMessage? policy, int? dbDeviceId)>
+    public async Task<(HandshakeResponse response, string? policyPushJson, int? dbDeviceId)>
         HandleHandshake(HandshakeRequest req, string? peerFingerprint, string remoteEndPoint)
     {
         using var scope = _scopeFactory.CreateScope();
@@ -110,13 +110,12 @@ public class P2pMessageHandler
             // 重新加载带策略的设备
             device = await db.Devices.Include(d => d.Policy).FirstAsync(d => d.Id == device.Id);
 
-            var newPolicy = BuildPolicyUpdateMessage(device.Policy);
             return (new HandshakeResponse
             {
                 Ok = true,
                 PairStatus = "paired",
                 SessionId = Guid.NewGuid().ToString("N")[..12],
-            }, newPolicy, device.Id);
+            }, BuildPolicyPushMessage(device.DeviceId, device.Policy), device.Id);
         }
 
         // 2. 已有设备 — 检查配对状态
@@ -154,7 +153,7 @@ public class P2pMessageHandler
         await db.SaveChangesAsync();
 
         // 构建策略下发
-        var policyMsg = BuildPolicyUpdateMessage(device.Policy);
+        var policyMsg = BuildPolicyPushMessage(device.DeviceId, device.Policy);
 
         _logger.LogInformation("[P2P-Handshake] 设备已连接: {DeviceId} ({DeviceName}), status={PairStatus}",
             req.DeviceId, req.DeviceName, device.PairStatus);
@@ -300,6 +299,271 @@ public class P2pMessageHandler
         }
     }
 
+    // ========== 2.0 协议格式构建（兼容 Android 儿童端） ==========
+
+    /// <summary>
+    /// 构建 2.0 policy_update 完整消息 JSON（payload.policies 为 PolicyConfig JSON 字符串数组）
+    /// </summary>
+    public string BuildPolicyPushMessage(string deviceId, Policy? policy)
+    {
+        var policies = BuildPolicyConfigItems(deviceId, policy);
+        var message = new Dictionary<string, object>
+        {
+            ["type"] = P2pMessageType.PolicyUpdate,
+            ["payload"] = new Dictionary<string, object>
+            {
+                ["deviceId"] = deviceId,
+                ["policies"] = policies,
+                ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            },
+        };
+        return JsonSerializer.Serialize(message);
+    }
+
+    /// <summary>
+    /// 将 Web 端 Policy 模型转换为 2.0 PolicyConfig JSON 字符串数组（5 类策略）
+    /// </summary>
+    public List<string> BuildPolicyConfigItems(string deviceId, Policy? policy)
+    {
+        var version = Interlocked.Increment(ref _policyVersionCounter);
+        var items = new List<string>();
+        if (policy == null)
+        {
+            items.Add(JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["policyType"] = "daily_limit",
+                ["deviceId"] = deviceId,
+                ["isActive"] = true,
+                ["version"] = version,
+                ["limitMinutes"] = 120,
+                ["label"] = "每日限额",
+            }));
+            return items;
+        }
+
+        // 每日限额
+        items.Add(JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["policyType"] = "daily_limit",
+            ["deviceId"] = deviceId,
+            ["isActive"] = true,
+            ["version"] = version,
+            ["limitMinutes"] = policy.DailyLimitMinutes,
+            ["label"] = "每日限额",
+        }));
+
+        // 就寝时段
+        if (!string.IsNullOrEmpty(policy.BedtimeStart) && !string.IsNullOrEmpty(policy.BedtimeEnd))
+        {
+            items.Add(JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["policyType"] = "sleep_time",
+                ["deviceId"] = deviceId,
+                ["isActive"] = true,
+                ["version"] = version,
+                ["sleepStart"] = policy.BedtimeStart,
+                ["sleepEnd"] = policy.BedtimeEnd,
+                ["label"] = "就寝时段",
+            }));
+        }
+
+        // 分类限额（仅启用即 >=0 的项）
+        AddCategoryLimit(items, deviceId, version, "game", policy.CategoryGameLimit);
+        AddCategoryLimit(items, deviceId, version, "social", policy.CategorySocialLimit);
+        AddCategoryLimit(items, deviceId, version, "video", policy.CategoryVideoLimit);
+        AddCategoryLimit(items, deviceId, version, "learning", policy.CategoryLearningLimit);
+
+        // 白名单
+        var whitelist = DeserializeStringList(policy.WhitelistApps);
+        if (whitelist is { Count: > 0 })
+        {
+            items.Add(JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["policyType"] = "whitelist",
+                ["deviceId"] = deviceId,
+                ["isActive"] = true,
+                ["version"] = version,
+                ["packageNames"] = whitelist,
+                ["label"] = "白名单",
+            }));
+        }
+
+        // 黑名单
+        var blacklist = DeserializeStringList(policy.BlacklistApps);
+        if (blacklist is { Count: > 0 })
+        {
+            items.Add(JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["policyType"] = "blacklist",
+                ["deviceId"] = deviceId,
+                ["isActive"] = true,
+                ["version"] = version,
+                ["packageNames"] = blacklist,
+                ["label"] = "黑名单",
+            }));
+        }
+
+        return items;
+    }
+
+    private static void AddCategoryLimit(List<string> items, string deviceId, long version,
+        string category, int minutes)
+    {
+        if (minutes < 0) return;
+        items.Add(JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["policyType"] = "category_limit",
+            ["deviceId"] = deviceId,
+            ["isActive"] = true,
+            ["version"] = version,
+            ["category"] = category,
+            ["categoryLimitMinutes"] = minutes,
+            ["label"] = category switch
+            {
+                "game" => "游戏限额",
+                "social" => "社交限额",
+                "video" => "视频限额",
+                "learning" => "学习限额",
+                _ => "分类限额",
+            },
+        }));
+    }
+
+    /// <summary>
+    /// 构建 2.0 announcement_push 完整消息 JSON（payload.announcements 数组）
+    /// </summary>
+    public string BuildAnnouncementPushJson(Announcement announcement, string action)
+    {
+        var announcements = new List<Dictionary<string, object>>
+        {
+            new()
+            {
+                ["id"] = announcement.Id,
+                ["title"] = announcement.Title,
+                ["content"] = announcement.Content,
+                ["priority"] = announcement.Priority switch
+                {
+                    "urgent" => 2,
+                    "important" => 1,
+                    _ => 0,
+                },
+                ["created_at"] = new DateTimeOffset(announcement.CreatedAt).ToUnixTimeSeconds(),
+                ["expires_at"] = announcement.ValidUntil.HasValue
+                    ? new DateTimeOffset(announcement.ValidUntil.Value).ToUnixTimeSeconds()
+                    : 0L,
+            },
+        };
+
+        var message = new Dictionary<string, object>
+        {
+            ["type"] = P2pMessageType.AnnouncementPush,
+            ["payload"] = new Dictionary<string, object>
+            {
+                ["announcements"] = announcements,
+                ["action"] = action,
+                ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            },
+        };
+        return JsonSerializer.Serialize(message);
+    }
+
+    /// <summary>
+    /// 构建 2.0 sync_ack 完整消息 JSON
+    /// </summary>
+    public string BuildSyncAckJson(int syncedCount)
+    {
+        var message = new Dictionary<string, object>
+        {
+            ["type"] = P2pMessageType.SyncAck,
+            ["payload"] = new Dictionary<string, object>
+            {
+                ["syncedCount"] = syncedCount,
+                ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            },
+        };
+        return JsonSerializer.Serialize(message);
+    }
+
+    /// <summary>
+    /// 构建 2.0 heartbeat_ack 完整消息 JSON
+    /// </summary>
+    public string BuildHeartbeatAckJson()
+        => $"{{\"type\":\"{P2pMessageType.HeartbeatAck}\",\"payload\":{{}}}}";
+
+    /// <summary>
+    /// 处理 2.0 儿童端 usage_report（records 为 JSON 字符串，元素含 packageName/appName/date/totalMinutes/category）
+    /// </summary>
+    public async Task<SyncAckMessage> HandleUsageReportLegacy(string deviceId, string recordsJson)
+    {
+        var request = new UsageReportRequest
+        {
+            DeviceId = deviceId,
+            Records = ParseLegacyRecords(recordsJson),
+        };
+        return await HandleUsageReport(request);
+    }
+
+    private static List<UsageRecordItem> ParseLegacyRecords(string recordsJson)
+    {
+        var result = new List<UsageRecordItem>();
+        if (string.IsNullOrWhiteSpace(recordsJson)) return result;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(recordsJson);
+            foreach (var element in doc.RootElement.EnumerateArray())
+            {
+                var item = new UsageRecordItem
+                {
+                    AppPackage = GetString(element, "packageName") ?? string.Empty,
+                    AppName = GetString(element, "appName") ?? string.Empty,
+                    Category = GetString(element, "category") ?? "other",
+                    IsBlocked = GetBool(element, "isBlocked"),
+                };
+
+                // date: YYYY-MM-DD；totalMinutes: 分钟
+                var date = GetString(element, "date");
+                if (!string.IsNullOrEmpty(date))
+                    item.StartTime = date.Length >= 10 ? date[..10] + "T00:00:00Z" : date;
+
+                var minutes = GetLong(element, "totalMinutes");
+                item.DurationSeconds = (int)Math.Min(int.MaxValue, minutes * 60);
+                result.Add(item);
+            }
+        }
+        catch (JsonException)
+        {
+            // 忽略非法记录
+        }
+        return result;
+    }
+
+    private static string? GetString(JsonElement element, string name)
+    {
+        if (element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+            return value.GetString();
+        if (element.TryGetProperty(name, out var num) && num.ValueKind == JsonValueKind.Number)
+            return num.GetRawText();
+        return null;
+    }
+
+    private static bool GetBool(JsonElement element, string name)
+    {
+        return element.TryGetProperty(name, out var value) &&
+               value.ValueKind == JsonValueKind.True;
+    }
+
+    private static long GetLong(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var value)) return 0;
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number when value.TryGetInt64(out var l) => l,
+            JsonValueKind.String when long.TryParse(value.GetString(), out var l) => l,
+            _ => 0,
+        };
+    }
+
     // ========== 公告推送 ==========
 
     /// <summary>
@@ -310,17 +574,7 @@ public class P2pMessageHandler
     {
         if (p2pService == null) return;
 
-        var msg = new AnnouncementPushMessage
-        {
-            Id = announcement.Id,
-            Title = announcement.Title,
-            Content = announcement.Content,
-            Priority = announcement.Priority,
-            Action = action,
-            ValidFrom = announcement.ValidFrom?.ToString("o"),
-            ValidUntil = announcement.ValidUntil?.ToString("o"),
-            PublishedAt = announcement.PublishedAt?.ToString("o"),
-        };
+        var json = BuildAnnouncementPushJson(announcement, action);
 
         if (announcement.TargetDeviceId != null)
         {
@@ -330,15 +584,13 @@ public class P2pMessageHandler
             var device = await db.Devices.FindAsync(announcement.TargetDeviceId.Value);
             if (device != null)
             {
-                await p2pService.SendToDevice(device.DeviceId, P2pMessageType.AnnouncementPush, msg);
+                await p2pService.SendToDevice(device.DeviceId, json);
                 _logger.LogInformation("[P2P-Announce] 公告已推送到设备 {DeviceId}: {Title}", device.DeviceId, announcement.Title);
             }
         }
         else
         {
             // 广播到所有在线设备
-            var sessions = p2pService.ActiveSessionCount; // 无法直接遍历，用另一个方式
-            // 改为：遍历所有配对设备并尝试发送
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var devices = await db.Devices
@@ -348,7 +600,7 @@ public class P2pMessageHandler
 
             foreach (var deviceId in devices)
             {
-                await p2pService.SendToDevice(deviceId, P2pMessageType.AnnouncementPush, msg);
+                await p2pService.SendToDevice(deviceId, json);
             }
             _logger.LogInformation("[P2P-Announce] 公告已广播到 {Count} 个设备: {Title}", devices.Count, announcement.Title);
         }
