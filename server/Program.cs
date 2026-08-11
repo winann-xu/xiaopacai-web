@@ -154,15 +154,6 @@ app.MapControllers();
 // SignalR Hub 路由（P3 阶段激活）
 // app.MapHub<DeviceHub>("/hubs/device");
 
-// ========== 健康检查端点 ==========
-app.MapGet("/api/health", () => Results.Ok(new
-{
-    status = "healthy",
-    version = "3.0.0-p2",
-    timestamp = DateTime.UtcNow.ToString("O"),
-    service = "xiaopacai-web"
-}));
-
 // ========== 启动 ==========
 var urls = app.Configuration["Urls"] ?? "http://127.0.0.1:5000";
 app.Urls.Add(urls);
