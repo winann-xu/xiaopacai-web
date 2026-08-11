@@ -321,6 +321,10 @@ public class AdminController : ControllerBase
     {
         if (file == null || file.Length == 0)
             return BadRequest(new { error = "请选择备份文件" });
+        if (file.Length > 10 * 1024 * 1024)
+            return BadRequest(new { error = "备份文件过大（上限 10MB）" });
+        if (!file.FileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { error = "仅支持 .json 备份文件" });
 
         using var reader = new StreamReader(file.OpenReadStream());
         var json = await reader.ReadToEndAsync();

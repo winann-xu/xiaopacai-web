@@ -138,6 +138,14 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<P2pListenerService
 
 var app = builder.Build();
 
+// ========== 生产安全校验：禁止弱 JWT 密钥 ==========
+if (app.Environment.IsProduction() &&
+    (jwtSecretKey.Length < 32 || jwtSecretKey.Contains("CHANGE-ME") || jwtSecretKey.Contains("dev-secret")))
+{
+    throw new InvalidOperationException(
+        "生产环境必须配置强 Jwt:SecretKey（≥32 随机字符，禁止默认/占位值）");
+}
+
 // ========== 数据库初始化（密钥 + 迁移 + 种子数据） ==========
 await app.Services.InitializeDatabaseAsync();
 

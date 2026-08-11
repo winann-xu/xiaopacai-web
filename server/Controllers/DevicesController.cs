@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.Security;
 
 namespace XiaopacaiWeb.Controllers;
 
@@ -128,6 +129,10 @@ public class DevicesController : ControllerBase
     [HttpPost("pairing-code")]
     public async Task<IActionResult> GeneratePairingCode()
     {
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"pairing-code:{clientIp}", 5, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
+
         var pairCode = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
         var expiresAt = DateTime.UtcNow.AddMinutes(5);
 
@@ -158,6 +163,10 @@ public class DevicesController : ControllerBase
     [HttpPost("pair")]
     public async Task<IActionResult> Pair([FromBody] ManualPairRequest request)
     {
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"pair:{clientIp}", 5, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
+
         if (string.IsNullOrWhiteSpace(request.PairingCode))
             return BadRequest(new { error = "配对码不能为空" });
 

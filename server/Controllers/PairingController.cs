@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.Security;
 
 namespace XiaopacaiWeb.Controllers;
 
@@ -31,6 +32,10 @@ public class PairingController : ControllerBase
     [HttpPost("generate-code")]
     public async Task<IActionResult> GeneratePairCode([FromBody] GeneratePairCodeRequest? request)
     {
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"pairing-code:{clientIp}", 5, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
+
         var pairCode = GenerateRandomCode();
 
         var deviceId = request?.DeviceId ?? 0;
@@ -65,6 +70,10 @@ public class PairingController : ControllerBase
     [HttpPost("verify")]
     public async Task<IActionResult> VerifyPairCode([FromBody] VerifyPairCodeRequest request)
     {
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"pairing-verify:{clientIp}", 10, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
+
         // 查找有效的 pending 配对码
         var pairingInfo = await _db.PairingInfos
             .Where(p => p.PairCode == request.PairCode && p.PairStatus == "pending")
