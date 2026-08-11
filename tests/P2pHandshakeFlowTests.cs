@@ -132,10 +132,11 @@ public class P2pHandshakeFlowTests : IDisposable
         Assert.NotNull(response.SessionId);
         Assert.NotNull(dbDeviceId);
 
-        // 策略随握手返回（默认 120 分钟）
+        // 策略随握手返回（2.0 policy_update JSON，默认 120 分钟 full）
         Assert.NotNull(policy);
-        Assert.Equal(120, policy!.DailyLimit);
-        Assert.Equal("full_lock", policy.OvertimeAction);
+        var dailyLimit = ExtractDailyLimit(policy!);
+        Assert.Equal(120, dailyLimit.LimitMinutes);
+        Assert.Equal("full", dailyLimit.RestrictMode);
 
         // 设备入库
         var db = CreateDb();
@@ -224,11 +225,12 @@ public class P2pHandshakeFlowTests : IDisposable
         Assert.Equal("paired", response.PairStatus);
         Assert.Equal(device.Id, dbDeviceId);
 
-        // 下发数据库中的自定义策略
+        // 下发数据库中的自定义策略（2.0 policy_update JSON）
         Assert.NotNull(policy);
-        Assert.Equal(180, policy!.DailyLimit);
-        Assert.Equal("warn_only", policy.OvertimeAction);
-        Assert.Equal(45, policy.CategoryLimit!.Game);
+        var customPolicy = ExtractDailyLimit(policy!);
+        Assert.Equal(180, customPolicy.LimitMinutes);
+        Assert.Equal("warn", customPolicy.RestrictMode);
+        Assert.Equal(45, ExtractCategoryLimit(policy!, "game"));
 
         // 状态更新（用全新上下文断言，避免读到跟踪的旧状态）
         var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "existing-dev");
@@ -551,6 +553,47 @@ public class P2pHandshakeFlowTests : IDisposable
     }
 
     // ==================== 公告推送 ====================
+
+    /// <summary>
+    /// 从 2.0 policy_update JSON 中提取 daily_limit 策略
+    /// </summary>
+    private static (int LimitMinutes, string RestrictMode) ExtractDailyLimit(string policyJson)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(policyJson);
+        var policies = doc.RootElement.GetProperty("payload").GetProperty("policies");
+        foreach (var item in policies.EnumerateArray())
+        {
+            using var policyDoc = System.Text.Json.JsonDocument.Parse(item.GetString()!);
+            if (policyDoc.RootElement.GetProperty("policyType").GetString() == "daily_limit")
+            {
+                return (
+                    policyDoc.RootElement.GetProperty("limitMinutes").GetInt32(),
+                    policyDoc.RootElement.GetProperty("restrictMode").GetString() ?? "full"
+                );
+            }
+        }
+        return (0, "none");
+    }
+
+    /// <summary>
+    /// 从 2.0 policy_update JSON 中提取指定分类限额
+    /// </summary>
+    private static int ExtractCategoryLimit(string policyJson, string category)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(policyJson);
+        var policies = doc.RootElement.GetProperty("payload").GetProperty("policies");
+        foreach (var item in policies.EnumerateArray())
+        {
+            using var policyDoc = System.Text.Json.JsonDocument.Parse(item.GetString()!);
+            var root = policyDoc.RootElement;
+            if (root.GetProperty("policyType").GetString() == "category_limit" &&
+                root.GetProperty("category").GetString() == category)
+            {
+                return root.GetProperty("categoryLimitMinutes").GetInt32();
+            }
+        }
+        return -1;
+    }
 
     [Fact]
     public async Task PushAnnouncement_NullP2pService_NoOp()

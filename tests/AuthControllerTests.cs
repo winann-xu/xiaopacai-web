@@ -102,11 +102,19 @@ public class AuthControllerTests
 
         // Assert
         var okResult = Assert.IsType<OkObjectResult>(result);
-        var authResponse = Assert.IsType<AuthResponse>(okResult.Value);
-        Assert.Equal("access-token-value", authResponse.AccessToken);
-        Assert.Equal("refresh-token-value", authResponse.RefreshToken);
-        Assert.Equal("Bearer", authResponse.TokenType);
-        Assert.Equal("admin", authResponse.Profile.Username);
+        // 登录响应为匿名对象，同时含 profile 与 user 字段（兼容新旧前端）
+        var json = System.Text.Json.JsonSerializer.Serialize(okResult.Value,
+            new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+            });
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        Assert.Equal("access-token-value", root.GetProperty("accessToken").GetString());
+        Assert.Equal("refresh-token-value", root.GetProperty("refreshToken").GetString());
+        Assert.Equal("Bearer", root.GetProperty("tokenType").GetString());
+        Assert.Equal("admin", root.GetProperty("profile").GetProperty("username").GetString());
+        Assert.Equal("admin", root.GetProperty("user").GetProperty("username").GetString());
     }
 
     [Fact]

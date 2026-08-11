@@ -329,15 +329,16 @@ public class P2pMessageHandler
         var items = new List<string>();
         if (policy == null)
         {
-            items.Add(JsonSerializer.Serialize(new Dictionary<string, object>
-            {
-                ["policyType"] = "daily_limit",
-                ["deviceId"] = deviceId,
-                ["isActive"] = true,
-                ["version"] = version,
-                ["limitMinutes"] = 120,
-                ["label"] = "每日限额",
-            }));
+        items.Add(JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["policyType"] = "daily_limit",
+            ["deviceId"] = deviceId,
+            ["isActive"] = true,
+            ["version"] = version,
+            ["limitMinutes"] = 120,
+            ["restrictMode"] = "full",
+            ["label"] = "每日限额",
+        }));
             return items;
         }
 
@@ -349,6 +350,12 @@ public class P2pMessageHandler
             ["isActive"] = true,
             ["version"] = version,
             ["limitMinutes"] = policy.DailyLimitMinutes,
+            ["restrictMode"] = policy.OvertimeAction switch
+            {
+                "partial_lock" => "partial",
+                "warn_only" => "warn",
+                _ => "full",
+            },
             ["label"] = "每日限额",
         }));
 
