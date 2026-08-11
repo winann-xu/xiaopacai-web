@@ -183,6 +183,22 @@ public class P2pMessageHandler
             device.PairCode = req.PairCode;
         }
 
+        // [FIX] 已存在设备带配对码握手：将配对码关联到设备（含已配对设备重连），
+        // 使 /api/relay/register（配对码路径）能正确绑定 devices.owner_user_id，中继路由才能工作
+        if (!string.IsNullOrEmpty(req.PairCode))
+        {
+            var linkedPairing = await db.PairingInfos
+                .Where(p => p.PairCode == req.PairCode)
+                .OrderByDescending(p => p.CreatedAt)
+                .FirstOrDefaultAsync();
+            if (linkedPairing != null)
+            {
+                linkedPairing.DeviceId = device.Id;
+                linkedPairing.PairStatus = "confirmed";
+                linkedPairing.ConfirmedAt = DateTime.UtcNow;
+            }
+        }
+
         // 更新证书指纹
         if (!string.IsNullOrEmpty(peerFingerprint))
             device.CertFingerprint = peerFingerprint;
