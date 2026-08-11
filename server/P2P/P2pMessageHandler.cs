@@ -772,9 +772,14 @@ public class P2pMessageHandler
     /// </summary>
     private static async Task UpdateDailySummary(AppDbContext db, int deviceId, string summaryDate)
     {
-        var records = await db.UsageRecords
-            .Where(r => r.DeviceId == deviceId && r.StartTime.ToString("yyyy-MM-dd") == summaryDate)
+        // SQLite 无法翻译 StartTime.ToString("yyyy-MM-dd")，先取该设备全部记录再内存过滤
+        // （[TASK-OPT-12-P4-DEEPEN] 修复：usage_report 处理异常导致中继转发中断）
+        var deviceRecords = await db.UsageRecords
+            .Where(r => r.DeviceId == deviceId)
             .ToListAsync();
+        var records = deviceRecords
+            .Where(r => r.StartTime.ToString("yyyy-MM-dd") == summaryDate)
+            .ToList();
 
         if (records.Count == 0) return;
 
