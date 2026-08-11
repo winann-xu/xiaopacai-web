@@ -1,6 +1,6 @@
 {
   "project": "xiaopacai-web",
-  "version": "3.0.0-opt12-p1",
+  "version": "3.0.0-opt12-relay-e2e",
   "current_phase": "OPT12-P1",
   "opt12": {
     "current_phase": "P1",
@@ -153,6 +153,6 @@
       ]
     }
   },
-  "last_updated": "2026-08-11T09:10:00Z",
-  "note": "OPT12 集成完成：Claude P1/P4 + Codex WEB-BASE/WEB-BASE2/OPT-9 已合并（82cd8cd + 66dc3fc + 709fe6a），dotnet test 178/178 通过，npm build 通过，既有库补表引导（diagnostics/relay_sessions/devices 新列）已入库。待办（Claude P4 深化）：P2P 握手写入 relay_sessions 与中继路由、policy_push 携带 app_categories、设备级 Token 鉴权、Ticket 失败限速、审计日志落库。"
+  "last_updated": "2026-08-11T10:40:00Z",
+  "note": "OPT12 中继 E2E 全链路通过：儿童端 usage_report 经 Web 中继投递到家长端（relay_sessions + RelayMessageToParent + SendToDevice）。Claude P4 深化（1b80aaa + def956f）+ Codex 修复（900b8da：UpdateDailySummary SQLite 翻译）已并入；dotnet test 178/178 + npm build 通过；dist/xiaopacai-web3 发布版已更新。遗留：Web P2P 未处理 diagnostics_report（儿童端诊断经 Web 链路会被丢弃）；relay/register 重复调用会累积会话行（建议 upsert 清理）。"
 }
