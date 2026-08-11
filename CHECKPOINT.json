@@ -153,6 +153,6 @@
       ]
     }
   },
-  "last_updated": "2026-08-11T10:40:00Z",
-  "note": "OPT12 中继 E2E 全链路通过：儿童端 usage_report 经 Web 中继投递到家长端（relay_sessions + RelayMessageToParent + SendToDevice）。Claude P4 深化（1b80aaa + def956f）+ Codex 修复（900b8da：UpdateDailySummary SQLite 翻译）已并入；dotnet test 178/178 + npm build 通过；dist/xiaopacai-web3 发布版已更新。遗留：Web P2P 未处理 diagnostics_report（儿童端诊断经 Web 链路会被丢弃）；relay/register 重复调用会累积会话行（建议 upsert 清理）。"
+  "last_updated": "2026-08-11T11:05:00Z",
+  "note": "OPT12 全部完成并验证：中继 E2E 全链路（usage_report 经 Web 投递到家长端）、诊断 REST 闭环、静态文件托管（/ 与 /login 200）、30 分钟长稳 0 异常；dotnet test 178/178 + npm build 通过；dist/xiaopacai-web3 发布版已更新。Codex 修复：900b8da（UpdateDailySummary SQLite 翻译）、ebc48fe（静态文件服务+SPA 回退）。遗留：Web P2P 未处理 diagnostics_report；relay/register 重复调用累积会话行（建议 upsert）。"
 }
