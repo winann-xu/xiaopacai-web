@@ -29,6 +29,7 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'assets',
     sourcemap: false,
+    chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
         // 分包优化：将大型第三方库拆分为独立 chunk，减小首屏体积
