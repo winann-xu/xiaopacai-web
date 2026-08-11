@@ -42,7 +42,7 @@ public class PairingController : ControllerBase
 
         var pairingInfo = new PairingInfo
         {
-            DeviceId = deviceId > 0 ? deviceId : (int?)null, // null 表示尚未分配设备
+            DeviceId = deviceId > 0 ? deviceId : null, // NULL 表示尚未分配设备（避免 FK 约束失败）
             PairCode = pairCode,
             PairMethod = request?.Method ?? "manual",
             PairStatus = "pending",

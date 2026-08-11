@@ -47,6 +47,13 @@ public class Device
 
     public DateTime? LastSeenAt { get; set; }
 
+    /// <summary>绑定家长账号（OPT12 需求 3，配对确认时绑定，可空）</summary>
+    [MaxLength(64)]
+    public string? OwnerUserId { get; set; }
+
+    /// <summary>应用分类配置（OPT12 需求 1，JSON 数组，随 policy_push 下发）</summary>
+    public string? AppCategories { get; set; }
+
     public bool IsActive { get; set; } = true;
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

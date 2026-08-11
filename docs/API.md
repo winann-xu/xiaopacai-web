@@ -1,6 +1,6 @@
 # 小趴菜 Web 3.0 API 文档
 
-版本：3.0.0-p5 | 基路径：`http://127.0.0.1:5000/api`
+版本：3.0.0-opt12-p1 | 基路径：`http://127.0.0.1:5000/api`
 
 ## 认证说明
 
@@ -74,6 +74,62 @@
 { "status": "verified", "deviceId": "abc123" }
 // 响应 400（配对码错误/过期）
 { "status": "rejected", "reason": "配对码错误或已过期" }
+```
+
+### 4. OPT12 扩展接口（协议与数据模型扩展，P1 已实现）
+
+#### 扫码登录（需求 10）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| POST | `/api/auth/login-ticket` | 无 | 生成一次性扫码登录 Ticket（90 秒有效，状态 pending） |
+| GET | `/api/auth/login-ticket/{ticket}` | 无 | 轮询状态 pending/confirmed/expired；confirmed 时首次返回 JWT |
+| POST | `/api/auth/login-ticket/{ticket}/confirm` | Bearer | 家长端 APP 确认扫码登录 |
+
+#### 忘记密码重置（需求 12）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| POST | `/api/auth/reset-ticket` | 无 | 生成一次性重置 Ticket（10 分钟有效，绑定目标账号） |
+| GET | `/api/auth/reset-ticket/{ticket}` | 无 | 轮询状态 pending/confirmed/expired |
+| POST | `/api/auth/reset-ticket/{ticket}/confirm` | Bearer | 家长端 APP 确认身份（须与目标账号一致） |
+| POST | `/api/auth/reset-ticket/{ticket}/reset` | 无（凭证=已确认 Ticket） | 设置新密码，吊销全部 Refresh Token |
+
+**POST /api/auth/reset-ticket**
+```json
+// 请求
+{ "username": "parent001" }
+// 响应 200
+{ "ticket": "a1b2c3...", "status": "pending", "expiresAt": "2026-08-11T10:00:00Z", "expiresInSeconds": 600 }
+```
+
+#### 故障诊断（需求 5）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| POST | `/api/diagnostics` | 无 | 儿童端上报诊断信息（device_id 必填，其余可选） |
+| GET | `/api/admin/diagnostics` | AdminOnly | 列表/筛选（?deviceId=&from=&to=&limit=） |
+| GET | `/api/admin/diagnostics/export` | AdminOnly | 导出筛选结果为 JSON 文件 |
+
+#### 云端中继（需求 3）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| GET | `/api/relay/sessions` | AdminOnly | 中继会话列表（?status=&role=&limit=） |
+
+#### 应用分类（需求 1）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| GET | `/api/devices/{id}/app-categories` | Bearer (ParentOrAdmin) | 查看设备应用分类列表 |
+| PUT | `/api/devices/{id}/app-categories` | Bearer (ParentOrAdmin) | 全量保存应用分类（category 限 game/social/video/learning/other） |
+
+**PUT /api/devices/{id}/app-categories**
+```json
+// 请求
+{ "categories": [ { "packageName": "com.game.xxx", "appName": "某游戏", "category": "game" } ] }
+// 响应 200
+{ "deviceId": "XP-...", "categories": [...], "message": "应用分类已保存" }
 ```
 
 ## 规划中接口（前端当前使用 Mock 数据）

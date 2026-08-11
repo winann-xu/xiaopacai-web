@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.DTOs;
+using XiaopacaiWeb.Models;
 using XiaopacaiWeb.Services;
 
 namespace XiaopacaiWeb.Controllers;
@@ -19,13 +20,15 @@ public class AuthController : ControllerBase
     private readonly AppDbContext _db;
     private readonly IPasswordHasher _hasher;
     private readonly IJwtService _jwt;
+    private readonly TicketStore _tickets;
     private readonly ILogger<AuthController> _logger;
 
-    public AuthController(AppDbContext db, IPasswordHasher hasher, IJwtService jwt, ILogger<AuthController> logger)
+    public AuthController(AppDbContext db, IPasswordHasher hasher, IJwtService jwt, TicketStore tickets, ILogger<AuthController> logger)
     {
         _db = db;
         _hasher = hasher;
         _jwt = jwt;
+        _tickets = tickets;
         _logger = logger;
     }
 
@@ -207,7 +210,266 @@ public class AuthController : ControllerBase
         });
     }
 
+    // ========== 扫码登录 Ticket（OPT12 需求 10） ==========
+
+    /// <summary>
+    /// POST /api/auth/login-ticket — 生成一次性扫码登录 Ticket（90 秒有效，状态 pending）
+    /// 未登录可调用；前端展示二维码（内容为 ticket URL），家长端 APP 扫码后确认。
+    /// </summary>
+    [HttpPost("login-ticket")]
+    [AllowAnonymous]
+    public IActionResult CreateLoginTicket([FromBody] LoginTicketRequest? request)
+    {
+        var entry = _tickets.CreateLoginTicket(request?.ClientId);
+        _logger.LogInformation("[Auth] 扫码登录 Ticket 已生成: {Ticket}", entry.Ticket);
+        return Ok(BuildLoginTicketResponse(entry));
+    }
+
+    /// <summary>
+    /// GET /api/auth/login-ticket/{ticket} — 轮询扫码登录状态
+    /// 状态：pending（等待确认）/ confirmed（已确认，首次返回 JWT 并一次性消费）/ expired
+    /// </summary>
+    [HttpGet("login-ticket/{ticket}")]
+    [AllowAnonymous]
+    public async Task<IActionResult> PollLoginTicket(string ticket)
+    {
+        var entry = _tickets.Get(ticket);
+        if (entry == null || entry.Kind != "login")
+            return Ok(new LoginTicketResponse
+            {
+                Ticket = ticket,
+                Status = TicketStore.StatusExpired,
+                ExpiresAt = DateTime.UtcNow,
+                ExpiresInSeconds = 0,
+            });
+
+        var response = BuildLoginTicketResponse(entry);
+
+        // 已确认且未消费：签发 JWT 并一次性消费
+        if (entry.Status == TicketStore.StatusConfirmed
+            && entry.ConfirmedByUserId != null
+            && !entry.Consumed)
+        {
+            var user = await _db.Users.FindAsync(entry.ConfirmedByUserId.Value);
+            if (user != null && user.IsActive)
+            {
+                var (accessToken, refreshToken, accessExpiry, refreshExpiry) =
+                    _jwt.GenerateTokens(user.Id, user.Username, user.Role);
+                await _jwt.StoreRefreshToken(user.Id, refreshToken, refreshExpiry);
+
+                _tickets.Consume(ticket);
+
+                response.Auth = new AuthResponse
+                {
+                    AccessToken = accessToken,
+                    RefreshToken = refreshToken,
+                    ExpiresAt = accessExpiry,
+                    TokenType = "Bearer",
+                    Profile = BuildProfile(user),
+                };
+
+                _logger.LogInformation("[Auth] 扫码登录成功: {U}", user.Username);
+            }
+        }
+
+        return Ok(response);
+    }
+
+    /// <summary>
+    /// POST /api/auth/login-ticket/{ticket}/confirm — 家长端 APP 确认扫码登录（需登录态）
+    /// </summary>
+    [HttpPost("login-ticket/{ticket}/confirm")]
+    [Authorize]
+    public async Task<IActionResult> ConfirmLoginTicket(string ticket, [FromBody] LoginTicketConfirmRequest? request)
+    {
+        var userId = GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var user = await _db.Users.FindAsync(userId.Value);
+        if (user == null)
+            return NotFound(new { error = "用户不存在" });
+
+        if (!_tickets.Confirm(ticket, userId.Value, user.Username))
+        {
+            var entry = _tickets.Get(ticket);
+            if (entry == null || entry.Kind != "login")
+                return NotFound(new { error = "Ticket 无效" });
+            if (entry.Status == TicketStore.StatusExpired)
+                return BadRequest(new { error = "Ticket 已过期" });
+            return BadRequest(new { error = "Ticket 已使用" });
+        }
+
+        _logger.LogInformation("[Auth] 扫码登录 Ticket 已确认: {Ticket} by userId={U}", ticket, userId);
+        return Ok(new { status = TicketStore.StatusConfirmed, message = "已确认，网页端即将自动登录" });
+    }
+
+    // ========== 忘记密码重置 Ticket（OPT12 需求 12） ==========
+
+    /// <summary>
+    /// POST /api/auth/reset-ticket — 生成一次性重置 Ticket（10 分钟有效，状态 pending）
+    /// 未登录可调用；账号不存在时同样返回 Ticket（不泄露账号存在性），确认环节兜底。
+    /// </summary>
+    [HttpPost("reset-ticket")]
+    [AllowAnonymous]
+    public async Task<IActionResult> CreateResetTicket([FromBody] ResetTicketRequest request)
+    {
+        if (!ModelState.IsValid)
+            return BadRequest(ModelState);
+
+        // 校验账号是否存在（仅记录日志，不向调用方泄露）
+        var exists = await _db.Users.AnyAsync(u => u.Username == request.Username && u.IsActive);
+        if (!exists)
+        {
+            _logger.LogWarning("[Auth] 重置 Ticket 生成 — 目标账号不存在: {U}", request.Username);
+        }
+
+        var entry = _tickets.CreateResetTicket(request.Username);
+        _logger.LogInformation("[Auth] 重置 Ticket 已生成: {Ticket} (target={U})", entry.Ticket, request.Username);
+        return Ok(BuildResetTicketResponse(entry));
+    }
+
+    /// <summary>
+    /// GET /api/auth/reset-ticket/{ticket} — 轮询重置 Ticket 状态
+    /// 状态：pending / confirmed / expired
+    /// </summary>
+    [HttpGet("reset-ticket/{ticket}")]
+    [AllowAnonymous]
+    public IActionResult PollResetTicket(string ticket)
+    {
+        var entry = _tickets.Get(ticket);
+        if (entry == null || entry.Kind != "reset")
+            return Ok(new ResetTicketResponse
+            {
+                Ticket = ticket,
+                Status = TicketStore.StatusExpired,
+                ExpiresAt = DateTime.UtcNow,
+                ExpiresInSeconds = 0,
+            });
+
+        return Ok(BuildResetTicketResponse(entry));
+    }
+
+    /// <summary>
+    /// POST /api/auth/reset-ticket/{ticket}/confirm — 家长端 APP 确认重置身份（需登录态）
+    /// 确认者账号必须与 Ticket 目标账号一致。
+    /// </summary>
+    [HttpPost("reset-ticket/{ticket}/confirm")]
+    [Authorize]
+    public async Task<IActionResult> ConfirmResetTicket(string ticket, [FromBody] ResetTicketConfirmRequest? request)
+    {
+        var userId = GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var user = await _db.Users.FindAsync(userId.Value);
+        if (user == null)
+            return NotFound(new { error = "用户不存在" });
+
+        if (!_tickets.Confirm(ticket, userId.Value, user.Username))
+        {
+            var entry = _tickets.Get(ticket);
+            if (entry == null || entry.Kind != "reset")
+                return NotFound(new { error = "Ticket 无效" });
+            if (entry.Status == TicketStore.StatusExpired)
+                return BadRequest(new { error = "Ticket 已过期" });
+            if (entry.Status == TicketStore.StatusConfirmed)
+                return BadRequest(new { error = "Ticket 已确认" });
+            return BadRequest(new { error = "确认账号与目标账号不一致" });
+        }
+
+        _logger.LogInformation("[Auth] 重置 Ticket 已确认: {Ticket} by userId={U}", ticket, userId);
+        return Ok(new { status = TicketStore.StatusConfirmed, message = "身份已确认，可设置新密码" });
+    }
+
+    /// <summary>
+    /// POST /api/auth/reset-ticket/{ticket}/reset — 设置新密码（需 Ticket 已确认）
+    /// 成功后吊销该账号全部 Refresh Token，Ticket 一次性消费。
+    /// TODO(P5)：失败限速（5 次/小时）与审计日志落库。
+    /// </summary>
+    [HttpPost("reset-ticket/{ticket}/reset")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ResetPassword(string ticket, [FromBody] ResetTicketResetRequest request)
+    {
+        if (!ModelState.IsValid)
+            return BadRequest(ModelState);
+
+        var entry = _tickets.Get(ticket);
+        if (entry == null || entry.Kind != "reset")
+            return BadRequest(new { error = "Ticket 无效" });
+
+        if (entry.Status != TicketStore.StatusConfirmed || entry.Consumed)
+            return BadRequest(new { error = "Ticket 尚未确认或已使用" });
+
+        if (string.IsNullOrWhiteSpace(entry.Username))
+            return BadRequest(new { error = "Ticket 缺少目标账号" });
+
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Username == entry.Username && u.IsActive);
+        if (user == null)
+            return NotFound(new { error = "账号不存在或已停用" });
+
+        // 哈希新密码 + 吊销全部 Refresh Token
+        var (newHash, newSalt) = _hasher.HashPassword(request.NewPassword);
+        user.PasswordHash = newHash;
+        user.PasswordSalt = newSalt;
+        user.UpdatedAt = DateTime.UtcNow;
+
+        await _jwt.RevokeAllUserTokens(user.Id);
+        _tickets.Consume(ticket);
+        await _db.SaveChangesAsync();
+
+        _logger.LogInformation("[Auth] 密码已通过重置 Ticket 修改: {U}", user.Username);
+        return Ok(new { message = "密码已重置，请重新登录" });
+    }
+
     // ========== helpers ==========
+
+    /// <summary>
+    /// 构建扫码登录 Ticket 轮询响应
+    /// </summary>
+    private static LoginTicketResponse BuildLoginTicketResponse(TicketEntry entry)
+    {
+        var now = DateTime.UtcNow;
+        return new LoginTicketResponse
+        {
+            Ticket = entry.Ticket,
+            Status = entry.Status,
+            ExpiresAt = entry.ExpiresAt,
+            ExpiresInSeconds = Math.Max(0, (int)(entry.ExpiresAt - now).TotalSeconds),
+        };
+    }
+
+    /// <summary>
+    /// 构建重置 Ticket 轮询响应
+    /// </summary>
+    private static ResetTicketResponse BuildResetTicketResponse(TicketEntry entry)
+    {
+        var now = DateTime.UtcNow;
+        return new ResetTicketResponse
+        {
+            Ticket = entry.Ticket,
+            Status = entry.Status,
+            ExpiresAt = entry.ExpiresAt,
+            ExpiresInSeconds = Math.Max(0, (int)(entry.ExpiresAt - now).TotalSeconds),
+        };
+    }
+
+    /// <summary>
+    /// 构建用户档案
+    /// </summary>
+    private static UserProfile BuildProfile(User user)
+    {
+        return new UserProfile
+        {
+            Id = user.Id,
+            Username = user.Username,
+            DisplayName = user.DisplayName,
+            Role = user.Role,
+            Email = user.Email,
+            AvatarUrl = user.AvatarUrl,
+            LastLoginAt = user.LastLoginAt,
+        };
+    }
 
     private int? GetUserId()
     {

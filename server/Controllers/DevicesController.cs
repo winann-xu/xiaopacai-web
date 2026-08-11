@@ -1,10 +1,12 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
 using XiaopacaiWeb.Security;
+using XiaopacaiWeb.DTOs;
 
 namespace XiaopacaiWeb.Controllers;
 
@@ -268,4 +270,65 @@ public class ManualPairRequest
     public string? IpAddress { get; set; }
     public string? DeviceName { get; set; }
     public string? Platform { get; set; }
+
+    public async Task<IActionResult> GetAppCategories(int id)
+    {
+        var device = await _db.Devices.FindAsync(id);
+        if (device == null)
+            return NotFound(new { error = "设备不存在" });
+
+        var categories = DeserializeCategories(device.AppCategories);
+
+        return Ok(new
+        {
+            deviceId = device.DeviceId,
+            categories,
+        });
+    }
+    public async Task<IActionResult> PutAppCategories(int id, [FromBody] AppCategoriesRequest request)
+    {
+        var device = await _db.Devices.FindAsync(id);
+        if (device == null)
+            return NotFound(new { error = "设备不存在" });
+
+        // 校验分类值合法性
+        var invalid = request.Categories
+            .Where(c => !ValidCategories.Contains(c.Category.ToLowerInvariant()))
+            .Select(c => c.PackageName)
+            .ToList();
+
+        if (invalid.Count > 0)
+            return BadRequest(new { error = $"非法分类值: {string.Join(", ", invalid)}" });
+
+        // 归一化后落库（JSON 数组）
+        var normalized = request.Categories
+            .Select(c => new AppCategoryItem
+            {
+                PackageName = c.PackageName,
+                AppName = c.AppName ?? string.Empty,
+                Category = c.Category.ToLowerInvariant(),
+            })
+            .ToList();
+
+        device.AppCategories = JsonSerializer.Serialize(normalized);
+        device.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        _logger.LogInformation("[Devices] 设备 {DeviceId} 应用分类已保存 {Count} 条",
+            device.DeviceId, normalized.Count);
+
+        return Ok(new
+        {
+            deviceId = device.DeviceId,
+            categories = normalized,
+            message = "应用分类已保存",
+        });
+    }
+    var categories = DeserializeCategories(device.AppCategories);
+
+        return Ok(new
+        {
+            deviceId = device.DeviceId,
+            categories,
+        }
 }

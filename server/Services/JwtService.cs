@@ -27,7 +27,8 @@ public class JwtService : IJwtService
     public (string accessToken, string refreshToken, DateTime accessExpiry, DateTime refreshExpiry)
         GenerateTokens(int userId, string username, string role)
     {
-        var secretKey = _config["Jwt:SecretKey"] ?? "CHANGE-ME-IN-PRODUCTION-32CHARS-MIN";
+        // 注：密钥必须 ≥ 32 字节（HS256 最低 256 位），见 appsettings.Development.json 修复记录
+        var secretKey = _config["Jwt:SecretKey"] ?? "CHANGE-ME-IN-PRODUCTION-32CHARS-MIN!";
         var issuer = _config["Jwt:Issuer"] ?? "xiaopacai-web";
         var audience = _config["Jwt:Audience"] ?? "xiaopacai-client";
         var accessMinutes = int.Parse(_config["Jwt:AccessTokenExpiryMinutes"] ?? "60");
