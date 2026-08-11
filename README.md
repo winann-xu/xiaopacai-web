@@ -112,6 +112,197 @@ xiaopacai-web/
 - **Codex@50.20**：主测试（本地镜像 + 构建/测试/回归）
 - **桥接**：每次里程碑产出 git bundle → 信件回传缺陷
 
+## 自托管部署
+
+以下步骤将小趴菜 Web 3.0 部署到您自己的服务器/Linux 主机上。
+
+### 环境要求
+
+| 组件 | 最低版本 |
+|------|---------|
+| .NET Runtime | 8.0 |
+| Node.js | 18+ |
+| Nginx 或 Caddy | 最新稳定版 |
+| systemd (Linux) | 任意 |
+
+### 1. 构建发布
+
+```bash
+# 克隆仓库
+git clone <your-repo-url> /opt/xiaopacai-web
+cd /opt/xiaopacai-web
+
+# 构建后端（Release 模式，单文件发布）
+cd server
+dotnet publish -c Release -o /opt/xiaopacai-web/build/server \
+  --self-contained false
+
+# 构建前端（生产模式）
+cd ../web
+npm ci --production
+npm run build
+# 产物 → web/dist/
+```
+
+### 2. 配置
+
+编辑 `server/appsettings.json`：
+
+```json
+{
+  "Urls": "http://127.0.0.1:5000",
+  "Jwt": {
+    "SecretKey": "<生成 32+ 字符随机密钥>",
+    "Issuer": "xiaopacai-web",
+    "Audience": "xiaopacai-client",
+    "AccessTokenExpiryMinutes": 60,
+    "RefreshTokenExpiryDays": 7
+  },
+  "P2P": {
+    "ListenPort": 9527,
+    "CertPath": "Data/certs/server.pfx"
+  }
+}
+```
+
+> ⚠️ **必须修改 `Jwt:SecretKey`**，使用 `openssl rand -hex 32` 生成。
+
+### 3. systemd 服务（推荐）
+
+```bash
+sudo tee /etc/systemd/system/xiaopacai-web.service <<'EOF'
+[Unit]
+Description=小趴菜 Web 3.0 家长端
+After=network.target
+
+[Service]
+Type=simple
+User=xiaopacai
+WorkingDirectory=/opt/xiaopacai-web/build/server
+ExecStart=/usr/bin/dotnet XiaopacaiWeb.dll
+Restart=on-failure
+RestartSec=10
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_PRINT_TELEMETRY_MESSAGE=false
+
+# 安全加固
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/xiaopacai-web/build/server/Data
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo useradd -r -s /bin/false xiaopacai 2>/dev/null || true
+sudo chown -R xiaopacai:xiaopacai /opt/xiaopacai-web
+sudo systemctl daemon-reload
+sudo systemctl enable --now xiaopacai-web
+sudo systemctl status xiaopacai-web
+```
+
+### 4. Nginx 反向代理（HTTPS + 静态文件）
+
+```bash
+sudo tee /etc/nginx/sites-available/xiaopacai <<'EOF'
+server {
+    listen 443 ssl http2;
+    server_name your-domain.com;
+
+    ssl_certificate     /etc/ssl/certs/xiaopacai.pem;
+    ssl_certificate_key /etc/ssl/private/xiaopacai.key;
+
+    # 前端静态文件
+    root /opt/xiaopacai-web/web/dist;
+    index index.html;
+
+    # SPA 路由回退
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # API 代理
+    location /api/ {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # SignalR WebSocket 代理
+    location /hubs/ {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 86400;
+    }
+
+    # 静态资源缓存（Vite 构建产物带 hash，可长期缓存）
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+}
+
+# HTTP → HTTPS 重定向
+server {
+    listen 80;
+    server_name your-domain.com;
+    return 301 https://$host$request_uri;
+}
+EOF
+
+sudo ln -s /etc/nginx/sites-available/xiaopacai /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### 5. 防火墙
+
+```bash
+# API + Web（仅本机或内网）
+sudo ufw allow from 192.168.0.0/16 to any port 443 proto tcp
+
+# P2P 监听（儿童端直连端口，仅内网）
+sudo ufw allow from 192.168.0.0/16 to any port 9527 proto tcp
+```
+
+### 6. 首次启动
+
+1. 打开 `https://your-domain.com`
+2. 首次管理员账号: `admin` / `admin123`
+3. **立即修改密码**（设置 → 账号安全）
+4. 在"设备管理"中生成配对码，让 Android 儿童端 APK 扫码或输入配对码
+5. 儿童端连接后即可在仪表盘看到在线状态和使用数据
+
+### 7. 升级
+
+```bash
+cd /opt/xiaopacai-web
+git pull
+cd server && dotnet publish -c Release -o /opt/xiaopacai-web/build/server
+cd ../web && npm ci && npm run build
+sudo systemctl restart xiaopacai-web
+```
+
+## 运行测试
+
+```bash
+# 后端 xunit 测试
+cd tests
+dotnet test
+
+# 前端 vitest 测试
+cd web
+npm test
+```
+
 ## 许可
 
 Apache License 2.0 — 详见 [LICENSE](./LICENSE)
