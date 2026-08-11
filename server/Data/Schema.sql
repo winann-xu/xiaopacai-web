@@ -1,8 +1,9 @@
 -- ============================================================================
 -- 小趴菜 Web 3.0 — SQLCipher 数据库 Schema
--- 版本：V3.0-P1    日期：2026-08-10
+-- 版本：V3.0-OPT12-P1  日期：2026-08-11
 -- 引擎：SQLite 3 + SQLCipher 加密扩展
--- 说明：对照 2.0 AppDatabase，新增管理后端表（audit_logs / pairing_info）
+-- 说明：对照 2.0 AppDatabase，新增管理后端表（audit_logs / pairing_info）；
+--       OPT12 P1 新增：diagnostics / relay_sessions，devices 增加 owner_user_id / app_categories
 -- ============================================================================
 
 -- 启用外键约束
@@ -44,6 +45,9 @@ CREATE TABLE IF NOT EXISTS devices (
     online_status   TEXT    NOT NULL DEFAULT 'offline'      -- 在线状态
                             CHECK(online_status IN ('online', 'offline', 'reconnecting')),
     last_seen_at    TEXT    DEFAULT NULL,                   -- 最后在线时间
+    -- OPT12 需求 1/3：应用分类配置（JSON 数组）+ 绑定家长账号（配对确认时绑定）
+    owner_user_id   TEXT    DEFAULT NULL,                   -- 绑定家长账号（用户 ID 字符串，可空）
+    app_categories  TEXT    DEFAULT NULL,                   -- 应用分类 JSON 数组 [{packageName,appName,category}]
     is_active       INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -188,6 +192,52 @@ CREATE TABLE IF NOT EXISTS pairing_info (
 
 CREATE INDEX IF NOT EXISTS idx_pairing_info_device
     ON pairing_info(device_id, pair_status);
+
+-- ----------------------------------------------------------------------------
+-- 9. diagnostics — 儿童端故障诊断记录（OPT12 需求 5）
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS diagnostics (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id           TEXT    NOT NULL,                       -- 儿童端设备唯一标识
+    app_version         TEXT    DEFAULT NULL,                   -- 儿童端 APP 版本
+    android_version     TEXT    DEFAULT NULL,                   -- Android 系统版本
+    device_model        TEXT    DEFAULT NULL,                   -- 设备型号
+    manufacturer        TEXT    DEFAULT NULL,                   -- 设备厂商
+    permission_status   TEXT    DEFAULT NULL,                   -- 权限状态（JSON）
+    service_status      TEXT    DEFAULT NULL,                   -- 服务运行状态（JSON）
+    recent_crashes      TEXT    DEFAULT NULL,                   -- 最近崩溃堆栈（JSON，最近 5 条）
+    p2p_history         TEXT    DEFAULT NULL,                   -- P2P 连接历史（JSON）
+    db_size_bytes       INTEGER DEFAULT NULL,                   -- 本地数据库大小（字节）
+    network_type        TEXT    DEFAULT NULL,                   -- 网络状态：wifi/cellular/none
+    reported_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_diagnostics_device_time
+    ON diagnostics(device_id, reported_at);
+
+-- ----------------------------------------------------------------------------
+-- 10. relay_sessions — 云端中继会话记录（OPT12 需求 3）
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS relay_sessions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id       TEXT    NOT NULL,                       -- 连接方设备唯一标识
+    role            TEXT    NOT NULL DEFAULT 'child'        -- 角色：child / parent
+                            CHECK(role IN ('child', 'parent')),
+    user_id         INTEGER DEFAULT NULL,                   -- 关联家长账号（可空）
+    ip_address      TEXT    DEFAULT NULL,                   -- 连接来源 IP
+    status          TEXT    NOT NULL DEFAULT 'connected'    -- 状态：connected / disconnected
+                            CHECK(status IN ('connected', 'disconnected')),
+    connected_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    disconnected_at TEXT    DEFAULT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_relay_sessions_device
+    ON relay_sessions(device_id, status);
+CREATE INDEX IF NOT EXISTS idx_relay_sessions_status
+    ON relay_sessions(status, connected_at);
 
 -- ============================================================================
 -- 种子数据（P1 骨架：默认管理员账号）

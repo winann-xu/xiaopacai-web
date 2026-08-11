@@ -41,7 +41,7 @@ public class AuthControllerTests
         jwt ??= Mock.Of<IJwtService>();
 
         var logger = new Microsoft.Extensions.Logging.Abstractions.NullLogger<AuthController>();
-        return new AuthController(db, hasher, jwt, logger);
+        return new AuthController(db, hasher, jwt, new TicketStore(), logger);
     }
 
     /// <summary>

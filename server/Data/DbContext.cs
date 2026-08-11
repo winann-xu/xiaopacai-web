@@ -4,7 +4,7 @@ using XiaopacaiWeb.Models;
 namespace XiaopacaiWeb.Data;
 
 /// <summary>
-/// SQLCipher 数据库上下文 — 8 实体表 + refresh_tokens
+/// SQLCipher 数据库上下文 — 11 实体表（9 原有 + diagnostics + relay_sessions）
 /// </summary>
 public class AppDbContext : DbContext
 {
@@ -20,6 +20,8 @@ public class AppDbContext : DbContext
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<PairingInfo> PairingInfos => Set<PairingInfo>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<DiagnosticRecord> Diagnostics => Set<DiagnosticRecord>();
+    public DbSet<RelaySession> RelaySessions => Set<RelaySession>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -157,6 +159,24 @@ public class AppDbContext : DbContext
              .WithMany(u => u.RefreshTokens)
              .HasForeignKey(rt => rt.UserId)
              .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // ---- Diagnostics（OPT12 需求 5：故障诊断上报） ----
+        modelBuilder.Entity<DiagnosticRecord>(e =>
+        {
+            e.HasIndex(d => new { d.DeviceId, d.ReportedAt });
+            e.Property(d => d.ReportedAt).HasDefaultValueSql("datetime('now')");
+        });
+
+        // ---- RelaySessions（OPT12 需求 3：云端中继会话） ----
+        modelBuilder.Entity<RelaySession>(e =>
+        {
+            e.HasIndex(s => new { s.DeviceId, s.Status });
+            e.HasIndex(s => new { s.Status, s.ConnectedAt });
+            e.Property(s => s.Role).HasDefaultValue("child");
+            e.Property(s => s.Status).HasDefaultValue("connected");
+            e.Property(s => s.ConnectedAt).HasDefaultValueSql("datetime('now')");
+            e.Property(s => s.CreatedAt).HasDefaultValueSql("datetime('now')");
         });
     }
 }

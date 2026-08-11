@@ -1,7 +1,34 @@
 {
   "project": "xiaopacai-web",
-  "version": "3.0.0-p4",
-  "current_phase": "P4",
+  "version": "3.0.0-opt12-p1",
+  "current_phase": "OPT12-P1",
+  "opt12": {
+    "current_phase": "P1",
+    "P1": {
+      "name": "协议与数据模型扩展（Web 3.0 侧）",
+      "status": "completed",
+      "completed_at": "2026-08-11",
+      "description": "OPT12 12 项优化 P1：Web 3.0 协议与数据模型扩展（诊断 / 扫码登录 / 重置密码 / 中继 / 应用分类）",
+      "tasks": [
+        "diagnostics 表 + DiagnosticRecord 模型 + DiagnosticsController（POST /api/diagnostics、GET /api/admin/diagnostics、GET /api/admin/diagnostics/export）",
+        "扫码登录 Ticket：LoginTicket DTOs + POST/GET /api/auth/login-ticket + POST confirm（90s 过期，TicketStore 内存存储，确认后首次轮询返回 JWT）",
+        "重置密码 Ticket：POST/GET /api/auth/reset-ticket + confirm + reset（10min 过期，重置后吊销全部 refresh token）",
+        "中继：relay_sessions 表 + RelaySession 模型 + GET /api/relay/sessions（AdminOnly），devices 表新增 owner_user_id 列",
+        "应用分类：GET/PUT /api/devices/{id}/app-categories（devices 表新增 app_categories JSON 列）",
+        "Schema.sql 同步（V3.0-OPT12-P1，2 新表 + 2 新列）、DbContext 11 DbSet、Program.cs 注册 TicketStore",
+        "ADR 文档 docs/adr/0003-opt12-web-extensions.md + API.md 更新",
+        "全量 178 项 xunit 测试通过，0 错误构建"
+      ],
+      "outputs": [
+        "server/Models/DiagnosticRecord.cs / RelaySession.cs（Device.cs 扩展 owner_user_id / app_categories）",
+        "server/DTOs/LoginTicketDtos.cs / AppCategoryDtos.cs",
+        "server/Services/TicketStore.cs（一次性 Ticket 内存存储）",
+        "server/Controllers/DiagnosticsController.cs / RelayController.cs / DevicesController.cs（AuthController 扩展 8 个 Ticket 端点）",
+        "docs/adr/0003-opt12-web-extensions.md",
+        "server/Data/Schema.sql — V3.0-OPT12-P1"
+      ]
+    }
+  },
   "phases": {
     "P1": {
       "name": "架构与骨架",
@@ -124,6 +151,6 @@
       ]
     }
   },
-  "last_updated": "2026-08-11T06:30:00Z",
-  "note": "P5 完成。业务 CRUD 控制器（devices/policies/announcements/reports/settings/admin-*）为规划中接口，前端当前使用 Mock 数据。仅 auth/health/pairing 已完整实现。审计中间件当前只写日志不落库。"
+  "last_updated": "2026-08-11T08:30:00Z",
+  "note": "P5 完成。OPT12-P1 完成：diagnostics / login-ticket / reset-ticket / relay sessions / app-categories 已实现并通过 178 项测试。业务 CRUD 控制器（devices/policies/announcements/reports/settings/admin-*）仍为规划中接口，前端使用 Mock 数据。待办（P4/P5）：P2P 握手写入 relay_sessions 与中继路由、policy_push 携带 app_categories、设备级 Token 鉴权、Ticket 失败限速、审计日志落库。"
 }

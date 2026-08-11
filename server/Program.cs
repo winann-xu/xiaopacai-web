@@ -78,6 +78,9 @@ builder.Services.AddSignalR();
 // ---- 密码哈希服务（无状态，Singleton） ----
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 
+// ---- 扫码登录/重置 Ticket 内存存储（OPT12 需求 10/12，Singleton） ----
+builder.Services.AddSingleton<TicketStore>();
+
 // ---- SQLCipher 服务（Singleton：密钥管理 + 连接字符串提供） ----
 var sqlCipherService = SqlCipherService.CreateFromConfig(builder.Configuration);
 builder.Services.AddSingleton<ISqlCipherService>(sqlCipherService);
@@ -99,7 +102,7 @@ builder.Services.AddDbContext<AppDbContext>(opts =>
 builder.Services.AddScoped<IJwtService, JwtService>();
 
 // ---- JWT 鉴权 ----
-var jwtSecretKey = builder.Configuration["Jwt:SecretKey"] ?? "dev-secret-key-32chars-minimum!";
+var jwtSecretKey = builder.Configuration["Jwt:SecretKey"] ?? "dev-secret-key-32chars-minimum-ok";
 var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "xiaopacai-web";
 var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "xiaopacai-client";
 
