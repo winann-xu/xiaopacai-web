@@ -496,7 +496,10 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="login-footer">
-        <span>自托管 · 本地部署 · 数据不上云</span>
+        <span>
+          自托管 · 本地部署 · 数据不上云 ·
+          <router-link to="/download" style="color: var(--el-color-primary)">下载客户端</router-link>
+        </span>
       </div>
     </div>
   </div>

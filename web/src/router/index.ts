@@ -19,6 +19,7 @@ const DataManagementPage = () => import('@/views/admin/DataManagementPage.vue')
 const DiagnosticsView = () => import('@/views/admin/DiagnosticsView.vue')
 const RelaySessionsView = () => import('@/views/admin/RelaySessionsView.vue')
 const NotFoundPage = () => import('@/views/auth/NotFoundPage.vue')
+const DownloadPage = () => import('@/views/public/DownloadPage.vue')
 
 // 用户端路由（parent）
 const userRoutes: RouteRecordRaw[] = [
@@ -51,6 +52,12 @@ const router = createRouter({
       meta: { guest: true },
     },
     {
+      path: '/download',
+      name: 'download',
+      component: DownloadPage,
+      meta: { guest: true, title: '下载中心' },
+    },
+    {
       path: '/',
       component: MainLayout,
       redirect: '/dashboard',
@@ -76,6 +83,11 @@ router.beforeEach(async (to, _from, next) => {
     if (token) {
       return next('/dashboard')
     }
+    return next()
+  }
+
+  // 公共页面（下载中心等）：登录前后均可访问
+  if (to.meta.guest) {
     return next()
   }
 

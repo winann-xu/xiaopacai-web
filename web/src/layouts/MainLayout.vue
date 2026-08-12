@@ -7,7 +7,7 @@ import { useUiStore } from '@/stores/ui'
 import {
   Odometer, Monitor, Setting, Notification, DataAnalysis, Tools,
   UserFilled, DocumentChecked, SetUp, FolderOpened, FirstAidKit, Connection,
-  Expand, Fold, Moon, Sunny, SwitchButton,
+  Expand, Fold, Moon, Sunny, SwitchButton, Download,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -30,6 +30,7 @@ const userMenuItems: MenuItem[] = [
   { path: '/announcements', title: '公告管理', icon: Notification },
   { path: '/reports', title: '使用报告', icon: DataAnalysis },
   { path: '/settings', title: '设置', icon: Tools },
+  { path: '/download', title: '下载中心', icon: Download },
 ]
 
 const adminMenuItems: MenuItem[] = [

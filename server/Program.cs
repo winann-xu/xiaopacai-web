@@ -168,7 +168,16 @@ app.UseAuthorization();
 // [TASK-OPT-12-P4] 修复：此前未配置静态文件服务，发布版根路径 404；
 // DEPLOY.md 单进程部署（publish + 复制 web/dist 到 wwwroot）现在可直接访问
 app.UseDefaultFiles();
-app.UseStaticFiles();
+
+// [下载中心] 显式注册 .apk/.ipa 等安装包扩展名，否则静态文件中间件对未知/特殊扩展名返回 404
+var contentTypeProvider = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
+contentTypeProvider.Mappings[".apk"] = "application/vnd.android.package-archive";
+contentTypeProvider.Mappings[".ipa"] = "application/octet-stream";
+contentTypeProvider.Mappings[".dmg"] = "application/octet-stream";
+app.UseStaticFiles(new Microsoft.AspNetCore.Builder.StaticFileOptions
+{
+    ContentTypeProvider = contentTypeProvider,
+});
 
 app.MapControllers();
 
