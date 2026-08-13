@@ -196,13 +196,17 @@ public class P2pMessageHandler
                 .FirstOrDefaultAsync();
             if (linkedPairing != null)
             {
+                // [REQ] 仅首次扫码绑定（pending → confirmed）时重绑归属账号；
+                // 后续重连复用同一已确认配对码，不再覆盖已绑定的 owner。
+                var isFirstBind = linkedPairing.PairStatus == "pending";
                 linkedPairing.DeviceId = device.Id;
-                linkedPairing.PairStatus = "confirmed";
-                linkedPairing.ConfirmedAt = DateTime.UtcNow;
-                // [REQ] 配对码归属账号 → 绑定设备 owner（若尚未绑定）
-                if (!string.IsNullOrEmpty(linkedPairing.OwnerUserId) &&
-                    string.IsNullOrEmpty(device.OwnerUserId))
-                    device.OwnerUserId = linkedPairing.OwnerUserId;
+                if (isFirstBind)
+                {
+                    linkedPairing.PairStatus = "confirmed";
+                    linkedPairing.ConfirmedAt = DateTime.UtcNow;
+                    if (!string.IsNullOrEmpty(linkedPairing.OwnerUserId))
+                        device.OwnerUserId = linkedPairing.OwnerUserId;
+                }
             }
         }
 
