@@ -10,9 +10,6 @@ import { toDataURL as qrToDataURL } from 'qrcode'
 
 const deviceStore = useDeviceStore()
 const searchText = ref('')
-const showPairDialog = ref(false)
-const pairingCode = ref('')
-const manualIp = ref('')
 const showDetailDialog = ref(false)
 const detailDevice = ref<Device | null>(null)
 const showBindQr = ref(false)
@@ -29,16 +26,6 @@ const filteredDevices = computed(() => {
 })
 
 onMounted(() => { deviceStore.fetchDevices() })
-
-function generatePairingCode() {
-  pairingCode.value = String(Math.floor(100000 + Math.random() * 900000))
-  showPairDialog.value = true
-}
-
-function confirmPair() {
-  ElMessage.success(`配对码 ${pairingCode.value} 已生成，请在儿童设备上输入`)
-  showPairDialog.value = false
-}
 
 // 生成儿童端扫码绑定二维码（服务端配对码，归属当前家长账号）
 async function openBindQr() {
@@ -107,22 +94,6 @@ function statusText(s: string) { return s === 'online' ? '在线' : s === 'recon
         </div>
       </el-card>
     </div>
-
-    <!-- 配对弹窗 -->
-    <el-dialog v-model="showPairDialog" title="添加设备" width="460px">
-      <el-form label-position="top">
-        <el-form-item label="配对码">
-          <el-input v-model="pairingCode" readonly
-            style="font-size: 24px; letter-spacing: 6px; text-align: center; font-weight: 700" />
-          <el-button size="small" style="margin-top:8px" @click="pairingCode = String(Math.floor(100000 + Math.random() * 900000))">重新生成</el-button>
-        </el-form-item>
-        <el-form-item label="手动指定 IP（可选）"><el-input v-model="manualIp" placeholder="192.168.1.xxx" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showPairDialog = false">取消</el-button>
-        <el-button type="primary" :disabled="!pairingCode" @click="confirmPair">确认</el-button>
-      </template>
-    </el-dialog>
 
     <!-- 儿童端扫码绑定 -->
     <el-dialog v-model="showBindQr" title="扫码绑定儿童端" width="420px">
