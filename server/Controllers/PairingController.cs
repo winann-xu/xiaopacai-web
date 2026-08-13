@@ -88,7 +88,12 @@ public class PairingController : ControllerBase
         _db.PairingInfos.Add(pairingInfo);
         await _db.SaveChangesAsync();
 
-        var host = Request.Host.Host; // Web 主机（不含端口）
+        // [REQ] 中继地址优先读配置（LAN 用内网 IP；跨网用公网域名并需转发 9527），未配置回退请求 Host
+        var relayHostConfig = await _db.SystemConfigs
+            .FirstOrDefaultAsync(c => c.Key == "relay_host");
+        var host = string.IsNullOrWhiteSpace(relayHostConfig?.Value)
+            ? Request.Host.Host
+            : relayHostConfig!.Value.Trim();
         var qrContent = System.Text.Json.JsonSerializer.Serialize(new
         {
             type = "web_relay",

@@ -43,6 +43,7 @@ public class SettingsController : ControllerBase
                 webPort = ParseInt(configs, "web_port", 5000),
                 p2pPort = ParseInt(configs, "p2p_port", 9527),
                 bindAddress = configs.GetValueOrDefault("bind_address", "127.0.0.1"),
+                relayHost = configs.GetValueOrDefault("relay_host", ""),
             },
             dataRetentionDays = ParseInt(configs, "data_retention_days", 90),
             backupDir = configs.GetValueOrDefault("backup_dir", "backups"),
@@ -67,6 +68,7 @@ public class SettingsController : ControllerBase
             if (request.Server.WebPort > 0) await SetConfig("web_port", request.Server.WebPort.ToString());
             if (request.Server.P2pPort > 0) await SetConfig("p2p_port", request.Server.P2pPort.ToString());
             if (!string.IsNullOrEmpty(request.Server.BindAddress)) await SetConfig("bind_address", request.Server.BindAddress);
+            if (!string.IsNullOrEmpty(request.Server.RelayHost)) await SetConfig("relay_host", request.Server.RelayHost.Trim());
         }
         if (request.DataRetentionDays > 0)
             await SetConfig("data_retention_days", request.DataRetentionDays.ToString());
@@ -252,6 +254,7 @@ public class ServerSettingsDto
     public int? WebPort { get; set; }
     public int? P2pPort { get; set; }
     public string? BindAddress { get; set; }
+    public string? RelayHost { get; set; }
 }
 
 /// <summary>
