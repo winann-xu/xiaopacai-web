@@ -120,6 +120,9 @@ public class P2pMessageHandler
             pairingInfo.PairStatus = "confirmed";
             pairingInfo.ConfirmedAt = DateTime.UtcNow;
             pairingInfo.DeviceId = device.Id;
+            // [REQ] 配对码归属账号 → 绑定设备 owner（扫码绑定/中继绑定）
+            if (!string.IsNullOrEmpty(pairingInfo.OwnerUserId))
+                device.OwnerUserId = pairingInfo.OwnerUserId;
 
             // 创建默认策略
             var policy = new Policy
@@ -196,6 +199,10 @@ public class P2pMessageHandler
                 linkedPairing.DeviceId = device.Id;
                 linkedPairing.PairStatus = "confirmed";
                 linkedPairing.ConfirmedAt = DateTime.UtcNow;
+                // [REQ] 配对码归属账号 → 绑定设备 owner（若尚未绑定）
+                if (!string.IsNullOrEmpty(linkedPairing.OwnerUserId) &&
+                    string.IsNullOrEmpty(device.OwnerUserId))
+                    device.OwnerUserId = linkedPairing.OwnerUserId;
             }
         }
 

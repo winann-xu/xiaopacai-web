@@ -3,8 +3,10 @@
 import { ref, onMounted, computed } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import type { Device } from '@/stores/devices'
+import { pairingApi } from '@/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Monitor } from '@element-plus/icons-vue'
+import { toDataURL as qrToDataURL } from 'qrcode'
 
 const deviceStore = useDeviceStore()
 const searchText = ref('')
@@ -13,6 +15,11 @@ const pairingCode = ref('')
 const manualIp = ref('')
 const showDetailDialog = ref(false)
 const detailDevice = ref<Device | null>(null)
+const showBindQr = ref(false)
+const bindLoading = ref(false)
+const bindPairCode = ref('')
+const bindQrDataUrl = ref('')
+const bindExpiresAt = ref('')
 
 const filteredDevices = computed(() => {
   if (!searchText.value) return deviceStore.devices
@@ -31,6 +38,24 @@ function generatePairingCode() {
 function confirmPair() {
   ElMessage.success(`配对码 ${pairingCode.value} 已生成，请在儿童设备上输入`)
   showPairDialog.value = false
+}
+
+// 生成儿童端扫码绑定二维码（服务端配对码，归属当前家长账号）
+async function openBindQr() {
+  bindLoading.value = true
+  showBindQr.value = true
+  bindPairCode.value = ''
+  bindQrDataUrl.value = ''
+  try {
+    const res = await pairingApi.bindingQr()
+    bindPairCode.value = res.data.pairCode
+    bindExpiresAt.value = res.data.expiresAt
+    bindQrDataUrl.value = await qrToDataURL(res.data.qrContent, { width: 280, margin: 1 })
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '生成二维码失败')
+  } finally {
+    bindLoading.value = false
+  }
 }
 
 function showDetail(device: Device) { detailDevice.value = device; showDetailDialog.value = true }
@@ -53,7 +78,7 @@ function statusText(s: string) { return s === 'online' ? '在线' : s === 'recon
       <h2 class="page-title">设备管理</h2>
       <div class="page-actions">
         <el-input v-model="searchText" placeholder="搜索设备" :prefix-icon="Search" clearable style="width: 220px" />
-        <el-button type="primary" :icon="Plus" @click="generatePairingCode">添加设备</el-button>
+        <el-button type="primary" :icon="Plus" @click="openBindQr">添加设备</el-button>
       </div>
     </div>
 
@@ -99,6 +124,24 @@ function statusText(s: string) { return s === 'online' ? '在线' : s === 'recon
       </template>
     </el-dialog>
 
+    <!-- 儿童端扫码绑定 -->
+    <el-dialog v-model="showBindQr" title="扫码绑定儿童端" width="420px">
+      <div v-loading="bindLoading" class="bind-qr-body">
+        <p class="bind-hint">用儿童端「连接家长端 → 扫码」扫描下方二维码，即可把儿童端绑定到你的账号。</p>
+        <div v-if="bindQrDataUrl" class="bind-qr-img">
+          <img :src="bindQrDataUrl" alt="绑定二维码" />
+        </div>
+        <div v-if="bindPairCode" class="bind-code">
+          <span>配对码</span>
+          <strong>{{ bindPairCode }}</strong>
+          <em>5 分钟内有效</em>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="showBindQr = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 详情弹窗 -->
     <el-dialog v-model="showDetailDialog" title="设备详情" width="560px">
       <template v-if="detailDevice">
@@ -139,4 +182,11 @@ function statusText(s: string) { return s === 'online' ? '在线' : s === 'recon
 .device-meta, .device-ip { font-size: 12px; color: var(--el-text-color-secondary); margin: 0 0 2px; }
 .device-usage { font-size: 12px; color: var(--el-text-color-secondary); margin: 4px 0 0; }
 .card-actions { display: flex; justify-content: flex-end; gap: 4px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--el-border-color-lighter); }
+.bind-qr-body { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.bind-hint { font-size: 13px; color: var(--el-text-color-secondary); text-align: center; margin: 0; }
+.bind-qr-img { padding: 12px; border: 1px dashed var(--el-border-color); border-radius: 8px; }
+.bind-qr-img img { display: block; }
+.bind-code { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--el-text-color-secondary); }
+.bind-code strong { font-size: 22px; letter-spacing: 4px; color: var(--el-color-primary); }
+.bind-code em { font-size: 12px; font-style: normal; color: var(--el-text-color-placeholder); }
 </style>

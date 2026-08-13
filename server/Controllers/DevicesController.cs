@@ -47,7 +47,17 @@ public class DevicesController : ControllerBase
     {
         var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
 
-        var devices = await _db.Devices
+        var query = _db.Devices.AsQueryable();
+
+        // [REQ] 账号隔离：家长只看自己绑定的设备，管理员看全部
+        var currentUserId = GetUserId()?.ToString();
+        var isAdmin = User.IsInRole("admin");
+        if (!isAdmin && currentUserId != null)
+        {
+            query = query.Where(d => d.OwnerUserId == currentUserId);
+        }
+
+        var devices = await query
             .Include(d => d.Policy)
             .OrderByDescending(d => d.CreatedAt)
             .ToListAsync();

@@ -16,6 +16,10 @@ public class PairingInfo
     /// <summary>关联设备（NULL=尚未分配，生成配对码时预置）</summary>
     public int? DeviceId { get; set; }
 
+    /// <summary>生成该配对码的家长账号（扫码绑定/中继绑定时写入设备 owner）</summary>
+    [MaxLength(16)]
+    public string? OwnerUserId { get; set; }
+
     [Required]
     [MaxLength(6)]
     public string PairCode { get; set; } = string.Empty;

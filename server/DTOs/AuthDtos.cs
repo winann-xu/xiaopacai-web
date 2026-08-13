@@ -15,6 +15,24 @@ public class LoginRequest
 }
 
 /// <summary>
+/// 家长邮箱注册请求（个人唯一账号）
+/// </summary>
+public class RegisterRequest
+{
+    [Required]
+    [EmailAddress]
+    [MaxLength(128)]
+    public string Email { get; set; } = string.Empty;
+
+    [Required]
+    [MinLength(6)]
+    public string Password { get; set; } = string.Empty;
+
+    [MaxLength(64)]
+    public string? DisplayName { get; set; }
+}
+
+/// <summary>
 /// Token 刷新请求
 /// </summary>
 public class RefreshRequest

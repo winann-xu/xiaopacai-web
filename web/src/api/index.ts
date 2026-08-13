@@ -76,11 +76,19 @@ export default apiClient
 export const authApi = {
   login: (username: string, password: string) =>
     apiClient.post('/auth/login', { username, password }),
+  register: (email: string, password: string, displayName?: string) =>
+    apiClient.post('/auth/register', { email, password, displayName }),
   logout: () => apiClient.post('/auth/logout'),
   refresh: () => apiClient.post('/auth/refresh'),
   profile: () => apiClient.get('/auth/profile'),
   changePassword: (oldPwd: string, newPwd: string) =>
     apiClient.put('/auth/password', { oldPassword: oldPwd, newPassword: newPwd }),
+}
+
+// ==================== 设备配对 ====================
+export const pairingApi = {
+  // 生成儿童端扫码绑定二维码内容（需登录）
+  bindingQr: () => apiClient.post('/pairing/binding-qr'),
 }
 
 // ==================== 扫码登录 / 忘记密码 Ticket（OPT12 需求 10/12） ====================
