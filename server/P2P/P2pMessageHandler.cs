@@ -161,16 +161,30 @@ public class P2pMessageHandler
             }, BuildPolicyPushMessage(device.DeviceId, device.Policy, device.AppCategories), device.Id);
         }
 
-        // 2. 已有设备 — 检查配对状态
-        if (device.PairStatus == "revoked")
+        // 2. 已解绑/已吊销设备 — 需凭新的待确认配对码重新绑定，否则拒绝
+        if (device.PairStatus == "revoked" || device.PairStatus == "unpaired")
         {
-            _logger.LogWarning("[P2P-Handshake] 设备已被吊销: {DeviceId}", req.DeviceId);
-            return (new HandshakeResponse
+            var rePairInfo = string.IsNullOrEmpty(req.PairCode) ? null : await db.PairingInfos
+                .Where(p => p.PairCode == req.PairCode && p.PairStatus == "pending")
+                .OrderByDescending(p => p.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (rePairInfo == null)
             {
-                Ok = false,
-                Error = "设备已被吊销",
-                PairStatus = "revoked",
-            }, null, device.Id);
+                var reason = device.PairStatus == "revoked" ? "设备已被吊销" : "设备已解绑，请重新扫码绑定";
+                _logger.LogWarning("[P2P-Handshake] {Reason}: {DeviceId}", reason, req.DeviceId);
+                return (new HandshakeResponse
+                {
+                    Ok = false,
+                    Error = reason,
+                    PairStatus = device.PairStatus,
+                }, null, device.Id);
+            }
+
+            // 重新绑定：解除吊销/解绑状态
+            device.PairStatus = "paired";
+            device.PairCode = req.PairCode;
+            device.IsActive = true;
         }
 
         // 3. 已配对设备 — 更新状态
@@ -178,13 +192,6 @@ public class P2pMessageHandler
         device.LastSeenAt = DateTime.UtcNow;
         device.IpAddress = remoteEndPoint;
         device.DeviceName = req.DeviceName ?? device.DeviceName;
-
-        if (device.PairStatus == "unpaired" && !string.IsNullOrEmpty(req.PairCode))
-        {
-            // 重新配对
-            device.PairStatus = "paired";
-            device.PairCode = req.PairCode;
-        }
 
         // [FIX] 已存在设备带配对码握手：将配对码关联到设备（含已配对设备重连），
         // 使 /api/relay/register（配对码路径）能正确绑定 devices.owner_user_id，中继路由才能工作

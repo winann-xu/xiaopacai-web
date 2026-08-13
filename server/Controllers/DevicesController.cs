@@ -125,7 +125,7 @@ public class DevicesController : ControllerBase
     }
 
     /// <summary>
-    /// DELETE /api/devices/{id} — 解绑设备（软删除：revoked + 停用）
+    /// DELETE /api/devices/{id} — 解绑设备（软解绑：unpaired，可重新扫码绑定）
     /// </summary>
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Unpair(int id)
@@ -134,8 +134,8 @@ public class DevicesController : ControllerBase
         if (device == null)
             return NotFound(new { error = "设备不存在" });
 
-        device.PairStatus = "revoked";
-        device.IsActive = false;
+        device.PairStatus = "unpaired";
+        device.IsActive = true;
         device.OnlineStatus = "offline";
         device.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
