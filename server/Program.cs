@@ -174,6 +174,7 @@ var contentTypeProvider = new Microsoft.AspNetCore.StaticFiles.FileExtensionCont
 contentTypeProvider.Mappings[".apk"] = "application/vnd.android.package-archive";
 contentTypeProvider.Mappings[".ipa"] = "application/octet-stream";
 contentTypeProvider.Mappings[".dmg"] = "application/octet-stream";
+contentTypeProvider.Mappings[".bat"] = "application/octet-stream";  // [REQ] 电脑一键授权脚本
 app.UseStaticFiles(new Microsoft.AspNetCore.Builder.StaticFileOptions
 {
     ContentTypeProvider = contentTypeProvider,
