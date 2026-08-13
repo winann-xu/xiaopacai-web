@@ -605,6 +605,56 @@ public class P2pMessageHandler
     }
 
     /// <summary>
+    /// [FIX] 构建补推公告消息：儿童端握手连接时下发最近 3 条已发布/已撤回公告。
+    /// 解决“儿童端离线期间发布的公告永远收不到”（实时推送只在在线时生效）。
+    /// </summary>
+    public async Task<string?> BuildAnnouncementSyncJson(string deviceId)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var device = await db.Devices.FirstOrDefaultAsync(d => d.DeviceId == deviceId);
+        if (device == null) return null;
+
+        var announcements = await db.Announcements
+            .Where(a => (a.Status == "published" || a.Status == "revoked") &&
+                        (a.TargetDeviceId == null || a.TargetDeviceId == device.Id))
+            .OrderByDescending(a => a.UpdatedAt)
+            .Take(3)
+            .ToListAsync();
+
+        if (announcements.Count == 0) return null;
+
+        var list = announcements.Select(a => new Dictionary<string, object>
+        {
+            ["id"] = a.Id,
+            ["title"] = a.Title,
+            ["content"] = a.Content,
+            ["priority"] = a.Priority switch
+            {
+                "urgent" => 2,
+                "important" => 1,
+                _ => 0,
+            },
+            ["created_at"] = new DateTimeOffset(a.CreatedAt).ToUnixTimeSeconds(),
+            ["expires_at"] = a.ValidUntil.HasValue
+                ? new DateTimeOffset(a.ValidUntil.Value).ToUnixTimeSeconds()
+                : 0L,
+        }).ToList();
+
+        var message = new Dictionary<string, object>
+        {
+            ["type"] = P2pMessageType.AnnouncementPush,
+            ["payload"] = new Dictionary<string, object>
+            {
+                ["announcements"] = list,
+                ["action"] = "sync",
+                ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            },
+        };
+        return JsonSerializer.Serialize(message);
+    }
+
+    /// <summary>
     /// 构建 2.0 sync_ack 完整消息 JSON
     /// </summary>
     public string BuildSyncAckJson(int syncedCount)

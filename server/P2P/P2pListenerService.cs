@@ -300,6 +300,12 @@ public class P2pListenerService : IHostedService
                         if (response.Ok && !string.IsNullOrEmpty(policyPushJson) && deviceIdHolder.Value != null)
                         {
                             await WriteFrameAsync(sslStream, policyPushJson);
+                            // [FIX] 补推最近公告：儿童端离线期间发布的公告，重连后也能收到
+                            var annJson = await _messageHandler.BuildAnnouncementSyncJson(deviceIdHolder.Value);
+                            if (!string.IsNullOrEmpty(annJson))
+                            {
+                                await WriteFrameAsync(sslStream, annJson);
+                            }
                         }
                         else if (!response.Ok)
                         {
