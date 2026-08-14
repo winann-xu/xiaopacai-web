@@ -35,6 +35,13 @@ public class Announcement
     public DateTime? PublishedAt { get; set; }
     public DateTime? RevokedAt { get; set; }
 
+    // [TASK-PRELAUNCH-P3] 去重字段：发布代数 + 内容哈希（见 docs/adr/0004）
+    [Required]
+    public int Version { get; set; } = 0; // 每次 publish 递增；首次发布 = 1
+
+    [MaxLength(64)]
+    public string ContentHash { get; set; } = string.Empty; // SHA-256(title|content|priority) 前 16 hex
+
     [Required]
     public int CreatedBy { get; set; }
 

@@ -156,7 +156,7 @@
   "last_updated": "2026-08-14",
   "note": "深夜深度验收：局域网1:1/一拖二/Windows互联/Web中继全链路（双儿童在线、中继转发1499字节到家长端、诊断、分类API）通过；隐私边界审计完成。Codex 修复：900b8da（SQLite 翻译）、ebc48fe（静态文件）、4e9f574（已有设备重连关联配对码，修复 owner 绑定导致中继路由失效）。dotnet 178/178。遗留：Web P2P 未处理 diagnostics_report；relay/register 重复会话行（建议 upsert）。",
   "prelaunch": {
-    "current_phase": "P2",
+    "current_phase": "P3",
     "basis": "提示词包《小趴菜_上线前调整优化》V1.0-PRELAUNCH（2026-08-14，用户确认）",
     "P1": {
       "name": "移动端响应式 + 下载中心期待上线 + 设置页裁剪 + 分类限额暂不可用",
@@ -226,6 +226,34 @@
         ],
         "verification": "npm run build 0 错误；dotnet build/test 已由 Codex 复验 193/193 全绿",
         "delivered": "xiaopacai-web-prelaunch-p2-fix.bundle + 093 信"
+      }
+    },
+    "P3": {
+      "name": "公告去重/终端记录/回执落库/紧急列表展示（协议 + Android + Web）",
+      "status": "completed",
+      "completed_at": "2026-08-14",
+      "description": "需求 3（P3 范围）+ 需求 9 第 4 条（紧急公告计数口径）：同公告重推不重复打扰；终端保留显示/已读/已确认记录；紧急公告列表可见并标注确认状态；Web 落库送达回执并可按公告查看；协议扩展见 docs/adr/0004（待 Codex 评审）",
+      "tasks": [
+        "协议：announcement_push 载荷新增 version/content_hash/requires_ack；新消息 announcement_displayed（ADR 0004）",
+        "Web 后端：Announcement 加 Version/ContentHash（发布递增+哈希）；AnnouncementDelivery 新表（推送次数/显示/确认）；PushAnnouncement 记录 push_count；ack/displayed 落库保留首次时间；deliveries 明细端点；urgent-stats 未确认统计端点；DataExtensions 补表补列",
+        "Web 前端：公告页送达回执弹窗（桌面表格/移动卡片）；仪表盘紧急公告卡改未确认数（回执口径，失败回退发布数并标注）",
+        "Android：DB V4 去重列；AnnouncementDao 合并式 upsert（哈希不变保留状态、变化重置、旧库按已读推断）；SyncManager 去重展示（revoke 置过期/unchanged 不打扰/紧急已确认不全屏/显示后写 displayed_at+上报）；主页列表紧急公告可见+紧急红标+已确认未确认状态",
+        "测试：tests/AnnouncementDedupTests.cs（哈希/回执落库/非法输入）"
+      ],
+      "outputs": [
+        "docs/adr/0004-prelaunch-announcement-dedup-ack.md",
+        "server/Models/AnnouncementDelivery.cs（新增）",
+        "server/P2P/P2pMessageHandler.cs / P2pListenerService.cs / P2pProtocol.cs",
+        "server/Controllers/AnnouncementsController.cs",
+        "server/Data/DbContext.cs / DataExtensions.cs",
+        "web/src/views/announcements/AnnouncementsPage.vue / dashboard/DashboardPage.vue / api/index.ts",
+        "android：AppDatabase/AnnouncementDao/SyncManager/GuardianHomeContent（xiaopacai 仓库 commit 0c2ebd5）"
+      ],
+      "verification": {
+        "npm run build": "通过（0 错误）",
+        "dotnet build/test": "待 Codex 在 Windows 侧执行（本机无 dotnet）",
+        "android gradlew testDebugUnitTest": "待 Codex 执行（含 DB V4 迁移验证）",
+        "note": "协议为增量字段/新消息类型，旧端忽略未知字段不受影响；家长端对 announcement_displayed 走默认分支忽略"
       }
     }
   }

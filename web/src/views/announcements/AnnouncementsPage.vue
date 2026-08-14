@@ -2,14 +2,42 @@
 // 小趴菜 Web 3.0 — 公告管理
 import { ref, onMounted, computed } from 'vue'
 import { useAnnouncementStore, type Announcement } from '@/stores/announcements'
+import { useIsMobile } from '@/composables/useIsMobile'
+import { announcementApi } from '@/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Edit, Delete, Promotion, Remove } from '@element-plus/icons-vue'
 
 const announcementStore = useAnnouncementStore()
+const isMobile = useIsMobile()
 const showEditor = ref(false)
 const editingId = ref<number | null>(null)
 const editForm = ref({ title: '', content: '', priority: 'normal' as 'normal'|'important'|'urgent', validUntil: '' })
 const filterStatus = ref<string>('all')
+
+// [TASK-PRELAUNCH-P3] 送达与回执：按公告查看每设备推送/显示/确认时间（见 docs/adr/0004）
+interface DeliveryRow {
+  deviceId: number; deviceName: string; pushCount: number
+  lastPushedAt: string | null; displayedAt: string | null; acknowledgedAt: string | null
+}
+const deliveriesVisible = ref(false)
+const deliveriesLoading = ref(false)
+const deliveriesAnnTitle = ref('')
+const deliveriesRows = ref<DeliveryRow[]>([])
+
+async function openDeliveries(ann: Announcement) {
+  deliveriesVisible.value = true
+  deliveriesAnnTitle.value = ann.title
+  deliveriesRows.value = []
+  deliveriesLoading.value = true
+  try {
+    const res = await announcementApi.deliveries(ann.id)
+    deliveriesRows.value = res.data.deliveries ?? []
+  } catch { ElMessage.error('回执加载失败') } finally { deliveriesLoading.value = false }
+}
+
+const fmtTime = (t: string | null) => t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '—'
+const ackTag = (t: string | null) => t ? 'success' : 'info'
+const ackText = (t: string | null) => t ? '已确认' : '未确认'
 
 const filteredAnnouncements = computed(() =>
   filterStatus.value === 'all' ? announcementStore.announcements : announcementStore.announcements.filter(a => a.status === filterStatus.value))
@@ -93,16 +121,55 @@ function sText(s: string) { return s==='published'?'已发布':s==='draft'?'草�
           </template>
           <template v-else-if="ann.status==='published'">
             <el-button size="small" :icon="Remove" text type="warning" @click="handleRevoke(ann)">撤回</el-button>
+            <el-button size="small" text type="primary" @click="openDeliveries(ann)">送达回执</el-button>
             <el-button size="small" :icon="Delete" text type="danger" @click="handleDelete(ann)">删除</el-button>
           </template>
           <template v-else-if="ann.status==='revoked'">
             <el-button size="small" :icon="Edit" text type="primary" @click="openEdit(ann)">编辑</el-button>
             <el-button size="small" :icon="Promotion" text type="success" @click="handlePublish(ann)">重新发布</el-button>
+            <el-button size="small" text type="primary" @click="openDeliveries(ann)">送达回执</el-button>
             <el-button size="small" :icon="Delete" text type="danger" @click="handleDelete(ann)">删除</el-button>
           </template>
         </div>
       </el-card>
     </div>
+
+    <!-- [TASK-PRELAUNCH-P3] 送达与回执弹窗：移动端表格降级卡片 -->
+    <el-dialog v-model="deliveriesVisible" :title="`送达与回执 — ${deliveriesAnnTitle}`" width="720px">
+      <div v-loading="deliveriesLoading">
+        <el-empty v-if="!deliveriesRows.length && !deliveriesLoading" description="暂无送达记录（设备在线后推送/重连补推时产生）" :image-size="80" />
+        <template v-else>
+          <div v-if="isMobile" class="del-mobile-list">
+            <div v-for="d in deliveriesRows" :key="d.deviceId" class="del-mobile-item">
+              <div class="dm-head">
+                <span class="dm-name">{{ d.deviceName }}</span>
+                <el-tag :type="ackTag(d.acknowledgedAt)" size="small">{{ ackText(d.acknowledgedAt) }}</el-tag>
+              </div>
+              <p class="dm-line">推送 {{ d.pushCount }} 次 · 最近 {{ fmtTime(d.lastPushedAt) }}</p>
+              <p class="dm-line">显示 {{ fmtTime(d.displayedAt) }} · 确认 {{ fmtTime(d.acknowledgedAt) }}</p>
+            </div>
+          </div>
+          <el-table v-else :data="deliveriesRows" stripe size="small">
+            <el-table-column prop="deviceName" label="设备" min-width="120" />
+            <el-table-column label="推送次数" width="90">
+              <template #default="{row}">{{ row.pushCount }} 次</template>
+            </el-table-column>
+            <el-table-column label="最近推送" min-width="150">
+              <template #default="{row}">{{ fmtTime(row.lastPushedAt) }}</template>
+            </el-table-column>
+            <el-table-column label="终端显示" min-width="150">
+              <template #default="{row}">{{ fmtTime(row.displayedAt) }}</template>
+            </el-table-column>
+            <el-table-column label="确认状态" width="150">
+              <template #default="{row}">
+                <span>{{ fmtTime(row.acknowledgedAt) }}</span>
+                <el-tag :type="ackTag(row.acknowledgedAt)" size="small" style="margin-left:6px">{{ ackText(row.acknowledgedAt) }}</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </template>
+      </div>
+    </el-dialog>
 
     <el-dialog v-model="showEditor" :title="editingId?'编辑公告':'新建公告'" width="600px">
       <el-form label-position="top">
@@ -147,6 +214,12 @@ function sText(s: string) { return s==='published'?'已发布':s==='draft'?'草�
 .ann-meta { font-size: 12px; color: var(--el-text-color-placeholder); }
 .ann-content { font-size: 14px; color: var(--el-text-color-regular); line-height: 1.6; white-space: pre-wrap; }
 .ann-actions { display: flex; gap: 4px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--el-border-color-lighter); }
+/* [TASK-PRELAUNCH-P3] 回执移动端卡片 */
+.del-mobile-list { display: flex; flex-direction: column; gap: 10px; }
+.del-mobile-item { padding: 10px 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; }
+.dm-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.dm-name { font-size: 13px; font-weight: 600; }
+.dm-line { margin: 2px 0; font-size: 12px; color: var(--el-text-color-secondary); }
 
 /* [TASK-PRELAUNCH-P1] 移动端：页头堆叠、元信息换行、操作按钮触控区 */
 @media (max-width: 768px) {

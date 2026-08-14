@@ -140,6 +140,9 @@ export const announcementApi = {
   delete: (id: number) => apiClient.delete(`/announcements/${id}`),
   publish: (id: number) => apiClient.post(`/announcements/${id}/publish`),
   revoke: (id: number) => apiClient.post(`/announcements/${id}/revoke`),
+  // [TASK-PRELAUNCH-P3] 送达与回执明细 / 紧急公告未确认统计
+  deliveries: (id: number) => apiClient.get(`/announcements/${id}/deliveries`),
+  urgentStats: () => apiClient.get('/announcements/urgent-stats'),
 }
 
 // ==================== 使用报告 ====================
