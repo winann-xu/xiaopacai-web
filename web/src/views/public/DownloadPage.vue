@@ -20,9 +20,15 @@
           <div class="dl-icon">📱</div>
           <h3>Android 客户端</h3>
           <p class="dl-desc">儿童守护 / 家长端二合一<br />Android 8.0 及以上</p>
-          <p class="dl-meta">APK · 约 40.9 MB</p>
-          <el-button type="primary" size="large" class="dl-btn" @click="download('/downloads/XiaopacaiParent-1.0.0-debug.apk')">
-            下载 APK
+          <p class="dl-meta">按手机芯片选择；绝大多数手机选 arm64-v8a</p>
+          <el-button type="primary" size="large" class="dl-btn" @click="download('/downloads/XiaopacaiParent-1.0.0-arm64-v8a.apk')">
+            下载 APK（arm64-v8a · 推荐）
+          </el-button>
+          <el-button size="large" class="dl-btn dl-btn-sub" @click="download('/downloads/XiaopacaiParent-1.0.0-armeabi-v7a.apk')">
+            下载 APK（armeabi-v7a）
+          </el-button>
+          <el-button size="large" class="dl-btn dl-btn-sub" @click="download('/downloads/XiaopacaiParent-1.0.0-x86_64.apk')">
+            下载 APK（x86_64 · 模拟器）
           </el-button>
         </el-card>
 
@@ -178,6 +184,12 @@ function download(url: string) {
 
 .dl-btn {
   width: 100%;
+  margin-bottom: 8px;
+}
+.dl-btn-sub {
+  background: var(--el-fill-color-light);
+  border-color: var(--el-border-color);
+  color: var(--el-text-color-regular);
 }
 
 .dl-footer {
