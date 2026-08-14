@@ -156,7 +156,7 @@
   "last_updated": "2026-08-14",
   "note": "深夜深度验收：局域网1:1/一拖二/Windows互联/Web中继全链路（双儿童在线、中继转发1499字节到家长端、诊断、分类API）通过；隐私边界审计完成。Codex 修复：900b8da（SQLite 翻译）、ebc48fe（静态文件）、4e9f574（已有设备重连关联配对码，修复 owner 绑定导致中继路由失效）。dotnet 178/178。遗留：Web P2P 未处理 diagnostics_report；relay/register 重复会话行（建议 upsert）。",
   "prelaunch": {
-    "current_phase": "P1",
+    "current_phase": "P2",
     "basis": "提示词包《小趴菜_上线前调整优化》V1.0-PRELAUNCH（2026-08-14，用户确认）",
     "P1": {
       "name": "移动端响应式 + 下载中心期待上线 + 设置页裁剪 + 分类限额暂不可用",
@@ -191,6 +191,34 @@
         ],
         "verification": "npm run build 0 错误；dotnet build/test 待 Codex 复验",
         "delivered": "xiaopacai-web-prelaunch-p1-fix.bundle + 089 信"
+      }
+    },
+    "P2": {
+      "name": "使用报告重构（真实 API + 动态分类 + 双视角模板）",
+      "status": "completed",
+      "completed_at": "2026-08-14",
+      "description": "需求 3/4（P2 范围）：报告数据源从 daily_summary 固定五桶切换为 usage_records 真实明细聚合；分类回归终端上报动态值（study→learning 归一）；日报/周报模板丰富（家长视角+儿童阅读版）；导出走服务端真实数据",
+      "tasks": [
+        "后端：新增 server/Services/ReportAggregator.cs 纯函数聚合器（动态分类/按应用 Top-N/24h 时段分布按分钟/拦截事件/总计），study→learning 兼容、空→other、细分类保留",
+        "后端：ReportsController 重写——日报/周报/导出全部查询 usage_records；响应含 categories/topApps/hourlyData/events/blockCount/remainingMinutes/previousDayTotalMinutes/prevWeekTotalMinutes/rawAccumulated/byDevice；TXT/JSON/CSV 导出复用聚合逻辑（TXT 沿用 Android 文本风格）",
+        "后端：P2pMessageHandler.NormalizeCategory 保留动态分类值（不再压成 other）；UpdateDailySummary other 桶=总量-四标准桶，口径自洽",
+        "后端：PoliciesController.ToDto 分类键统一 learning（兼容旧 study）",
+        "前端：ReportsPage 接入 reportApi.daily/weekly/exportData，移除 dailyData/weeklyData Mock；日报=大数字卡（总时长/剩余额度/一句话点评/与昨日对比）+分类环形图+Top5 条形+时段分布+拦截时间线+原始累计口径提示；周报=趋势折线+每日明细（对照限额标签+拦截次数）+环比上周+儿童阅读版卡片；导出 blob 下载并解析 Content-Disposition 文件名",
+        "前端：policies store 移除 getMockPolicy 兜底；策略分类口径统一 learning；日期参数支持日报选日/周报选周起始日"
+      ],
+      "outputs": [
+        "server/Services/ReportAggregator.cs（新增）",
+        "server/Controllers/ReportsController.cs（重写）",
+        "server/P2P/P2pMessageHandler.cs（动态分类+other 桶口径）",
+        "server/Controllers/PoliciesController.cs（learning 口径）",
+        "web/src/views/reports/ReportsPage.vue（重写）",
+        "web/src/stores/policies.ts / web/src/views/policies/PoliciesPage.vue（口径统一）",
+        "tests/ReportAggregatorTests.cs（新增 xunit：归一/分类聚合/应用 TopN/时段/拦截/总计）"
+      ],
+      "verification": {
+        "npm run build": "通过（0 错误）",
+        "dotnet build/test": "待 Codex 在 Windows 侧执行（本机无 dotnet）",
+        "known_scope_notes": "devices store 的 API 失败 mock 兜底与账号页 mock 属 P3/P4 遗留（代码注释已标注），不在 P2 报告范围，待后续阶段处理"
       }
     }
   }
