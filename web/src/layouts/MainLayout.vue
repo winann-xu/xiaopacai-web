@@ -81,10 +81,10 @@ onMounted(async () => {
     <el-aside :width="ui.sidebarCollapsed ? '64px' : '220px'" class="layout-aside">
       <div class="aside-header">
         <span v-if="!ui.sidebarCollapsed" class="aside-logo">
-          <span class="logo-icon">🛡️</span>
+          <img src="/logo.png" alt="小趴菜" class="logo-icon" />
           <span class="logo-text">小趴菜</span>
         </span>
-        <span v-else class="aside-logo-collapsed">🛡️</span>
+        <img v-else src="/logo.png" alt="小趴菜" class="aside-logo-collapsed" />
       </div>
 
       <el-menu
@@ -194,7 +194,9 @@ onMounted(async () => {
     <!-- 精简顶栏（隐藏面包屑，保留用户菜单与深色开关） -->
     <el-header class="layout-header mobile-header" height="48px">
       <div class="header-left">
-        <span class="mobile-logo">🛡️ 小趴菜</span>
+        <span class="mobile-logo">
+          <img src="/logo.png" alt="" class="mobile-logo-img" /> 小趴菜
+        </span>
       </div>
       <div class="header-right">
         <el-switch
@@ -300,8 +302,15 @@ onMounted(async () => {
   color: var(--el-color-primary);
 }
 
+.logo-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
 .aside-logo-collapsed {
-  font-size: 24px;
+  width: 24px;
+  height: 24px;
 }
 
 .aside-menu {
@@ -371,9 +380,17 @@ onMounted(async () => {
 }
 
 .mobile-logo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 15px;
   font-weight: 700;
   color: var(--el-color-primary);
+}
+
+.mobile-logo-img {
+  width: 20px;
+  height: 20px;
 }
 
 .mobile-content {

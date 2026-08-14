@@ -348,7 +348,7 @@ onBeforeUnmount(() => {
     <div class="login-card">
       <!-- 品牌区 -->
       <div class="login-brand">
-        <span class="brand-icon">🛡️</span>
+        <img src="/logo.png" alt="小趴菜" class="brand-icon" />
         <h1 class="brand-title">小趴菜 Web 3.0</h1>
         <p class="brand-subtitle">儿童守护 · 家长控制面板</p>
       </div>
@@ -628,9 +628,10 @@ onBeforeUnmount(() => {
 }
 
 .brand-icon {
-  font-size: 48px;
+  width: 64px;
+  height: 64px;
   display: block;
-  margin-bottom: 12px;
+  margin: 0 auto 12px;
 }
 
 .brand-title {
