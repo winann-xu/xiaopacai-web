@@ -136,6 +136,19 @@ public class RelayController : ControllerBase
                 boundDeviceId = device.Id;
         }
 
+        // [SEC-K10] 中继注册安全事件审计（只记设备/角色/绑定结果，绝不记录 sessionToken）
+        _db.AuditLogs.Add(new AuditLog
+        {
+            UserId = userId,
+            Action = "relay.register",
+            TargetType = "RelaySession",
+            TargetId = (request.Role == "parent" && userId != null) ? userId.Value : null,
+            Detail = $"{{\"deviceId\":\"{request.DeviceId}\",\"role\":\"{request.Role}\",\"boundDeviceId\":{(boundDeviceId?.ToString() ?? "null")}}}",
+            IpAddress = clientIp,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await _db.SaveChangesAsync();
+
         // [SEC-K2] sessionToken 只在此响应中出现一次（家长端持久化保存），服务端仅存于 relay_sessions，
         // 不写入日志、不参与列表接口返回，防止令牌泄露（红线 R8.3）
         return Ok(new

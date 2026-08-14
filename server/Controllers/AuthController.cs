@@ -222,6 +222,10 @@ public class AuthController : ControllerBase
             await _jwt.RevokeToken(refreshToken);
         }
 
+        // [SEC-K10] 登出安全事件审计（不含 token 内容）
+        await AuditAsync("logout", GetUserId(), null, null, null,
+            $"{{\"revoked\":{!string.IsNullOrEmpty(refreshToken)}}}");
+
         // [SEC-K5] 清除浏览器会话 Cookie
         ClearAuthCookies();
 

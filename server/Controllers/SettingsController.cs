@@ -210,6 +210,19 @@ public class SettingsController : ControllerBase
         await _db.UsageRecords.ExecuteDeleteAsync();
         await _db.DailySummaries.ExecuteDeleteAsync();
 
+        // [SEC-K10] 数据清除安全事件审计（审计日志本身保留，保证可追溯）
+        _db.AuditLogs.Add(new AuditLog
+        {
+            UserId = GetUserId(),
+            Action = "settings.clear_data",
+            TargetType = "Data",
+            TargetId = null,
+            Detail = $"{{\"usageRecords\":{usage},\"summaries\":{summaries}}}",
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+            CreatedAt = DateTime.UtcNow,
+        });
+        await _db.SaveChangesAsync();
+
         return Ok(new { message = "使用数据已清除", removedUsageRecords = usage, removedSummaries = summaries });
     }
 

@@ -191,6 +191,11 @@ public class ReportsController : ControllerBase
         }
 
         format = (format ?? "json").ToLowerInvariant();
+
+        // [SEC-K10] 数据导出审计（范围/格式/条数，不含数据内容）
+        await AuditAsync("report.export", "Report", deviceId,
+            $"{{\"from\":\"{startDate:yyyy-MM-dd}\",\"to\":\"{endDate:yyyy-MM-dd}\",\"format\":\"{format}\",\"records\":{records.Count}}}");
+
         var filename = $"xiaopacai-report-{startDate:yyyyMMdd}-{endDate:yyyyMMdd}";
         return format switch
         {
@@ -261,6 +266,24 @@ public class ReportsController : ControllerBase
             policiesQuery = policiesQuery.Where(p => scope.Contains(p.DeviceId));
         var limits = await policiesQuery.Select(p => (int?)p.DailyLimitMinutes).ToListAsync();
         return limits.Where(l => l.HasValue).Sum(l => l!.Value);
+    }
+
+    /// <summary>
+    /// [SEC-K10] 审计日志落库（安全事件全覆盖）
+    /// </summary>
+    private async Task AuditAsync(string action, string? targetType, int? targetId, string? detail)
+    {
+        _db.AuditLogs.Add(new AuditLog
+        {
+            UserId = int.TryParse(DeviceAccess.GetUserId(User), out var uid) ? uid : null,
+            Action = action,
+            TargetType = targetType,
+            TargetId = targetId,
+            Detail = detail,
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+            CreatedAt = DateTime.UtcNow,
+        });
+        await _db.SaveChangesAsync();
     }
 
     private class ExportDay

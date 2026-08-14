@@ -62,6 +62,20 @@ public class DiagnosticsController : ControllerBase
             return StatusCode(403, new { error = "设备令牌无效" });
         }
 
+        // [SEC-K9] 诊断数据最小化：JSON 字段类型/尺寸收敛，畸形或超限直接拒绝；
+        // NetworkType 白名单外一律丢弃（不落库）
+        var permissionStatus = NormalizeDiagnosticsJson(request.PermissionStatus, JsonValueKind.Object, 4096, 0, out var pValid);
+        var serviceStatus = NormalizeDiagnosticsJson(request.ServiceStatus, JsonValueKind.Object, 4096, 0, out var sValid);
+        var recentCrashes = NormalizeDiagnosticsJson(request.RecentCrashes, JsonValueKind.Array, 16384, 20, out var cValid);
+        var p2pHistory = NormalizeDiagnosticsJson(request.P2pHistory, JsonValueKind.Object, 4096, 0, out var hValid);
+        if (!pValid || !sValid || !cValid || !hValid)
+        {
+            _logger.LogWarning("[Diagnostics] 设备 {DeviceId} 上报非法字段被拒绝", request.DeviceId);
+            return BadRequest(new { error = "诊断字段格式无效" });
+        }
+
+        var networkType = NormalizeNetworkType(request.NetworkType);
+
         var record = new DiagnosticRecord
         {
             DeviceId = request.DeviceId,
@@ -69,12 +83,12 @@ public class DiagnosticsController : ControllerBase
             AndroidVersion = Truncate(request.AndroidVersion, 16),
             DeviceModel = Truncate(request.DeviceModel, 64),
             Manufacturer = Truncate(request.Manufacturer, 64),
-            PermissionStatus = request.PermissionStatus,
-            ServiceStatus = request.ServiceStatus,
-            RecentCrashes = request.RecentCrashes,
-            P2pHistory = request.P2pHistory,
+            PermissionStatus = permissionStatus,
+            ServiceStatus = serviceStatus,
+            RecentCrashes = recentCrashes,
+            P2pHistory = p2pHistory,
             DbSizeBytes = request.DbSizeBytes,
-            NetworkType = Truncate(request.NetworkType, 16),
+            NetworkType = networkType,
             ReportedAt = DateTime.UtcNow,
         };
 
@@ -188,6 +202,10 @@ public class DiagnosticsController : ControllerBase
 
         _logger.LogInformation("[Diagnostics] 管理端导出诊断数据 {Count} 条", items.Count);
 
+        // [SEC-K10] 诊断数据导出审计（条数/筛选范围）
+        await AuditAsync("diagnostics.export", "Diagnostics", null,
+            $"{{\"count\":{items.Count},\"deviceId\":\"{deviceId ?? ""}\",\"from\":\"{from ?? ""}\",\"to\":\"{to ?? ""}\"}}");
+
         var json = JsonSerializer.Serialize(items, new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -224,6 +242,73 @@ public class DiagnosticsController : ControllerBase
         if (string.IsNullOrEmpty(value)) return null;
         return value.Length <= maxLength ? value : value[..maxLength];
     }
+
+    /// <summary>
+    /// [SEC-K10] 审计日志落库（管理端数据导出等安全事件）
+    /// </summary>
+    private async Task AuditAsync(string action, string? targetType, int? targetId, string? detail)
+    {
+        _db.AuditLogs.Add(new AuditLog
+        {
+            UserId = int.TryParse(Security.DeviceAccess.GetUserId(User), out var uid) ? uid : null,
+            Action = action,
+            TargetType = targetType,
+            TargetId = targetId,
+            Detail = detail,
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+            CreatedAt = DateTime.UtcNow,
+        });
+        await _db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// [SEC-K9] 诊断 JSON 字段收敛：必须为合法 JSON 且根类型匹配，
+    /// 尺寸/条目数受限（防恶意设备灌入超大或畸形数据）
+    /// </summary>
+    private static string? NormalizeDiagnosticsJson(string? value, JsonValueKind expectedKind,
+        int maxLength, int maxItems, out bool valid)
+    {
+        valid = true;
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (value.Length > maxLength)
+        {
+            valid = false;
+            return null;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(value);
+            var root = doc.RootElement;
+            if (root.ValueKind != expectedKind)
+            {
+                valid = false;
+                return null;
+            }
+            if (expectedKind == JsonValueKind.Array && root.GetArrayLength() > maxItems)
+            {
+                valid = false;
+                return null;
+            }
+            return value;
+        }
+        catch (JsonException)
+        {
+            valid = false;
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// [SEC-K9] 网络类型白名单：wifi/cellular/none，其余值丢弃（不落库）
+    /// </summary>
+    private static string? NormalizeNetworkType(string? value)
+        => value?.ToLowerInvariant() switch
+        {
+            "wifi" => "wifi",
+            "cellular" => "cellular",
+            "none" => "none",
+            _ => null,
+        };
 }
 
 // ========== DTOs ==========

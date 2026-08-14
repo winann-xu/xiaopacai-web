@@ -3,8 +3,10 @@
 // P2 阶段：数据层 + 认证鉴权 完成
 
 using System.IO.Compression;
+using System.Net;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -186,6 +188,19 @@ if (app.Environment.IsProduction() &&
 await app.Services.InitializeDatabaseAsync();
 
 // ========== 中间件管道 ==========
+
+// [SEC-K4/K6] 反向代理转发头：默认关闭。启用后（ReverseProxy:Enabled=true）信任来自
+// 本机回环（127.0.0.0/8，即同机 Nginx 等 TLS 终结代理）的 X-Forwarded-For / X-Forwarded-Proto，
+// 使 Request.IsHttps 正确（认证 Cookie 的 Secure 标记、HSTS 下发均依赖此值）、
+// 审计日志与登录限速拿到真实客户端 IP。回环之外的对端一律不信任，防伪造转发头。
+if (builder.Configuration.GetValue<bool>("ReverseProxy:Enabled", false))
+{
+    app.UseForwardedHeaders(new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+        KnownNetworks = { new IPNetwork(IPAddress.Loopback, 8) },
+    });
+}
 
 // [SEC-K6] HTTPS 强化：HSTS（仅 HTTPS 请求下发，localhost 自动豁免）；
 // HttpsRedirection 在未配置 https_port 时为无操作，部署配 https_port 后自动生效
