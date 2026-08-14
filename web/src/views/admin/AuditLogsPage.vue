@@ -1,48 +1,73 @@
 <script setup lang="ts">
 // 小趴菜 Web 3.0 — 管理端：审计日志
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { Search, Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import dayjs from 'dayjs'
+import { adminAuditApi } from '@/api'
 
 interface AuditEntry {
   id: number; username: string; action: string; resource: string; detail: string; ipAddress: string; timestamp: string
 }
 
-// Mock 审计日志
-const logs = ref<AuditEntry[]>([
-  { id:1, username:'admin', action:'登录', resource:'系统', detail:'管理员登录成功', ipAddress:'127.0.0.1', timestamp: new Date().toISOString() },
-  { id:2, username:'parent', action:'修改策略', resource:'策略', detail:'修改设备「小明的手机」每日限额: 120→180min', ipAddress:'192.168.1.1', timestamp: new Date(Date.now()-3600000).toISOString() },
-  { id:3, username:'admin', action:'创建账号', resource:'账号', detail:'创建家长账号: parent2', ipAddress:'127.0.0.1', timestamp: new Date(Date.now()-7200000).toISOString() },
-  { id:4, username:'parent', action:'发布公告', resource:'公告', detail:'发布公告「今日使用时长已调整」', ipAddress:'192.168.1.1', timestamp: new Date(Date.now()-10800000).toISOString() },
-  { id:5, username:'admin', action:'数据备份', resource:'数据', detail:'手动备份数据库', ipAddress:'127.0.0.1', timestamp: new Date(Date.now()-86400000).toISOString() },
-  { id:6, username:'parent', action:'登录失败', resource:'系统', detail:'密码错误（尝试 3/5）', ipAddress:'192.168.1.100', timestamp: new Date(Date.now()-90000000).toISOString() },
-  { id:7, username:'admin', action:'解绑设备', resource:'设备', detail:'取消授权设备「测试设备」', ipAddress:'127.0.0.1', timestamp: new Date(Date.now()-172800000).toISOString() },
-])
+// [TASK-PRELAUNCH-P4] 移除 Mock：审计日志走真实 API（/admin/audit-logs），失败显示错误态 + 重试
+const logs = ref<AuditEntry[]>([])
+const loading = ref(false)
+const error = ref<string | null>(null)
+const total = ref(0)
+const page = ref(1)
+const pageSize = 20
 
 const searchForm = reactive({ username: '', action: '', dateRange: '' })
-const loading = ref(false)
 
-const filteredLogs = computed(() => {
-  let result = logs.value
-  if (searchForm.username) result = result.filter(l => l.username.includes(searchForm.username))
-  if (searchForm.action) result = result.filter(l => l.action.includes(searchForm.action))
-  return result
-})
+async function loadLogs() {
+  loading.value = true
+  error.value = null
+  try {
+    const params: Record<string, any> = { page: page.value, pageSize }
+    if (searchForm.username) params.username = searchForm.username
+    if (searchForm.action) params.action = searchForm.action
+    if (searchForm.dateRange && Array.isArray(searchForm.dateRange)) {
+      params.from = searchForm.dateRange[0]
+      params.to = searchForm.dateRange[1]
+    }
+    const res = await adminAuditApi.list(params)
+    logs.value = res.data.items ?? res.data
+    total.value = res.data.total ?? logs.value.length
+  } catch (e: any) {
+    error.value = e.response?.data?.message || e.response?.data?.error || '获取审计日志失败'
+  } finally {
+    loading.value = false
+  }
+}
+onMounted(loadLogs)
 
-function exportLogs(format: 'json' | 'csv') {
-  let content = '', filename = `audit-${dayjs().format('YYYYMMDD')}`, mime = ''
-  if (format === 'json') { content = JSON.stringify(filteredLogs.value, null, 2); filename += '.json'; mime = 'application/json' }
-  else { content = 'ID,User,Action,Resource,Detail,IP,Time\n' + filteredLogs.value.map(l => `${l.id},"${l.username}","${l.action}","${l.resource}","${l.detail}","${l.ipAddress}","${l.timestamp}"`).join('\n'); filename += '.csv'; mime = 'text/csv' }
-  const blob = new Blob([content], { type: mime }); const url = URL.createObjectURL(blob)
-  const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url)
-  ElMessage.success('导出完成')
+function handleSearch() { page.value = 1; loadLogs() }
+function handlePageChange(p: number) { page.value = p; loadLogs() }
+
+async function exportLogs(format: 'json' | 'csv') {
+  try {
+    const params: Record<string, any> = {}
+    if (searchForm.username) params.username = searchForm.username
+    if (searchForm.action) params.action = searchForm.action
+    const res = await adminAuditApi.exportData(format, params)
+    // 服务端返回 blob（含 Content-Disposition 文件名）
+    const blob = new Blob([res.data])
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `audit-export.${format === 'json' ? 'json' : 'csv'}`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('导出完成')
+  } catch {
+    ElMessage.error('导出失败')
+  }
 }
 
 function actionTagColor(action: string): string {
   if (action.includes('失败')) return 'danger'
   if (action.includes('登录')) return 'success'
-  if (action.includes('删除')||action.includes('解绑')) return 'warning'
+  if (action.includes('删除')||action.includes('解绑')||action.includes('清除')) return 'warning'
   return 'primary'
 }
 </script>
@@ -66,11 +91,23 @@ function actionTagColor(action: string): string {
       <el-form :inline="true" size="small">
         <el-form-item label="用户"><el-input v-model="searchForm.username" placeholder="用户名" clearable style="width:150px" /></el-form-item>
         <el-form-item label="操作"><el-input v-model="searchForm.action" placeholder="操作类型" clearable style="width:150px" /></el-form-item>
-        <el-form-item><el-button :icon="Search" type="primary">查询</el-button></el-form-item>
+        <el-form-item label="时间范围">
+          <el-date-picker v-model="searchForm.dateRange" type="datetimerange" size="small"
+            start-placeholder="开始时间" end-placeholder="结束时间" value-format="YYYY-MM-DDTHH:mm:ss" style="width: 340px" />
+        </el-form-item>
+        <el-form-item><el-button :icon="Search" type="primary" @click="handleSearch">查询</el-button></el-form-item>
       </el-form>
     </el-card>
 
-    <el-table :data="filteredLogs" v-loading="loading" stripe size="small" max-height="560">
+    <!-- [TASK-PRELAUNCH-P4] 错误态 + 重试（移除 Mock 数据） -->
+    <el-alert v-if="error" type="error" :closable="false" style="margin-bottom: 12px">
+      <template #title>
+        {{ error }}
+        <el-button size="small" type="primary" text @click="loadLogs">重试</el-button>
+      </template>
+    </el-alert>
+
+    <el-table :data="logs" v-loading="loading" stripe size="small" max-height="560">
       <el-table-column prop="id" label="#" width="60" />
       <el-table-column prop="username" label="用户" width="100" />
       <el-table-column label="操作" width="100">
@@ -83,7 +120,8 @@ function actionTagColor(action: string): string {
         <template #default="{ row }">{{ new Date(row.timestamp).toLocaleString('zh-CN') }}</template>
       </el-table-column>
     </el-table>
-    <el-pagination layout="total, prev, pager, next" :total="filteredLogs.length" :page-size="20" style="margin-top:16px;justify-content:flex-end" />
+    <el-pagination layout="total, prev, pager, next" :total="total" :page-size="pageSize"
+      :current-page="page" @current-change="handlePageChange" style="margin-top:16px;justify-content:flex-end" />
   </div>
 </template>
 

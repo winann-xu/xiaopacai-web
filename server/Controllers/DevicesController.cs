@@ -41,11 +41,13 @@ public class DevicesController : ControllerBase
 
     /// <summary>
     /// GET /api/devices — 设备列表（含今日使用汇总）
+    /// [TASK-PRELAUNCH-P4] 口径统一：todayUsageMinutes = 调整后已用（max(0, 原始累计 − 重置偏移)），
+    /// 日期按 Asia/Shanghai；原始累计/剩余/偏移一并返回供 UI 区分标注（需求 7 第 1/2 条）
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> List()
     {
-        var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
+        var today = AppClock.TodayShanghai();
 
         var query = _db.Devices.AsQueryable();
 
@@ -69,6 +71,10 @@ public class DevicesController : ControllerBase
         var result = devices.Select(d =>
         {
             summaries.TryGetValue(d.Id, out var summary);
+            var raw = summary?.TotalMinutes ?? 0;
+            var adjusted = AdjustedUsageCalculator.ComputeAdjusted(
+                raw, d.LastResetOffsetMinutes, d.LastResetDate, today);
+            var limit = d.Policy?.DailyLimitMinutes ?? 120;
             return new
             {
                 id = d.Id,
@@ -80,8 +86,14 @@ public class DevicesController : ControllerBase
                 lastSeen = d.LastSeenAt,
                 certFingerprint = d.CertFingerprint,
                 pairedAt = d.UpdatedAt,
-                todayUsageMinutes = summary?.TotalMinutes ?? 0,
-                todayLimitMinutes = d.Policy?.DailyLimitMinutes ?? 120,
+                // [TASK-PRELAUNCH-P4] 调整后口径（设备页/仪表盘/策略页统一显示）
+                todayUsageMinutes = adjusted,
+                rawTodayUsageMinutes = raw,
+                todayRemainingMinutes = Math.Max(0, limit - adjusted),
+                todayLimitMinutes = limit,
+                lastResetOffsetMinutes = d.LastResetDate == today ? d.LastResetOffsetMinutes : 0,
+                lastResetDate = d.LastResetDate,
+                lastReportAt = d.LastReportAt,
                 pairStatus = d.PairStatus,
             };
         });
@@ -91,6 +103,7 @@ public class DevicesController : ControllerBase
 
     /// <summary>
     /// GET /api/devices/{id} — 设备详情
+    /// [TASK-PRELAUNCH-P4] 补充：调整后已用/剩余、原始累计、重置偏移、最近上报时间（需求 7 第 5 条）
     /// </summary>
     [HttpGet("{id:int}")]
     public async Task<IActionResult> Get(int id)
@@ -102,9 +115,14 @@ public class DevicesController : ControllerBase
         if (device == null)
             return NotFound(new { error = "设备不存在" });
 
-        var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
+        var today = AppClock.TodayShanghai();
         var summary = await _db.DailySummaries
             .FirstOrDefaultAsync(s => s.DeviceId == device.Id && s.SummaryDate == today);
+
+        var raw = summary?.TotalMinutes ?? 0;
+        var adjusted = AdjustedUsageCalculator.ComputeAdjusted(
+            raw, device.LastResetOffsetMinutes, device.LastResetDate, today);
+        var limit = device.Policy?.DailyLimitMinutes ?? 120;
 
         return Ok(new
         {
@@ -119,8 +137,13 @@ public class DevicesController : ControllerBase
             lastSeen = device.LastSeenAt,
             isActive = device.IsActive,
             createdAt = device.CreatedAt,
-            todayUsageMinutes = summary?.TotalMinutes ?? 0,
-            todayLimitMinutes = device.Policy?.DailyLimitMinutes ?? 120,
+            todayUsageMinutes = adjusted,
+            rawTodayUsageMinutes = raw,
+            todayRemainingMinutes = Math.Max(0, limit - adjusted),
+            todayLimitMinutes = limit,
+            lastResetOffsetMinutes = device.LastResetDate == today ? device.LastResetOffsetMinutes : 0,
+            lastResetDate = device.LastResetDate,
+            lastReportAt = device.LastReportAt,
         });
     }
 

@@ -31,7 +31,7 @@ public class ReportsController : ControllerBase
     [HttpGet("daily")]
     public async Task<IActionResult> Daily(int? deviceId, string? date)
     {
-        var day = DateTime.TryParse(date, out var parsed) ? parsed.Date : DateTime.UtcNow.Date;
+        var day = DateTime.TryParse(date, out var parsed) ? parsed.Date : AppClock.TodayShanghaiDate();
 
         var (records, _) = await QueryRecords(deviceId, day.AddDays(-1), day.AddDays(2));
         var dayRecords = records.Where(r => r.StartTime.ToString("yyyy-MM-dd") == day.ToString("yyyy-MM-dd")).ToList();
@@ -89,7 +89,7 @@ public class ReportsController : ControllerBase
         if (!string.IsNullOrEmpty(weekStart) && DateTime.TryParse(weekStart, out var parsed))
             start = parsed.Date;
         else
-            start = DateTime.UtcNow.Date.AddDays(-6);
+            start = AppClock.TodayShanghaiDate().AddDays(-6);  // [TASK-PRELAUNCH-P4] 时区口径统一 Asia/Shanghai
 
         var (records, _) = await QueryRecords(deviceId, start.AddDays(-7), start.AddDays(14));
 
@@ -145,8 +145,8 @@ public class ReportsController : ControllerBase
     public async Task<IActionResult> Export(string format = "json", int? deviceId = null,
         string? from = null, string? to = null)
     {
-        var startDate = DateTime.TryParse(from, out var f) ? f.Date : DateTime.UtcNow.Date.AddDays(-29);
-        var endDate = DateTime.TryParse(to, out var t) ? t.Date : DateTime.UtcNow.Date;
+        var startDate = DateTime.TryParse(from, out var f) ? f.Date : AppClock.TodayShanghaiDate().AddDays(-29);
+        var endDate = DateTime.TryParse(to, out var t) ? t.Date : AppClock.TodayShanghaiDate();
 
         if (endDate < startDate)
             return BadRequest(new { error = "结束日期不能早于开始日期" });

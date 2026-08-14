@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
 using XiaopacaiWeb.P2P;
+using XiaopacaiWeb.Services;
 
 namespace XiaopacaiWeb.Controllers;
 
@@ -112,6 +113,8 @@ public class PoliciesController : ControllerBase
     /// <summary>
     /// POST /api/policies/{deviceId}/reset-limit — 重置当日使用限额（重新开始计时）
     /// 说明：仅重置“今日已用”的计时基准；重置前已产生的使用记录仍保留，报告照常统计
+    /// [TASK-PRELAUNCH-P4] 落库重置偏移：立即以服务端原始累计作为偏移估计值（设备页立刻归零显示），
+    /// 儿童端下次 usage_report 带回自算偏移后覆盖精修（需求 7 第 1 条）
     /// </summary>
     [HttpPost("{deviceId:int}/reset-limit")]
     public async Task<IActionResult> ResetLimit(int deviceId)
@@ -122,6 +125,13 @@ public class PoliciesController : ControllerBase
 
         var resetAt = DateTime.UtcNow;
         var resetAtUnix = new DateTimeOffset(resetAt).ToUnixTimeSeconds();
+        var today = AppClock.TodayShanghai();
+
+        // [TASK-PRELAUNCH-P4] 重置偏移 = 当前原始累计（估计值），落库后设备页/仪表盘立即按调整后口径显示
+        var summary = await _db.DailySummaries
+            .FirstOrDefaultAsync(s => s.DeviceId == deviceId && s.SummaryDate == today);
+        device.LastResetDate = today;
+        device.LastResetOffsetMinutes = Math.Max(0, summary?.TotalMinutes ?? 0);
 
         // 先挂起待发标记（设备离线时保留，重连握手补推）
         device.PendingResetAt = resetAt;
@@ -137,7 +147,10 @@ public class PoliciesController : ControllerBase
         }
 
         await AuditAsync("policy.reset_limit", "Device", deviceId,
-            $"{{\"pushed\":{pushed},\"resetAt\":{resetAtUnix}}}");
+            $"{{\"pushed\":{pushed},\"resetAt\":{resetAtUnix},\"offsetMin\":{device.LastResetOffsetMinutes}}}");
+
+        var limit = (await _db.Policies.FirstOrDefaultAsync(p => p.DeviceId == deviceId))
+            ?.DailyLimitMinutes ?? 120;
 
         return Ok(new
         {
@@ -146,6 +159,9 @@ public class PoliciesController : ControllerBase
                 : "设备离线，重置指令已挂起，儿童端重连后自动生效",
             pushed,
             resetAt = resetAtUnix,
+            todayUsageMinutes = 0,
+            todayRemainingMinutes = limit,
+            lastResetOffsetMinutes = device.LastResetOffsetMinutes,
         });
     }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 小趴菜 Web 3.0 — 仪表盘
-import { onMounted, computed, ref } from 'vue'
+import { onMounted, onUnmounted, computed, ref } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import { useAnnouncementStore } from '@/stores/announcements'
 import { useIsMobile } from '@/composables/useIsMobile'
@@ -23,7 +23,19 @@ const isMobile = useIsMobile()
 const urgentUnack = ref<number | null>(null)
 const urgentLoaded = ref(false)
 
+// [TASK-PRELAUNCH-P4] 实时刷新：30s 轮询设备与紧急统计（额度变化 ≤30s 同步，需求 9 第 2 条）
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+
+async function loadUrgentStats() {
+  try {
+    const res = await announcementApi.urgentStats()
+    urgentUnack.value = res.data.unacknowledged ?? 0
+    urgentLoaded.value = true
+  } catch { urgentLoaded.value = false } // 失败回退“已发布紧急公告数”口径
+}
+
 // 统计卡片数据
+// [TASK-PRELAUNCH-P4] 今日已用/限额为调整后口径（与设备页/策略页/报告同源一致）
 const stats = computed(() => ({
   totalDevices: deviceStore.totalCount,
   onlineDevices: deviceStore.onlineCount,
@@ -55,14 +67,20 @@ const usagePieOption = computed(() => ({
 }))
 
 // 最近事件
+// [TASK-PRELAUNCH-P4] 需求 9 第 3 条：事件时间用真实数据时间（最近上报/最后在线），
+// 不再用 new Date().toISOString() 伪造当前时间
 const recentEvents = computed(() => {
   const events: { time: string; text: string; type: 'info' | 'warning' | 'danger' }[] = []
   deviceStore.devices.forEach(d => {
     if (d.status === 'offline') {
-      events.push({ time: d.lastSeen, text: `${d.name} 已离线`, type: 'warning' })
+      events.push({ time: d.lastSeen, text: `${d.name} 已离线（最后在线）`, type: 'warning' })
     }
     if (d.todayUsageMinutes >= d.todayLimitMinutes) {
-      events.push({ time: new Date().toISOString(), text: `${d.name} 已达今日限额`, type: 'danger' })
+      events.push({
+        time: d.lastReportAt || d.lastSeen,
+        text: `${d.name} 已达今日限额（按最近上报）`,
+        type: 'danger',
+      })
     }
   })
   announcementStore.announcements.filter(a => a.status === 'published').forEach(a => {
@@ -76,18 +94,34 @@ onMounted(async () => {
     deviceStore.fetchDevices(),
     announcementStore.fetchAnnouncements(),
   ])
-  // [TASK-PRELAUNCH-P3] 拉取紧急公告未确认统计（基于回执记录）
-  try {
-    const res = await announcementApi.urgentStats()
-    urgentUnack.value = res.data.unacknowledged ?? 0
-    urgentLoaded.value = true
-  } catch { urgentLoaded.value = false } // 失败回退“已发布紧急公告数”口径
+  await loadUrgentStats()
+  // [TASK-PRELAUNCH-P4] 30s 轮询：设备状态/额度 + 紧急未确认数
+  refreshTimer = setInterval(async () => {
+    deviceStore.fetchDevices()
+    loadUrgentStats()
+  }, 30_000)
 })
+onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
+
+function fmtTime(iso?: string | null) { return iso ? new Date(iso).toLocaleString('zh-CN') : '—' }
 </script>
 
 <template>
   <div class="dashboard-page">
     <h2 class="page-title">仪表盘</h2>
+
+    <!-- [TASK-PRELAUNCH-P4] 最后刷新时间 + 30s 自动轮询说明（需求 9 第 2 条） -->
+    <p v-if="deviceStore.lastRefreshAt" class="last-refresh">
+      最后刷新 {{ fmtTime(deviceStore.lastRefreshAt) }} · 每 30 秒自动更新
+    </p>
+
+    <!-- [TASK-PRELAUNCH-P4] 错误态 + 重试（移除 Mock 兜底，绝不渲染假设备） -->
+    <el-alert v-if="deviceStore.error" type="error" :closable="false" class="load-error">
+      <template #title>
+        {{ deviceStore.error }}
+        <el-button size="small" type="primary" text @click="deviceStore.fetchDevices()">重试</el-button>
+      </template>
+    </el-alert>
 
     <!-- 统计卡片 -->
     <el-row :gutter="16" class="stat-cards">
@@ -211,6 +245,8 @@ onMounted(async () => {
 <style scoped>
 .dashboard-page { max-width: 1400px; }
 .page-title { font-size: 22px; font-weight: 600; margin: 0 0 16px; color: var(--el-text-color-primary); }
+.last-refresh { font-size: 12px; color: var(--el-text-color-placeholder); margin: -8px 0 12px; }
+.load-error { margin-bottom: 12px; }
 .stat-cards .el-col { margin-bottom: 16px; }
 .stat-card { cursor: default; }
 .stat-inner { display: flex; align-items: center; gap: 14px; }
