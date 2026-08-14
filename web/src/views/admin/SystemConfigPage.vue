@@ -34,6 +34,10 @@ async function saveConfig() {
       <el-button type="primary" :loading="saving" @click="saveConfig">保存配置</el-button>
     </div>
 
+    <!-- [TASK-PRELAUNCH-P1] 诚实提示：当前版本这些配置仅落库，运行时尚未消费 -->
+    <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 16px"
+      title="以下配置当前版本仅保存到数据库并写入审计日志，端口/绑定/HTTPS/登录锁定/数据清理等运行时生效能力开发中，暂以服务启动参数为准。" />
+
     <div class="config-grid">
       <el-card shadow="hover"><template #header>网络配置</template>
         <el-form label-position="left" label-width="160px">

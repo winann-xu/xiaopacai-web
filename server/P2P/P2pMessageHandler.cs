@@ -555,11 +555,8 @@ public class P2pMessageHandler
             }));
         }
 
-        // 分类限额（仅启用即 >=0 的项）
-        AddCategoryLimit(items, deviceId, version, "game", policy.CategoryGameLimit);
-        AddCategoryLimit(items, deviceId, version, "social", policy.CategorySocialLimit);
-        AddCategoryLimit(items, deviceId, version, "video", policy.CategoryVideoLimit);
-        AddCategoryLimit(items, deviceId, version, "learning", policy.CategoryLearningLimit);
+        // [TASK-PRELAUNCH-P1] 分类限额暂不可用：一律不向儿童端下发 category_limit 策略项
+        // （即使库中残留历史启用值，也避免误生效）
 
         // 白名单
         var whitelist = DeserializeStringList(policy.WhitelistApps);
@@ -592,29 +589,6 @@ public class P2pMessageHandler
         }
 
         return items;
-    }
-
-    private static void AddCategoryLimit(List<string> items, string deviceId, long version,
-        string category, int minutes)
-    {
-        if (minutes < 0) return;
-        items.Add(JsonSerializer.Serialize(new Dictionary<string, object>
-        {
-            ["policyType"] = "category_limit",
-            ["deviceId"] = deviceId,
-            ["isActive"] = true,
-            ["version"] = version,
-            ["category"] = category,
-            ["categoryLimitMinutes"] = minutes,
-            ["label"] = category switch
-            {
-                "game" => "游戏限额",
-                "social" => "社交限额",
-                "video" => "视频限额",
-                "learning" => "学习限额",
-                _ => "分类限额",
-            },
-        }));
     }
 
     /// <summary>

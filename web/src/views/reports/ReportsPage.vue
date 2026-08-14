@@ -2,6 +2,7 @@
 // 小趴菜 Web 3.0 — 使用报告
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
+import { useIsMobile } from '@/composables/useIsMobile'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { LineChart, BarChart } from 'echarts/charts'
@@ -13,6 +14,7 @@ import dayjs from 'dayjs'
 use([LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent, CanvasRenderer])
 
 const deviceStore = useDeviceStore()
+const isMobile = useIsMobile()
 const reportType = ref<'daily' | 'weekly'>('daily')
 const selectedDeviceId = ref<number | null>(null)
 
@@ -113,7 +115,21 @@ function exportReport(format: 'txt'|'json'|'csv') {
       </el-card>
       <el-card shadow="hover" style="margin-top:16px"><template #header>周使用趋势</template><v-chart :option="weeklyLineOption" autoresize style="height:320px" /></el-card>
       <el-card shadow="hover" style="margin-top:16px"><template #header>每日明细</template>
-        <el-table :data="weeklyData.dates.map((d,i)=>({date:d,minutes:weeklyData.dailyTotals[i]}))" stripe size="small">
+        <!-- [TASK-PRELAUNCH-P1] 移动端：表格降级为卡片列表 -->
+        <div v-if="isMobile" class="daily-mobile-list">
+          <div v-for="(d, i) in weeklyData.dates" :key="d" class="daily-mobile-item">
+            <div class="dm-head">
+              <span class="dm-date">{{ d }}</span>
+              <el-tag :type="weeklyData.dailyTotals[i]>150?'danger':weeklyData.dailyTotals[i]>100?'warning':'success'" size="small">
+                {{ weeklyData.dailyTotals[i]>150?'超标':weeklyData.dailyTotals[i]>100?'正常':'偏低' }}
+              </el-tag>
+            </div>
+            <el-progress :percentage="Math.round(weeklyData.dailyTotals[i]/200*100)" :stroke-width="12">
+              <span>{{ weeklyData.dailyTotals[i] }} 分钟</span>
+            </el-progress>
+          </div>
+        </div>
+        <el-table v-else :data="weeklyData.dates.map((d,i)=>({date:d,minutes:weeklyData.dailyTotals[i]}))" stripe size="small">
           <el-table-column prop="date" label="日期" width="140" />
           <el-table-column label="使用时长" min-width="200">
             <template #default="{row}"><el-progress :percentage="Math.round(row.minutes/200*100)" :stroke-width="14"><span>{{ row.minutes }} 分钟</span></el-progress></template>
@@ -139,4 +155,17 @@ function exportReport(format: 'txt'|'json'|'csv') {
 .summary-value small { font-size: 14px; font-weight: 400; }
 .summary-detail { display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; color: var(--el-text-color-secondary); }
 .cat-chip { padding: 2px 8px; border: 1px solid var(--el-border-color); border-radius: 12px; font-size: 12px; }
+
+/* [TASK-PRELAUNCH-P1] 移动端：明细卡片 + 页头堆叠 */
+.daily-mobile-list { display: flex; flex-direction: column; gap: 10px; }
+.daily-mobile-item { padding: 10px 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; }
+.dm-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.dm-date { font-size: 13px; font-weight: 600; }
+
+@media (max-width: 768px) {
+  .page-actions { flex-wrap: wrap; width: 100%; }
+  .page-actions > * { flex: 1; min-width: 0; }
+  .summary-stat { flex-direction: column; gap: 4px; }
+  .summary-value { font-size: 24px; }
+}
 </style>

@@ -160,4 +160,14 @@ function statusText(s: string) { return s === 'online' ? '在线' : s === 'recon
 .bind-code { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--el-text-color-secondary); }
 .bind-code strong { font-size: 22px; letter-spacing: 4px; color: var(--el-color-primary); }
 .bind-code em { font-size: 12px; font-style: normal; color: var(--el-text-color-placeholder); }
+
+/* [TASK-PRELAUNCH-P1] 移动端：页头堆叠、搜索全宽、单列卡片、按钮触控区 */
+@media (max-width: 768px) {
+  .page-header { flex-direction: column; align-items: stretch; }
+  .page-actions { flex-direction: column; }
+  .page-actions .el-input { width: 100% !important; }
+  .page-actions .el-button { min-height: 44px; }
+  .device-grid { grid-template-columns: 1fr; }
+  .card-actions .el-button { min-height: 44px; }
+}
 </style>

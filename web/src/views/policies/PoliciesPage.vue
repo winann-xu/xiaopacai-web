@@ -53,7 +53,8 @@ function collectPolicy(): Policy {
     dailyLimitMinutes: dailyLimit.value,
     bedtimeStart: bedtimeStart.value,
     bedtimeEnd: bedtimeEnd.value,
-    categoryLimits: categoryLimits.value,
+    // [TASK-PRELAUNCH-P1] 分类限额暂不可用：不随保存提交（后端强制 -1 不限）
+    categoryLimits: [],
     whitelist: whitelistText.value.split('\n').filter(Boolean),
     blacklist: blacklistText.value.split('\n').filter(Boolean),
     timeoutAction: timeoutAction.value,
@@ -132,28 +133,33 @@ async function resetLimit() {
           <p class="hint">就寝时段内设备将自动锁定</p>
         </el-card>
 
-        <el-card shadow="hover"><template #header>分类限额</template>
+        <el-card shadow="hover" class="card-disabled">
+          <template #header>
+            分类限额
+            <!-- [TASK-PRELAUNCH-P1] 分类限额暂不可用：仅展示，不可编辑、不随保存下发 -->
+            <el-tag type="warning" size="small" effect="light" class="unavailable-tag">暂不可用</el-tag>
+          </template>
           <div class="category-limits">
             <div v-for="cat in categoryLimits" :key="cat.category" class="cat-row">
               <div class="cat-info">
-                <el-switch v-model="cat.enabled" size="small" @change="isDirty = true" />
+                <el-switch v-model="cat.enabled" size="small" disabled />
                 <span class="cat-label">{{ cat.label }}</span>
               </div>
-              <el-input-number v-model="cat.minutes" :min="0" :max="480" :step="10" :disabled="!cat.enabled"
-                size="small" style="width:120px" @change="isDirty = true" />
+              <el-input-number v-model="cat.minutes" :min="0" :max="480" :step="10"
+                size="small" style="width:120px" disabled />
               <span class="cat-unit">分钟/天</span>
             </div>
           </div>
-          <p class="hint">0 分钟表示完全禁止该类别</p>
+          <p class="hint">分类限额功能开发中，暂不可用，敬请期待；请使用每日使用限额与黑白名单。</p>
         </el-card>
 
         <el-card shadow="hover"><template #header>应用黑白名单</template>
           <el-row :gutter="16">
-            <el-col :span="12">
+            <el-col :xs="24" :span="12">
               <p class="list-label">白名单（始终允许）</p>
               <el-input v-model="whitelistText" type="textarea" :rows="4" placeholder="每行一个应用包名" @change="isDirty = true" />
             </el-col>
-            <el-col :span="12">
+            <el-col :xs="24" :span="12">
               <p class="list-label">黑名单（始终禁止）</p>
               <el-input v-model="blacklistText" type="textarea" :rows="4" placeholder="每行一个应用包名" @change="isDirty = true" />
             </el-col>
@@ -195,5 +201,18 @@ async function resetLimit() {
 .cat-label { font-size: 14px; font-weight: 500; }
 .cat-unit { font-size: 12px; color: var(--el-text-color-secondary); }
 .list-label { font-size: 13px; font-weight: 500; margin: 0 0 6px; }
-@media (max-width: 768px) { .policy-grid { grid-template-columns: 1fr; } }
+/* 暂不可用卡片：降饱和提示 */
+.card-disabled { opacity: 0.85; }
+.unavailable-tag { margin-left: 8px; }
+@media (max-width: 768px) {
+  .policy-grid { grid-template-columns: 1fr; }
+  /* 移动端：页头堆叠、选择器全宽、按钮触控区 */
+  .page-header { flex-direction: column; align-items: stretch; }
+  .page-actions { flex-direction: column; }
+  .page-actions .el-select { width: 100% !important; }
+  .page-actions .el-button { min-height: 44px; }
+  .time-range { flex-wrap: wrap; }
+  .cat-row { flex-wrap: wrap; }
+  .cat-unit { margin-left: auto; }
+}
 </style>

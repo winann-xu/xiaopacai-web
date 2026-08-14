@@ -3,6 +3,7 @@
 import { onMounted, computed } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import { useAnnouncementStore } from '@/stores/announcements'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { Monitor, WarningFilled, Notification, Clock } from '@element-plus/icons-vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
@@ -14,6 +15,7 @@ use([PieChart, BarChart, LineChart, GridComponent, TooltipComponent, LegendCompo
 
 const deviceStore = useDeviceStore()
 const announcementStore = useAnnouncementStore()
+const isMobile = useIsMobile()
 
 // 统计卡片数据
 const stats = computed(() => ({
@@ -143,7 +145,25 @@ onMounted(async () => {
     <!-- 设备快捷状态 -->
     <el-card shadow="hover" style="margin-top: 16px">
       <template #header>设备概览</template>
-      <el-table :data="deviceStore.devices" v-loading="deviceStore.loading" stripe size="small">
+      <!-- [TASK-PRELAUNCH-P1] 移动端：表格降级为卡片列表 -->
+      <div v-if="isMobile" class="device-mobile-list" v-loading="deviceStore.loading">
+        <div v-for="row in deviceStore.devices" :key="row.id" class="device-mobile-item">
+          <div class="dmi-head">
+            <span class="dmi-name">{{ row.name }}</span>
+            <el-tag :type="row.status === 'online' ? 'success' : row.status === 'reconnecting' ? 'warning' : 'info'" size="small">
+              {{ row.status === 'online' ? '在线' : row.status === 'reconnecting' ? '重连中' : '离线' }}
+            </el-tag>
+          </div>
+          <div class="dmi-meta">{{ row.deviceId }} · IP {{ row.ipAddress }}</div>
+          <el-progress :percentage="row.todayLimitMinutes ? Math.round(row.todayUsageMinutes / row.todayLimitMinutes * 100) : 0"
+            :status="row.todayUsageMinutes >= row.todayLimitMinutes ? 'exception' : undefined" :stroke-width="12">
+            <span>{{ row.todayUsageMinutes }} / {{ row.todayLimitMinutes }} min</span>
+          </el-progress>
+          <div class="dmi-time">最后在线：{{ new Date(row.lastSeen).toLocaleString('zh-CN') }}</div>
+        </div>
+        <el-empty v-if="!deviceStore.devices.length" description="暂无设备" :image-size="80" />
+      </div>
+      <el-table v-else :data="deviceStore.devices" v-loading="deviceStore.loading" stripe size="small">
         <el-table-column prop="name" label="设备名称" min-width="140" />
         <el-table-column prop="deviceId" label="设备ID" width="120" />
         <el-table-column label="状态" width="100">
@@ -185,4 +205,18 @@ onMounted(async () => {
 .stat-value small { font-size: 13px; font-weight: 400; color: var(--el-text-color-secondary); }
 .stat-label { font-size: 13px; color: var(--el-text-color-secondary); margin-top: 2px; }
 .events-card { height: calc(300px + 58px); overflow-y: auto; }
+
+/* [TASK-PRELAUNCH-P1] 移动端：设备卡片列表 + 事件卡自适应 */
+.device-mobile-list { display: flex; flex-direction: column; gap: 10px; }
+.device-mobile-item { padding: 10px 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; }
+.dmi-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.dmi-name { font-size: 14px; font-weight: 600; }
+.dmi-meta { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 8px; }
+.dmi-time { font-size: 12px; color: var(--el-text-color-placeholder); margin-top: 6px; }
+
+@media (max-width: 768px) {
+  .events-card { height: auto; }
+  .stat-value { font-size: 20px; }
+  .dashboard-page :deep(.el-card__body) { padding: 14px; }
+}
 </style>

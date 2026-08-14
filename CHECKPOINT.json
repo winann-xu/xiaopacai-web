@@ -1,7 +1,7 @@
 {
   "project": "xiaopacai-web",
-  "version": "3.0.0-opt12-relay-e2e",
-  "current_phase": "OPT12-P1",
+  "version": "3.0.0-prelaunch-p1",
+  "current_phase": "PRELAUNCH-P1",
   "opt12": {
     "current_phase": "P1",
     "P1": {
@@ -153,6 +153,35 @@
       ]
     }
   },
-  "last_updated": "2026-08-11T15:30:00Z",
-  "note": "深夜深度验收：局域网1:1/一拖二/Windows互联/Web中继全链路（双儿童在线、中继转发1499字节到家长端、诊断、分类API）通过；隐私边界审计完成。Codex 修复：900b8da（SQLite 翻译）、ebc48fe（静态文件）、4e9f574（已有设备重连关联配对码，修复 owner 绑定导致中继路由失效）。dotnet 178/178。遗留：Web P2P 未处理 diagnostics_report；relay/register 重复会话行（建议 upsert）。"
+  "last_updated": "2026-08-14",
+  "note": "深夜深度验收：局域网1:1/一拖二/Windows互联/Web中继全链路（双儿童在线、中继转发1499字节到家长端、诊断、分类API）通过；隐私边界审计完成。Codex 修复：900b8da（SQLite 翻译）、ebc48fe（静态文件）、4e9f574（已有设备重连关联配对码，修复 owner 绑定导致中继路由失效）。dotnet 178/178。遗留：Web P2P 未处理 diagnostics_report；relay/register 重复会话行（建议 upsert）。",
+  "prelaunch": {
+    "current_phase": "P1",
+    "basis": "提示词包《小趴菜_上线前调整优化》V1.0-PRELAUNCH（2026-08-14，用户确认）",
+    "P1": {
+      "name": "移动端响应式 + 下载中心期待上线 + 设置页裁剪 + 分类限额暂不可用",
+      "status": "completed",
+      "completed_at": "2026-08-14",
+      "description": "需求 1/2/5/8（P1 范围）：Web 移动端自适应、下载中心 Windows 改期待上线、设置页按角色裁剪、分类限额标注暂不可用并停止下发",
+      "tasks": [
+        "需求1 移动端：MainLayout <768px 底部 Tab 导航 + 更多抽屉（下载中心/管理后台）；顶栏精简；el-dialog 全局自适应；仪表盘/报告表格移动端卡片化；设备/公告/策略/设置/下载/登录页移动端样式；触控区 ≥44px；新增 useIsMobile composable",
+        "需求2 下载中心：Windows/iOS 卡片按钮禁用、文案统一“期待上线”，Android APK 与授权脚本不受影响（另：合并 Codex 下载中心 bundle a802813）",
+        "需求5 分类限额：策略页卡片加“暂不可用”标签、控件全部置灰、保存不提交；后端 PoliciesController 强制四类限额 -1；BuildPolicyConfigItems 一律不下发 category_limit 策略项（含历史残留值防护）",
+        "需求8 设置页：通知偏好整卡隐藏（服务端无通知推送能力）；Web 服务配置整卡隐藏（DB 配置不参与启动绑定）；数据管理恢复/清除仅管理员，家长仅备份；管理端系统设置页加诚实提示（配置仅落库，运行时生效能力开发中）"
+      ],
+      "outputs": [
+        "web/src/layouts/MainLayout.vue（桌面/移动双布局）",
+        "web/src/composables/useIsMobile.ts（新增）",
+        "web/src/App.vue（全局移动端样式）",
+        "web/src/views/{dashboard,devices,policies,announcements,reports,settings,public}/ 各页移动端适配",
+        "server/Controllers/PoliciesController.cs（分类限额强制 -1）",
+        "server/P2P/P2pMessageHandler.cs（BuildPolicyConfigItems 移除 category_limit 下发）"
+      ],
+      "verification": {
+        "npm run build": "通过（0 错误）",
+        "dotnet build/test": "待 Codex 在 Windows 侧执行（本机无 dotnet）",
+        "gui_walkthrough": "待 Codex：1920/1366/768/375/390 四档宽度截图走查"
+      }
+    }
+  }
 }
