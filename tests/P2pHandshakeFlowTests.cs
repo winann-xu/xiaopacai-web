@@ -219,6 +219,7 @@ public class P2pHandshakeFlowTests : IDisposable
             PairStatus = "paired",
             OnlineStatus = "offline",
             IsActive = true,
+            CertFingerprint = "fp-existing-dev", // [SEC-K1] 已配对设备必须已有可信指纹
         };
         db.Devices.Add(device);
         await db.SaveChangesAsync();
@@ -374,7 +375,7 @@ public class P2pHandshakeFlowTests : IDisposable
     }
 
     [Fact]
-    public async Task Handshake_PairedDeviceNoStoredFingerprint_ToFuAdopts()
+    public async Task Handshake_PairedDeviceNoStoredFingerprint_RejectedRequiresRepair()
     {
         var db = CreateDb();
         db.Devices.Add(new Device
@@ -394,9 +395,11 @@ public class P2pHandshakeFlowTests : IDisposable
             new HandshakeRequest { DeviceId = "tofu-dev" },
             peerFingerprint: "fp-tofu-new", remoteEndPoint: "8.8.8.8:1234");
 
-        Assert.True(response.Ok);
+        // [SEC-K1] 无指纹历史设备不再 TOFU 采纳，必须解绑后重新配对
+        Assert.False(response.Ok);
+        Assert.Contains("重新配对", response.Error);
         var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "tofu-dev");
-        Assert.Equal("fp-tofu-new", updated.CertFingerprint);
+        Assert.Null(updated.CertFingerprint);
     }
 
     [Fact]

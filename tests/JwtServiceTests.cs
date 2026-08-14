@@ -188,7 +188,8 @@ public class JwtServiceTests
 
         var stored = await db.RefreshTokens.SingleAsync();
         Assert.Equal(1, stored.UserId);
-        Assert.Equal(refreshToken, stored.Token);
+        // [SEC-P1] 不落明文 Token：明文列留空，仅存 SHA-256 TokenHash（红线 R4.3）
+        Assert.Equal(string.Empty, stored.Token);
         Assert.NotEqual(refreshToken, stored.TokenHash);
         Assert.False(stored.IsRevoked);
         Assert.True(stored.ExpiresAt > DateTime.UtcNow);

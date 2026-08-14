@@ -44,7 +44,13 @@ public class AuthControllerTests
         var logger = new Microsoft.Extensions.Logging.Abstractions.NullLogger<AuthController>();
         // [SEC-K5] 空配置即可：RefreshTokenExpiryDays 走默认值 7
         var config = new ConfigurationBuilder().Build();
-        return new AuthController(db, hasher, jwt, new TicketStore(), logger, config);
+        var controller = new AuthController(db, hasher, jwt, new TicketStore(), logger, config);
+        // [SEC-P2] 提供默认 HttpContext：IsSameOriginRequest 需读取 Request（无 Origin 头时放行）
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext(),
+        };
+        return controller;
     }
 
     /// <summary>
@@ -360,11 +366,11 @@ public class AuthControllerTests
         var setCookies = ctx.Response.Headers.SetCookie;
 
         // access_token：httpOnly、路径 /
-        Assert.Contains(setCookies, c => c.Contains("access_token=at") && c.Contains("HttpOnly"));
+        Assert.Contains(setCookies, c => c.Contains("access_token=at") && c.Contains("httponly", StringComparison.OrdinalIgnoreCase));
         // refresh_token：httpOnly、路径限定 /api/auth（缩小暴露面）
-        Assert.Contains(setCookies, c => c.Contains("refresh_token=rt") && c.Contains("HttpOnly") && c.Contains("path=/api/auth"));
+        Assert.Contains(setCookies, c => c.Contains("refresh_token=rt") && c.Contains("httponly", StringComparison.OrdinalIgnoreCase) && c.Contains("path=/api/auth"));
         // logged_in：JS 可读标记，不含凭据
-        Assert.Contains(setCookies, c => c.Contains("logged_in=1") && !c.Contains("HttpOnly"));
+        Assert.Contains(setCookies, c => c.Contains("logged_in=1") && !c.Contains("httponly", StringComparison.OrdinalIgnoreCase));
         // 全部 SameSite=Strict（防 CSRF）
         Assert.All(setCookies, c => Assert.Contains("samesite=strict", c, StringComparison.OrdinalIgnoreCase));
     }
@@ -381,6 +387,7 @@ public class AuthControllerTests
             {
                 AccessToken = "new-access",
                 RefreshToken = "new-refresh",
+                ExpiresAt = DateTime.UtcNow.AddHours(1), // [SEC-K5] Refresh 同样写 httpOnly Cookie，需有效过期时间
                 TokenType = "Bearer",
                 Profile = new UserProfile { Id = 1, Username = "test" },
             });
@@ -425,7 +432,7 @@ public class AuthControllerTests
         var hasherMock = new Mock<IPasswordHasher>();
         hasherMock.Setup(h => h.VerifyPassword("old-password", It.IsAny<string>(), It.IsAny<string>()))
             .Returns(true);
-        hasherMock.Setup(h => h.HashPassword("new-password"))
+        hasherMock.Setup(h => h.HashPassword("new-password1"))
             .Returns(("new-hash", "new-salt"));
 
         var jwtMock = new Mock<IJwtService>();
@@ -447,7 +454,7 @@ public class AuthControllerTests
         var result = await controller.ChangePassword(new ChangePasswordRequest
         {
             OldPassword = "old-password",
-            NewPassword = "new-password",
+            NewPassword = "new-password1", // [SEC-P2] 密码策略：≥8 位且含字母与数字
         });
 
         Assert.IsType<OkObjectResult>(result);
