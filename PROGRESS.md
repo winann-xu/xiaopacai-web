@@ -210,10 +210,8 @@
 - 测试：tests/ReportAggregatorTests.cs 新增
 - 遗留说明：devices store 的 API 失败 mock 兜底与账号页 mock 属 P3/P4 范围，代码注释已标注
 
-### P3~P5 待办
-- P3：公告去重/终端记录/回执持久化
-- P4：时间限额口径（重置偏移/时区/实时刷新）
-- P5：公网测试（Codex 主导）
+### P5 待办
+- P5：公网模拟全功能测试（Codex 主导）
 
 ### P3 公告去重/终端记录/回执落库（已完成，待 Codex 评审协议+拉测）
 - 协议扩展（docs/adr/0004）：推送载荷 +version/content_hash/requires_ack；新消息 announcement_displayed
@@ -224,3 +222,10 @@
 ### P3-FIX 缺陷 096 修复（已交付，待 Codex 复验）
 - AnnouncementOverlayActivity：公告回执改后台线程发送 + 3 次退避重试，修复主线程 NetworkOnMainThreadException
 - SyncManager：announcement_displayed 发送移入 Dispatchers.IO 协程（同类风险预防）
+
+### P4 时间额度口径统一（已完成，待 Codex 拉测）
+- 协议扩展（docs/adr/0005）：usage_report +dailyResetOffsetMinutes（向后兼容，只增不改）；调整后已用 = max(0, 原始累计 − 当日重置偏移)
+- Web 后端：AdjustedUsageCalculator 纯函数 + AppClock Asia/Shanghai 口径；usage_records (包名,日期) upsert 去重（修复周期累计值重复累加虚高）；ResetLimit 落库偏移估计；Devices/Reports/Policies 控制器同源调整后口径 + rawTodayUsageMinutes/lastResetOffsetMinutes/lastReportAt
+- Android：SyncManager 处理 limit_reset（修复此前重置链路断裂根因）+ usage_report 上报偏移；UsageStatsCollector 调整后已用（超时判定/封锁/通知）；主页/通知同步调整后口径
+- 前端：设备/账号/审计页移除 Mock→错误态+重试；设备页/仪表盘/策略页 30s 轮询+最后刷新时间；设备页新增重置限额按钮（成功立即刷新）；仪表盘事件时间用真实数据时间
+- 测试：tests/TimeQuotaTests.cs（调整计算 6 用例 / upsert 不虚高 / 偏移落库与 ack 口径 / 旧端不覆盖偏移 / 设备本地日期归属）
