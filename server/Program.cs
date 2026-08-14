@@ -141,6 +141,22 @@ builder.Services.AddAuthentication(opts =>
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecretKey)),
         ClockSkew = TimeSpan.FromMinutes(1), // 1 分钟时钟偏差容忍
     };
+
+    // [SEC-K5] 浏览器会话无 Authorization 头时，从 httpOnly Cookie 读取 access_token；
+    // 原生客户端（Android/Windows）仍走 Bearer 头，两套链路并存。
+    opts.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = ctx =>
+        {
+            if (string.IsNullOrEmpty(ctx.Request.Headers.Authorization))
+            {
+                var token = ctx.Request.Cookies["access_token"];
+                if (!string.IsNullOrEmpty(token))
+                    ctx.Token = token;
+            }
+            return Task.CompletedTask;
+        }
+    };
 });
 
 // ---- 角色策略 ----

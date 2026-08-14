@@ -34,11 +34,11 @@ public class RegisterRequest
 
 /// <summary>
 /// Token 刷新请求
+/// [SEC-K5] RefreshToken 可为空：浏览器会话改由 httpOnly Cookie 携带（body 仅兼容原生客户端）
 /// </summary>
 public class RefreshRequest
 {
-    [Required]
-    public string RefreshToken { get; set; } = string.Empty;
+    public string? RefreshToken { get; set; }
 }
 
 /// <summary>

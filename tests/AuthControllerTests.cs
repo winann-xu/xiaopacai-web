@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Moq;
 using XiaopacaiWeb.Controllers;
 using XiaopacaiWeb.Data;
@@ -41,7 +42,9 @@ public class AuthControllerTests
         jwt ??= Mock.Of<IJwtService>();
 
         var logger = new Microsoft.Extensions.Logging.Abstractions.NullLogger<AuthController>();
-        return new AuthController(db, hasher, jwt, new TicketStore(), logger);
+        // [SEC-K5] 空配置即可：RefreshTokenExpiryDays 走默认值 7
+        var config = new ConfigurationBuilder().Build();
+        return new AuthController(db, hasher, jwt, new TicketStore(), logger, config);
     }
 
     /// <summary>
@@ -253,6 +256,117 @@ public class AuthControllerTests
         var result = await controller.Logout(null);
 
         Assert.IsType<OkObjectResult>(result);
+    }
+
+    // ==================== [SEC-K5] httpOnly Cookie 会话 ====================
+
+    /// <summary>
+    /// 设置请求 Cookie（模拟浏览器携带 httpOnly Cookie）
+    /// </summary>
+    private static void SetRequestCookie(ControllerBase controller, string name, string value)
+    {
+        var ctx = controller.ControllerContext?.HttpContext as DefaultHttpContext;
+        if (ctx == null)
+        {
+            ctx = new DefaultHttpContext();
+            controller.ControllerContext = new ControllerContext { HttpContext = ctx };
+        }
+        ctx.Request.Headers["Cookie"] = $"{name}={value}";
+    }
+
+    [Fact]
+    public async Task Logout_WithRefreshTokenCookie_RevokesCookieToken()
+    {
+        var db = CreateInMemoryDbContext();
+        var jwtMock = new Mock<IJwtService>();
+
+        var controller = CreateController(db, jwt: jwtMock.Object);
+        SetUserClaims(controller, 1);
+        SetRequestCookie(controller, "refresh_token", "cookie-token-123");
+
+        var result = await controller.Logout(null);
+
+        Assert.IsType<OkObjectResult>(result);
+        jwtMock.Verify(j => j.RevokeToken("cookie-token-123"), Times.Once);
+    }
+
+    [Fact]
+    public async Task Refresh_NoBody_UsesRefreshTokenCookie()
+    {
+        var db = CreateInMemoryDbContext();
+        var jwtMock = new Mock<IJwtService>();
+        jwtMock.Setup(j => j.RefreshTokens("cookie-token-456"))
+            .ReturnsAsync(new AuthResponse
+            {
+                AccessToken = "new-at",
+                RefreshToken = "new-rt",
+                ExpiresAt = DateTime.UtcNow.AddHours(1),
+                TokenType = "Bearer",
+                Profile = new UserProfile { Id = 1, Username = "u", Role = "parent" },
+            });
+
+        var controller = CreateController(db, jwt: jwtMock.Object);
+        SetRequestCookie(controller, "refresh_token", "cookie-token-456");
+
+        var result = await controller.Refresh(null);
+
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<AuthResponse>(okResult.Value);
+        Assert.Equal("new-at", response.AccessToken);
+        jwtMock.Verify(j => j.RefreshTokens("cookie-token-456"), Times.Once);
+    }
+
+    [Fact]
+    public async Task Refresh_NoCredential_ReturnsUnauthorized()
+    {
+        var db = CreateInMemoryDbContext();
+        var controller = CreateController(db);
+
+        var result = await controller.Refresh(null);
+
+        Assert.IsType<UnauthorizedObjectResult>(result);
+    }
+
+    [Fact]
+    public async Task Login_Success_SetsHttpOnlySessionCookies()
+    {
+        var db = CreateInMemoryDbContext();
+        var hasherMock = new Mock<IPasswordHasher>();
+        hasherMock.Setup(h => h.VerifyPassword(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
+            .Returns(true);
+
+        var jwtMock = new Mock<IJwtService>();
+        jwtMock.Setup(j => j.GenerateTokens(It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string>()))
+            .Returns(("at", "rt", DateTime.UtcNow.AddHours(1), DateTime.UtcNow.AddDays(7)));
+
+        db.Users.Add(new User
+        {
+            Id = 1,
+            Username = "cookie-user",
+            PasswordHash = "hash",
+            PasswordSalt = "salt",
+            Role = "parent",
+            IsActive = true,
+        });
+        await db.SaveChangesAsync();
+
+        var controller = CreateController(db, hasherMock.Object, jwtMock.Object);
+        SetUserClaims(controller, 1);
+
+        var result = await controller.Login(new LoginRequest { Username = "cookie-user", Password = "pwd" });
+
+        Assert.IsType<OkObjectResult>(result);
+        var ctx = Assert.IsType<DefaultHttpContext>(controller.ControllerContext!.HttpContext);
+        var setCookies = ctx.Response.Headers.SetCookie;
+
+        // access_token：httpOnly、路径 /
+        Assert.Contains(setCookies, c => c.Contains("access_token=at") && c.Contains("HttpOnly"));
+        // refresh_token：httpOnly、路径限定 /api/auth（缩小暴露面）
+        Assert.Contains(setCookies, c => c.Contains("refresh_token=rt") && c.Contains("HttpOnly") && c.Contains("path=/api/auth"));
+        // logged_in：JS 可读标记，不含凭据
+        Assert.Contains(setCookies, c => c.Contains("logged_in=1") && !c.Contains("HttpOnly"));
+        // 全部 SameSite=Strict（防 CSRF）
+        Assert.All(setCookies, c => Assert.Contains("samesite=strict", c, StringComparison.OrdinalIgnoreCase));
     }
 
     // ==================== Refresh Token ====================

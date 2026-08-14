@@ -1,4 +1,6 @@
 // 小趴菜 Web 3.0 — 认证状态管理 (Pinia)
+// [SEC-K5] 会话凭据由服务端 httpOnly Cookie 管理，本地不存任何 token（防 XSS 窃取）；
+// 仅保留非敏感 user_role 到 localStorage 供路由守卫角色判断。
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { authApi, apiClient } from '@/api'
@@ -15,50 +17,41 @@ export interface UserProfile {
 export const useAuthStore = defineStore('auth', () => {
   // ---- state ----
   const user = ref<UserProfile | null>(null)
-  const accessToken = ref<string | null>(localStorage.getItem('access_token'))
-  const refreshToken = ref<string | null>(localStorage.getItem('refresh_token'))
   const loading = ref(false)
 
   // ---- getters ----
-  const isAuthenticated = computed(() => !!accessToken.value && !!user.value)
+  const isAuthenticated = computed(() => !!user.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
   const isParent = computed(() => user.value?.role === 'parent')
 
   // ---- actions ----
-  /** 登录：调用 API → 存 token → 取 profile */
+  /** 登录：API 成功后服务端已写入 httpOnly Cookie，这里只取档案 */
   async function login(username: string, password: string): Promise<void> {
     loading.value = true
     try {
       const res = await authApi.login(username, password)
-      const { accessToken: at, refreshToken: rt, user: u } = res.data
-      accessToken.value = at
-      refreshToken.value = rt
+      // 服务端同时返回 profile 与 user 字段（兼容新旧前端）
+      const u = (res.data?.profile ?? res.data?.user ?? null) as UserProfile | null
       user.value = u
-      localStorage.setItem('access_token', at)
-      localStorage.setItem('refresh_token', rt)
-      // 注入 Axios 默认头
-      apiClient.defaults.headers.common['Authorization'] = `Bearer ${at}`
+      localStorage.setItem('user_role', u?.role || 'parent')
     } finally {
       loading.value = false
     }
   }
 
-  /** 扫码登录确认后：直接使用 Ticket 返回的 JWT 与用户档案完成登录（OPT12 需求 10） */
+  /** 注册 / 扫码登录确认后：服务端已写入 httpOnly Cookie，这里只取档案（OPT12 需求 10） */
   async function loginWithAuthResponse(data: {
-    accessToken: string
-    refreshToken: string
+    accessToken?: string
+    refreshToken?: string
     profile?: UserProfile | null
+    user?: UserProfile | null
   }): Promise<void> {
-    accessToken.value = data.accessToken
-    refreshToken.value = data.refreshToken
-    user.value = data.profile ?? null
-    localStorage.setItem('access_token', data.accessToken)
-    localStorage.setItem('refresh_token', data.refreshToken)
-    if (data.profile) {
+    const u = data.profile ?? data.user ?? null
+    user.value = u
+    if (u) {
       // 路由守卫读取角色（admin 路由仅 admin 可访问）
-      localStorage.setItem('user_role', data.profile.role)
+      localStorage.setItem('user_role', u.role)
     }
-    apiClient.defaults.headers.common['Authorization'] = `Bearer ${data.accessToken}`
   }
 
   /** 登出 */
@@ -66,61 +59,30 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       await authApi.logout()
     } catch {
-      // 即使 API 失败也清除本地状态
+      // 即使 API 失败也清除本地状态（会话 Cookie 由服务端清除）
     } finally {
-      accessToken.value = null
-      refreshToken.value = null
       user.value = null
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('refresh_token')
-      delete apiClient.defaults.headers.common['Authorization']
+      localStorage.removeItem('user_role')
       router.push('/login')
     }
   }
 
-  /** 刷新 token */
-  async function refreshAccessToken(): Promise<boolean> {
-    if (!refreshToken.value) return false
-    try {
-      const res = await authApi.refresh()
-      const { accessToken: at, refreshToken: rt } = res.data
-      accessToken.value = at
-      refreshToken.value = rt || refreshToken.value
-      localStorage.setItem('access_token', at)
-      if (rt) localStorage.setItem('refresh_token', rt)
-      apiClient.defaults.headers.common['Authorization'] = `Bearer ${at}`
-      return true
-    } catch {
-      // 刷新失败，清除登录状态
-      accessToken.value = null
-      refreshToken.value = null
-      user.value = null
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('refresh_token')
-      return false
-    }
-  }
-
-  /** 从 token 恢复用户信息（页面刷新后） */
+  /** 从服务端会话恢复用户信息（页面刷新后，走 httpOnly Cookie） */
   async function restoreSession(): Promise<boolean> {
-    const token = localStorage.getItem('access_token')
-    if (!token) return false
-    accessToken.value = token
-    refreshToken.value = localStorage.getItem('refresh_token')
-    apiClient.defaults.headers.common['Authorization'] = `Bearer ${token}`
     try {
       const res = await apiClient.get('/auth/profile')
       user.value = res.data
       return true
     } catch {
-      // token 过期，尝试刷新
-      return await refreshAccessToken()
+      // 401 时拦截器已自动尝试刷新会话，失败则跳转登录页
+      user.value = null
+      return false
     }
   }
 
   return {
-    user, accessToken, refreshToken, loading,
+    user, loading,
     isAuthenticated, isAdmin, isParent,
-    login, loginWithAuthResponse, logout, refreshAccessToken, restoreSession,
+    login, loginWithAuthResponse, logout, restoreSession,
   }
 })

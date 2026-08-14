@@ -75,12 +75,17 @@ const router = createRouter({
 })
 
 // ===== 路由守卫：登录检查 + 角色鉴权 =====
+// [SEC-K5] 登录态由服务端 httpOnly Cookie 的 logged_in 标记判断（token 不可被 JS 读取）
+function hasLoginCookie(): boolean {
+  return document.cookie.split(';').some(c => c.trim().startsWith('logged_in='))
+}
+
 router.beforeEach(async (to, _from, next) => {
-  const token = localStorage.getItem('access_token')
+  const loggedIn = hasLoginCookie()
 
   // 登录页：已登录重定向到仪表盘
   if (to.name === 'login') {
-    if (token) {
+    if (loggedIn) {
       return next('/dashboard')
     }
     return next()
@@ -92,13 +97,13 @@ router.beforeEach(async (to, _from, next) => {
   }
 
   // 未登录 → 跳转登录页
-  if (!token) {
+  if (!loggedIn) {
     return next({ name: 'login', query: { redirect: to.fullPath } })
   }
 
   // 角色鉴权：admin 路由仅 admin 角色可访问
   if (to.meta.role === 'admin') {
-    // 简单从 localStorage 读取角色（P3 阶段）
+    // 非敏感角色标记（localStorage 保留，不含凭据）
     const userRole = localStorage.getItem('user_role')
     if (userRole !== 'admin') {
       return next('/dashboard')

@@ -176,7 +176,7 @@ async function pollQrLogin() {
       clearQrTimers()
       qrStatus.value = 'confirmed'
       if (data.auth?.accessToken) {
-        // 首次确认轮询返回 JWT，直接完成登录
+        // [SEC-K5] 服务端已写入 httpOnly Cookie 会话；Body 中 token 仅作兼容，本地不持久化
         await auth.loginWithAuthResponse(data.auth)
         localStorage.setItem('user_role', auth.user?.role || 'parent')
         ElMessage.success('扫码登录成功')

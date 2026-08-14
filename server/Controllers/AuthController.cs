@@ -23,14 +23,17 @@ public class AuthController : ControllerBase
     private readonly IJwtService _jwt;
     private readonly TicketStore _tickets;
     private readonly ILogger<AuthController> _logger;
+    private readonly int _refreshTokenExpiryDays;
 
-    public AuthController(AppDbContext db, IPasswordHasher hasher, IJwtService jwt, TicketStore tickets, ILogger<AuthController> logger)
+    public AuthController(AppDbContext db, IPasswordHasher hasher, IJwtService jwt, TicketStore tickets,
+        ILogger<AuthController> logger, IConfiguration config)
     {
         _db = db;
         _hasher = hasher;
         _jwt = jwt;
         _tickets = tickets;
         _logger = logger;
+        _refreshTokenExpiryDays = config.GetValue<int>("Jwt:RefreshTokenExpiryDays", 7);
     }
 
     /// <summary>
@@ -116,6 +119,10 @@ public class AuthController : ControllerBase
             LastLoginAt = user.LastLoginAt,
         };
 
+        // [SEC-K5] 浏览器端会话走 httpOnly Cookie（防 XSS 窃取 localStorage token）；
+        // Body 仍返回 token 供 Android/Windows 原生客户端（无法用 httpOnly Cookie）使用
+        SetAuthCookies(accessToken, refreshToken, accessExpiry, refreshExpiry);
+
         // 同时返回 profile 与 user 字段，兼容新旧前端调用
         return Ok(new
         {
@@ -187,6 +194,8 @@ public class AuthController : ControllerBase
             Role = user.Role,
             Email = user.Email,
         };
+        // [SEC-K5] 注册即登录：同样设置 httpOnly Cookie
+        SetAuthCookies(accessToken, refreshToken, accessExpiry, refreshExpiry);
         return Ok(new
         {
             accessToken,
@@ -200,16 +209,21 @@ public class AuthController : ControllerBase
 
     /// <summary>
     /// POST /api/auth/logout — 用户登出
+    /// [SEC-K5] 允许匿名调用：access_token 已过期的浏览器会话也能清除 Cookie；
+    /// 吊销凭据本身安全（refresh token 只有请求方自己持有）
     /// </summary>
     [HttpPost("logout")]
-    [Authorize]
     public async Task<IActionResult> Logout([FromBody] RefreshRequest? request)
     {
-        // 吊销当前 Refresh Token
-        if (request != null && !string.IsNullOrEmpty(request.RefreshToken))
+        // 吊销当前 Refresh Token（原生客户端走 body；浏览器会话走 httpOnly Cookie）
+        var refreshToken = request?.RefreshToken ?? GetRefreshTokenCookie();
+        if (!string.IsNullOrEmpty(refreshToken))
         {
-            await _jwt.RevokeToken(request.RefreshToken);
+            await _jwt.RevokeToken(refreshToken);
         }
+
+        // [SEC-K5] 清除浏览器会话 Cookie
+        ClearAuthCookies();
 
         _logger.LogInformation("[Auth] 登出: userId={U}", GetUserId());
         return Ok(new { message = "已登出" });
@@ -217,19 +231,32 @@ public class AuthController : ControllerBase
 
     /// <summary>
     /// POST /api/auth/refresh — 刷新 Access Token
+    /// [SEC-K5] 浏览器会话可从 httpOnly refresh_token Cookie 刷新（body 可空）；
+    /// 原生客户端仍走 body（Bearer 流程不变）
     /// </summary>
     [HttpPost("refresh")]
-    public async Task<IActionResult> Refresh([FromBody] RefreshRequest request)
+    public async Task<IActionResult> Refresh([FromBody] RefreshRequest? request)
     {
-        if (!ModelState.IsValid)
+        if (request != null && !ModelState.IsValid)
             return BadRequest(ModelState);
 
-        var result = await _jwt.RefreshTokens(request.RefreshToken);
+        var refreshToken = request?.RefreshToken ?? GetRefreshTokenCookie();
+        if (string.IsNullOrEmpty(refreshToken))
+        {
+            _logger.LogWarning("[Auth] Token 刷新缺少凭据");
+            return Unauthorized(new { error = "Refresh Token 无效或已过期" });
+        }
+
+        var result = await _jwt.RefreshTokens(refreshToken);
         if (result == null)
         {
             _logger.LogWarning("[Auth] Token 刷新失败");
             return Unauthorized(new { error = "Refresh Token 无效或已过期" });
         }
+
+        // [SEC-K5] 刷新轮换后同步更新浏览器会话 Cookie
+        var refreshExpiry = DateTime.UtcNow.AddDays(_refreshTokenExpiryDays);
+        SetAuthCookies(result.AccessToken, result.RefreshToken, result.ExpiresAt, refreshExpiry);
 
         _logger.LogInformation("[Auth] Token 刷新成功: userId={U}", result.Profile.Id);
         return Ok(result);
@@ -383,6 +410,10 @@ public class AuthController : ControllerBase
                     TokenType = "Bearer",
                     Profile = BuildProfile(user),
                 };
+
+                // [SEC-K5] 浏览器轮询方（Web 管理端）同时写入 httpOnly Cookie 会话；
+                // Body 中的 token 保留仅作兼容，前端不再持久化到 localStorage。
+                SetAuthCookies(accessToken, refreshToken, accessExpiry, refreshExpiry);
 
                 // [TASK-OPT-12-P4-DEEPEN] 审计日志：扫码登录 Ticket 消费（完成登录）
                 await AuditAsync("login_ticket_consume", user.Id, null, null, null,
@@ -653,6 +684,47 @@ public class AuthController : ControllerBase
     private static string MaskTicket(string ticket)
         => string.IsNullOrEmpty(ticket) ? string.Empty
            : ticket.Length <= 8 ? "****" : ticket[..8] + "****";
+
+    // [SEC-K5] ========== 浏览器会话 Cookie（httpOnly，防 XSS 窃取；SameSite=Strict 防 CSRF；HTTPS 下 Secure） ==========
+
+    /// <summary>
+    /// 写入浏览器会话 Cookie：
+    /// - access_token：httpOnly，Path=/（API 全局可用，JwtBearer 从 Cookie 读取）
+    /// - refresh_token：httpOnly，Path=/api/auth（仅刷新/登出接口可见，缩小暴露面）
+    /// - logged_in：非敏感标记，JS 可读（路由守卫判断登录态，不含任何凭据）
+    /// </summary>
+    private void SetAuthCookies(string accessToken, string refreshToken, DateTime accessExpiry, DateTime refreshExpiry)
+    {
+        // 单元测试直接调用 Action 时无 HttpContext，跳过 Cookie 写入
+        if (ControllerContext?.HttpContext == null) return;
+
+        var secure = Request.IsHttps;
+        Response.Cookies.Append("access_token", accessToken, new CookieOptions
+            { HttpOnly = true, SameSite = SameSiteMode.Strict, Secure = secure, Expires = accessExpiry, Path = "/" });
+        Response.Cookies.Append("refresh_token", refreshToken, new CookieOptions
+            { HttpOnly = true, SameSite = SameSiteMode.Strict, Secure = secure, Expires = refreshExpiry, Path = "/api/auth" });
+        Response.Cookies.Append("logged_in", "1", new CookieOptions
+            { HttpOnly = false, SameSite = SameSiteMode.Strict, Secure = secure, Expires = accessExpiry, Path = "/" });
+    }
+
+    /// <summary>
+    /// 清除浏览器会话 Cookie（登出 / 登录失败兜底）
+    /// </summary>
+    private void ClearAuthCookies()
+    {
+        // 单元测试直接调用 Action 时无 HttpContext，跳过 Cookie 清除
+        if (ControllerContext?.HttpContext == null) return;
+
+        Response.Cookies.Delete("access_token");
+        Response.Cookies.Delete("refresh_token", new CookieOptions { Path = "/api/auth" });
+        Response.Cookies.Delete("logged_in");
+    }
+
+    /// <summary>
+    /// 读取 refresh_token Cookie（浏览器会话）；无 HttpContext（单元测试直调）时返回 null
+    /// </summary>
+    private string? GetRefreshTokenCookie()
+        => ControllerContext?.HttpContext == null ? null : Request.Cookies["refresh_token"];
 
     /// <summary>
     /// 记录一次重置密码失败（审计 + 计数），超限时由调用方返回 429
