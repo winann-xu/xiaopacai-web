@@ -220,3 +220,7 @@
 - Web：announcement_deliveries 表（推送/显示/确认）+ 送达回执端点 + 紧急未确认统计端点；公告页回执弹窗；仪表盘紧急卡改未确认数口径
 - Android：DB V4 去重列 + 合并式 upsert + 推送去重/撤回处理 + 主页紧急列表（红标+确认状态）
 - 测试：AnnouncementDedupTests（哈希/回执落库）
+
+### P3-FIX 缺陷 096 修复（已交付，待 Codex 复验）
+- AnnouncementOverlayActivity：公告回执改后台线程发送 + 3 次退避重试，修复主线程 NetworkOnMainThreadException
+- SyncManager：announcement_displayed 发送移入 Dispatchers.IO 协程（同类风险预防）
