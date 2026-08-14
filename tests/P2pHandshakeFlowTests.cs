@@ -94,7 +94,7 @@ public class P2pHandshakeFlowTests : IDisposable
     {
         var handler = CreateHandler();
 
-        var (response, policy, dbDeviceId) = await handler.HandleHandshake(
+        var (response, policy, _, dbDeviceId) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "new-device-1", DeviceName = "新手机" },
             peerFingerprint: null, remoteEndPoint: "192.168.1.10:1234");
 
@@ -114,7 +114,7 @@ public class P2pHandshakeFlowTests : IDisposable
         await SeedPairingCode("123456");
         var handler = CreateHandler();
 
-        var (response, policy, dbDeviceId) = await handler.HandleHandshake(
+        var (response, policy, _, dbDeviceId) = await handler.HandleHandshake(
             new HandshakeRequest
             {
                 DeviceId = "android-device-abc",
@@ -164,7 +164,7 @@ public class P2pHandshakeFlowTests : IDisposable
         await SeedPairingCode("123456"); // 数据库里有别的码
         var handler = CreateHandler();
 
-        var (response, _, _) = await handler.HandleHandshake(
+        var (response, _, _, _) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "dev-x", PairCode = "999999" },
             peerFingerprint: null, remoteEndPoint: "ip");
 
@@ -179,7 +179,7 @@ public class P2pHandshakeFlowTests : IDisposable
         await SeedPairingCode("123456", expiresAt: DateTime.UtcNow.AddMinutes(-1));
         var handler = CreateHandler();
 
-        var (response, _, _) = await handler.HandleHandshake(
+        var (response, _, _, _) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "dev-y", PairCode = "123456" },
             peerFingerprint: null, remoteEndPoint: "ip");
 
@@ -217,7 +217,7 @@ public class P2pHandshakeFlowTests : IDisposable
 
         var handler = CreateHandler();
 
-        var (response, policy, dbDeviceId) = await handler.HandleHandshake(
+        var (response, policy, _, dbDeviceId) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "existing-dev", DeviceName = "新名称" },
             peerFingerprint: null, remoteEndPoint: "10.0.0.8:7777");
 
@@ -230,7 +230,8 @@ public class P2pHandshakeFlowTests : IDisposable
         var customPolicy = ExtractDailyLimit(policy!);
         Assert.Equal(180, customPolicy.LimitMinutes);
         Assert.Equal("warn", customPolicy.RestrictMode);
-        Assert.Equal(45, ExtractCategoryLimit(policy!, "game"));
+        // [TASK-PRELAUNCH-P1] 分类限额暂不可用：握手策略不再下发 category_limit（-1 = 不限）
+        Assert.Equal(-1, ExtractCategoryLimit(policy!, "game"));
 
         // 状态更新（用全新上下文断言，避免读到跟踪的旧状态）
         var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "existing-dev");
@@ -256,7 +257,7 @@ public class P2pHandshakeFlowTests : IDisposable
 
         var handler = CreateHandler();
 
-        var (response, _, dbDeviceId) = await handler.HandleHandshake(
+        var (response, _, _, dbDeviceId) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "revoked-dev", PairCode = "123456" },
             peerFingerprint: null, remoteEndPoint: "ip");
 
@@ -269,6 +270,7 @@ public class P2pHandshakeFlowTests : IDisposable
     [Fact]
     public async Task Handshake_UnpairedExistingDevice_WithPairCode_RepairsPairing()
     {
+        await SeedPairingCode("888888"); // 修复既有测试缺陷：需先存在待确认配对码，才能完成重新配对
         var db = CreateDb();
         db.Devices.Add(new Device
         {
@@ -282,7 +284,7 @@ public class P2pHandshakeFlowTests : IDisposable
 
         var handler = CreateHandler();
 
-        var (response, _, _) = await handler.HandleHandshake(
+        var (response, _, _, _) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "unpaired-dev", PairCode = "888888" },
             peerFingerprint: null, remoteEndPoint: "ip");
 
