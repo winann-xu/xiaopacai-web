@@ -18,7 +18,8 @@ const categoryLimits = ref([
   { category: 'game' as const, label: '游戏', minutes: 0, enabled: true },
   { category: 'social' as const, label: '社交', minutes: 60, enabled: true },
   { category: 'video' as const, label: '视频', minutes: 90, enabled: true },
-  { category: 'study' as const, label: '学习', minutes: 0, enabled: false },
+  // [TASK-PRELAUNCH-P2] 分类口径统一 learning（兼容旧 study）
+  { category: 'learning' as const, label: '学习', minutes: 0, enabled: false },
 ])
 const whitelistText = ref('')
 const blacklistText = ref('')

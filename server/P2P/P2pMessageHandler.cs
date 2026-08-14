@@ -879,7 +879,8 @@ public class P2pMessageHandler
         var socialSeconds = records.Where(r => r.Category == "social").Sum(r => r.DurationSeconds);
         var videoSeconds = records.Where(r => r.Category == "video").Sum(r => r.DurationSeconds);
         var learningSeconds = records.Where(r => r.Category == "learning").Sum(r => r.DurationSeconds);
-        var otherSeconds = records.Where(r => r.Category == "other").Sum(r => r.DurationSeconds);
+        // [TASK-PRELAUNCH-P2] other 桶 = 总量减四类之和（动态分类不再丢出 total，保持桶和=总时长）
+        var otherSeconds = totalSeconds - (gameSeconds + socialSeconds + videoSeconds + learningSeconds);
         var blockCount = records.Count(r => r.IsBlocked);
 
         var summary = await db.DailySummaries
@@ -910,17 +911,14 @@ public class P2pMessageHandler
 
     /// <summary>
     /// 规范化分类名称
+    /// [TASK-PRELAUNCH-P2] 不再折叠为固定四类：保留终端实际分类值（支持细分类，如 short_video/browser 等），
+    /// 仅 study → learning 归一、空值归 other；报告按实际分类动态聚合
     /// </summary>
     private static string NormalizeCategory(string category)
     {
-        return category?.ToLowerInvariant() switch
-        {
-            "game" => "game",
-            "social" => "social",
-            "video" => "video",
-            "learning" => "learning",
-            _ => "other",
-        };
+        var c = category?.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(c)) return "other";
+        return c == "study" ? "learning" : c;
     }
 
     /// <summary>
