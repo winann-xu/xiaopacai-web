@@ -242,14 +242,14 @@ public class DeviceAccessTests
         SetHttpContext(controller, Principal(1));
 
         var ok = Assert.IsType<OkObjectResult>(await controller.List());
-        var first = Assert.IsType<System.Collections.IEnumerable>(ok.Value!).Cast<object>().First();
+        var first = Assert.IsAssignableFrom<System.Collections.IEnumerable>(ok.Value!).Cast<object>().First();
         Assert.Equal("parent1", first.GetType().GetProperty("ownerAccount")!.GetValue(first));
 
         // 解绑后归属清空 → 管理员视角 ownerAccount 为 null
         await controller.Unpair(1);
         SetHttpContext(controller, Principal(99, "admin"));
         var ok2 = Assert.IsType<OkObjectResult>(await controller.List());
-        var first2 = Assert.IsType<System.Collections.IEnumerable>(ok2.Value!).Cast<object>().First();
+        var first2 = Assert.IsAssignableFrom<System.Collections.IEnumerable>(ok2.Value!).Cast<object>().First();
         Assert.Null(first2.GetType().GetProperty("ownerAccount")!.GetValue(first2));
     }
 
