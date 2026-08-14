@@ -170,6 +170,11 @@ public class P2pListenerService : IHostedService
             var certificate = _certService.GetOrCreateCertificate();
 
             // 创建 TLS 流
+            // [SEC-K1] 注意：TLS 回调返回 true 仅表示"接受任何客户端证书"，并非身份豁免——
+            // 真实身份校验在 P2pMessageHandler.HandleHandshake 完成（cert_fingerprint 与
+            // devices.cert_fingerprint 固定比对/TOFU 采纳，不匹配即拒绝，见安全基线 R3.2/R3.3）。
+            // TLS 层无法将证书映射到具体设备（握手指纹字段才携带 deviceId），因此此处必须放行，
+            // 由握手层做强校验；若在此回调按 CA 链拒绝，自签名设备将全部无法连接。
             sslStream = new SslStream(
                 tcpClient.GetStream(),
                 leaveInnerStreamOpen: false,
@@ -177,11 +182,14 @@ public class P2pListenerService : IHostedService
                 userCertificateValidationCallback: (sender, clientCert, chain, errors) => true);
 
             // TLS 1.2 / 1.3，不检查证书吊销
+            // [SEC-K1] 双向 TLS（mTLS）：强制要求客户端证书（红线 R3.2 禁止"接受任意客户端证书"）。
+            // 客户端（Android 3.x）生成设备身份证书并在 TLS 层提交；无证书的旧版客户端 TLS 握手直接失败，
+            // 不会进入消息层（身份校验见 P2pMessageHandler 指纹固定比对）。
             await sslStream.AuthenticateAsServerAsync(
                 new SslServerAuthenticationOptions
                 {
                     ServerCertificate = certificate,
-                    ClientCertificateRequired = false,
+                    ClientCertificateRequired = true,
                     EnabledSslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12,
                     CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
                 });

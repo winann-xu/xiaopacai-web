@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -49,6 +50,15 @@ public class RelayController : ControllerBase
         if (!RequestRateLimiter.Allow($"relay-register:{clientIp}", 10, 60))
             return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
 
+        // [SEC-K2][SEC-K7] 指纹必填且格式校验：64 位小写十六进制（SHA-256），
+        // 它是 P2P 握手时与 TLS 对端证书比对的身份锚点，缺失/格式错误直接拒绝
+        var fingerprint = request.Fingerprint?.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(fingerprint) ||
+            fingerprint.Length != 64 || !fingerprint.All(c => Uri.IsHexDigit(c)))
+        {
+            return BadRequest(new { error = "客户端证书指纹缺失或格式错误（需 64 位十六进制）" });
+        }
+
         var userId = GetUserId();
         var now = DateTime.UtcNow;
 
@@ -79,6 +89,9 @@ public class RelayController : ControllerBase
             .OrderByDescending(s => s.ConnectedAt)
             .FirstOrDefaultAsync();
 
+        // [SEC-K2] 签发会话令牌：家长端后续 P2P 握手凭据（每次注册轮换，防止冒充家长端接收儿童数据，红线 R2.3）
+        var sessionToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+
         if (existingSession != null)
         {
             // 更新已有会话
@@ -86,6 +99,8 @@ public class RelayController : ControllerBase
             existingSession.ConnectedAt = now;
             existingSession.DisconnectedAt = null;
             existingSession.IpAddress = clientIp;
+            existingSession.SessionToken = sessionToken;
+            existingSession.Fingerprint = fingerprint;
             if (userId != null && existingSession.Role == "parent")
                 existingSession.UserId = userId.Value;
             _logger.LogInformation("[Relay] 更新中继会话: device={DeviceId}, role={Role}, id={Id}",
@@ -102,6 +117,8 @@ public class RelayController : ControllerBase
                 IpAddress = clientIp,
                 Status = "connected",
                 ConnectedAt = now,
+                SessionToken = sessionToken,
+                Fingerprint = fingerprint,
             });
             _logger.LogInformation("[Relay] 新建中继会话: device={DeviceId}, role={Role}, userId={UserId}",
                 request.DeviceId, request.Role, userId);
@@ -119,6 +136,8 @@ public class RelayController : ControllerBase
                 boundDeviceId = device.Id;
         }
 
+        // [SEC-K2] sessionToken 只在此响应中出现一次（家长端持久化保存），服务端仅存于 relay_sessions，
+        // 不写入日志、不参与列表接口返回，防止令牌泄露（红线 R8.3）
         return Ok(new
         {
             deviceId = request.DeviceId,
@@ -126,6 +145,7 @@ public class RelayController : ControllerBase
             status = "connected",
             connectedAt = now,
             boundDeviceId,
+            sessionToken,
             message = "中继注册成功",
         });
     }

@@ -175,6 +175,10 @@ public static class DataExtensions
         await TryAddColumnAsync(db, "devices", "LastReportAt", "TEXT NULL", logger);
         // [FIX-100] 儿童端上报的调整后今日已用（优先展示口径）
         await TryAddColumnAsync(db, "devices", "TodayAdjustedMinutes", "INTEGER NULL", logger);
+        // [SEC-K2] 中继会话令牌（家长端 P2P 握手凭据，/api/relay/register 签发后轮换）
+        await TryAddColumnAsync(db, "relay_sessions", "SessionToken", "TEXT NULL", logger);
+        // [SEC-K2] 注册时绑定的客户端证书指纹（P2P 握手与 TLS 对端指纹比对）
+        await TryAddColumnAsync(db, "relay_sessions", "Fingerprint", "TEXT NULL", logger);
 
         // [FIX-100] usage_records 去重迁移：P4 前历史重复行导致 raw SUM 虚高。
         // 按 (DeviceId, AppPackage, 日期) 保留 Id 最大（最新）一条，删除其余，再建唯一索引防复发。
