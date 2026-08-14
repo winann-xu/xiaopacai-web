@@ -67,6 +67,9 @@ public class DevicesController : ControllerBase
             .OrderByDescending(d => d.CreatedAt)
             .ToListAsync();
 
+        // [TASK-PRELAUNCH-FIX-SCAN] 绑定账号显示（跨账号扫码排查）：OwnerUserId → Username 一次查询
+        var users = await _db.Users.ToDictionaryAsync(u => u.Id.ToString());
+
         var summaries = await _db.DailySummaries
             .Where(s => s.SummaryDate == today)
             .ToDictionaryAsync(s => s.DeviceId);
@@ -100,6 +103,9 @@ public class DevicesController : ControllerBase
                 lastResetDate = d.LastResetDate,
                 lastReportAt = d.LastReportAt,
                 pairStatus = d.PairStatus,
+                // [TASK-PRELAUNCH-FIX-SCAN] 绑定账号（null=无归属）
+                ownerAccount = string.IsNullOrEmpty(d.OwnerUserId) ? null
+                    : users.TryGetValue(d.OwnerUserId, out var u) ? u.Username : null,
             };
         });
 
@@ -134,6 +140,11 @@ public class DevicesController : ControllerBase
             raw, device.LastResetOffsetMinutes, device.LastResetDate, today);
         var limit = device.Policy?.DailyLimitMinutes ?? 120;
 
+        // [TASK-PRELAUNCH-FIX-SCAN] 绑定账号（跨账号扫码排查）；无归属为 null
+        var ownerAccount = int.TryParse(device.OwnerUserId, out var ownerId)
+            ? (await _db.Users.FindAsync(ownerId))?.Username
+            : null;
+
         return Ok(new
         {
             id = device.Id,
@@ -154,6 +165,8 @@ public class DevicesController : ControllerBase
             lastResetOffsetMinutes = device.LastResetDate == today ? device.LastResetOffsetMinutes : 0,
             lastResetDate = device.LastResetDate,
             lastReportAt = device.LastReportAt,
+            // [TASK-PRELAUNCH-FIX-SCAN] 绑定账号（null=无归属）
+            ownerAccount = ownerAccount,
         });
     }
 
@@ -173,6 +186,10 @@ public class DevicesController : ControllerBase
         device!.PairStatus = "unpaired";
         device.IsActive = true;
         device.OnlineStatus = "offline";
+        // [TASK-PRELAUNCH-FIX-SCAN] 解绑即释放归属：清空 OwnerUserId 与 PairCode，
+        // 使任意账号凭新 pending 配对码可重新绑定（D1 方案）；否则旧归属会拦截新账号重绑
+        device.OwnerUserId = null;
+        device.PairCode = null;
         device.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 

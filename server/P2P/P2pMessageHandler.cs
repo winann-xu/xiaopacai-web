@@ -157,7 +157,8 @@ public class P2pMessageHandler
             {
                 _logger.LogWarning("[P2P-Handshake] 新设备缺少配对码: {DeviceId}", req.DeviceId);
                 return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
-                    "需要配对码", "unpaired"), null, null, null);
+                    "需要配对码，请在家长端生成配对二维码后扫码", "unpaired",
+                    errorCode: "unpaired", countFailure: false), null, null, null);
             }
 
             // [SEC-K3] 配对码失败次数限制：单个配对码最多 10 次失败尝试（防 10^6 爆破）
@@ -178,7 +179,8 @@ public class P2pMessageHandler
             {
                 _logger.LogWarning("[P2P-Handshake] 配对码无效或已过期: {PairCode}", req.PairCode);
                 return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
-                    "配对码无效或已过期", "unpaired", req.PairCode), null, null, null);
+                    "配对码无效或已过期，请刷新二维码", "unpaired",
+                    req.PairCode, "invalid_pairing_code"), null, null, null);
             }
 
             // 创建新设备
@@ -268,11 +270,14 @@ public class P2pMessageHandler
                 var reason = device.PairStatus == "revoked" ? "设备已被吊销" : "设备已解绑，请重新扫码绑定";
                 _logger.LogWarning("[P2P-Handshake] {Reason}: {DeviceId}", reason, req.DeviceId);
                 return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
-                    reason, device.PairStatus, req.PairCode), null, null, device.Id);
+                    reason, device.PairStatus, req.PairCode,
+                    device.PairStatus, countFailure: false), null, null, device.Id);
             }
 
             // [SEC] 重绑归属校验（红线 R2.1/R2.2）：设备已有归属时，
             // 配对码必须由原 owner（或未绑定时任意家长）签发，防止他人凭 deviceId+自造码接管设备
+            // [TASK-PRELAUNCH-FIX-SCAN] 归属不匹配 = 确定性拒绝（device_owned_by_other），
+            // 不计入限速失败计数（非爆破信号，防重试雪崩触发 K3 封禁）
             if (!string.IsNullOrEmpty(device.OwnerUserId) &&
                 (string.IsNullOrEmpty(rePairInfo.OwnerUserId) ||
                  !string.Equals(rePairInfo.OwnerUserId, device.OwnerUserId, StringComparison.Ordinal)))
@@ -280,7 +285,8 @@ public class P2pMessageHandler
                 _logger.LogWarning("[P2P-Handshake][SEC] 重绑配对码归属不匹配，拒绝: {DeviceId} owner={Owner} codeOwner={CodeOwner}",
                     req.DeviceId, device.OwnerUserId, rePairInfo.OwnerUserId);
                 return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
-                    "设备已被其他账号绑定", device.PairStatus, req.PairCode), null, null, device.Id);
+                    "设备已被其他账号绑定，请先解绑", device.PairStatus, req.PairCode,
+                    "device_owned_by_other", countFailure: false), null, null, device.Id);
             }
 
             // 重新绑定：解除吊销/解绑状态。
@@ -293,6 +299,13 @@ public class P2pMessageHandler
             // [SEC] 重绑归属：设备无主时绑定配对码签发账号
             if (string.IsNullOrEmpty(device.OwnerUserId) && !string.IsNullOrEmpty(rePairInfo.OwnerUserId))
                 device.OwnerUserId = rePairInfo.OwnerUserId;
+
+            // [TASK-PRELAUNCH-FIX-SCAN] 配对码一次性消费：重绑成功即 confirmed，
+            // 避免同一 pending 码被反复用于重连（与首次绑定语义一致）
+            rePairInfo.TlsFingerprint = peerFingerprint;
+            rePairInfo.PairStatus = "confirmed";
+            rePairInfo.ConfirmedAt = DateTime.UtcNow;
+            rePairInfo.DeviceId = device.Id;
         }
 
         // 3. 已配对设备
@@ -310,7 +323,8 @@ public class P2pMessageHandler
                     "[P2P-Handshake][SEC-K1] 证书指纹不匹配，拒绝: {DeviceId} 期望 {Expected} 实际 {Actual}",
                     req.DeviceId, device.CertFingerprint, peerFingerprint);
                 return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
-                    "证书指纹不匹配", device.PairStatus), null, null, device.Id);
+                    "证书指纹不匹配，请重新配对", device.PairStatus, errorCode: "fingerprint_mismatch",
+                    countFailure: false), null, null, device.Id);
             }
         }
         else
@@ -318,7 +332,8 @@ public class P2pMessageHandler
             _logger.LogWarning("[P2P-Handshake][SEC-K1] 设备无指纹记录，拒绝并要求重新配对: {DeviceId}",
                 req.DeviceId);
             return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
-                "设备缺少可信指纹，请解绑后重新配对", device.PairStatus), null, null, device.Id);
+                "设备缺少可信指纹，请解绑后重新配对", device.PairStatus, errorCode: "unpaired",
+                countFailure: false), null, null, device.Id);
         }
 
         // 更新状态
@@ -327,41 +342,10 @@ public class P2pMessageHandler
         device.IpAddress = remoteEndPoint;
         device.DeviceName = req.DeviceName ?? device.DeviceName;
 
-        // [FIX] 已存在设备带配对码握手：将配对码关联到设备（含已配对设备重连），
-        // 使 /api/relay/register（配对码路径）能正确绑定 devices.owner_user_id，中继路由才能工作
-        if (!string.IsNullOrEmpty(req.PairCode))
-        {
-            var linkedPairing = await db.PairingInfos
-                .Where(p => p.PairCode == req.PairCode)
-                .OrderByDescending(p => p.CreatedAt)
-                .FirstOrDefaultAsync();
-            if (linkedPairing != null)
-            {
-                // [REQ] 仅首次扫码绑定（pending → confirmed）时重绑归属账号；
-                // 后续重连复用同一已确认配对码，不再覆盖已绑定的 owner。
-                var isFirstBind = linkedPairing.PairStatus == "pending";
-                // [SEC] 首次绑定归属校验（红线 R2.1）：设备已有归属且与配对码签发账号不一致时拒绝
-                if (isFirstBind &&
-                    !string.IsNullOrEmpty(linkedPairing.OwnerUserId) &&
-                    !string.IsNullOrEmpty(device.OwnerUserId) &&
-                    !string.Equals(linkedPairing.OwnerUserId, device.OwnerUserId, StringComparison.Ordinal))
-                {
-                    _logger.LogWarning("[P2P-Handshake][SEC] 绑定配对码归属不匹配，拒绝: {DeviceId}",
-                        req.DeviceId);
-                    return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
-                        "配对码归属不匹配", device.PairStatus, req.PairCode), null, null, device.Id);
-                }
-                linkedPairing.DeviceId = device.Id;
-                if (isFirstBind)
-                {
-                    linkedPairing.PairStatus = "confirmed";
-                    linkedPairing.ConfirmedAt = DateTime.UtcNow;
-                    if (!string.IsNullOrEmpty(linkedPairing.OwnerUserId) &&
-                        string.IsNullOrEmpty(device.OwnerUserId))
-                        device.OwnerUserId = linkedPairing.OwnerUserId;
-                }
-            }
-        }
+        // [TASK-PRELAUNCH-FIX-SCAN] 已配对设备重连：忽略携带的配对码（含已确认旧码/无码），
+        // 一律按证书指纹放行，不再走归属校验——旧码状态残留导致的"配对码归属不匹配"误拒
+        // 是生产断线重连雪崩（误拒→重试→K3 封禁）的根因。归属绑定只在两条路径发生：
+        // 1) 新设备首次配对（本方法 section 1）；2) /api/relay/register 配对码路径（有归属校验）。
 
         device.UpdatedAt = DateTime.UtcNow;
 
@@ -410,26 +394,39 @@ public class P2pMessageHandler
 
     /// <summary>
     /// [SEC-K3] 握手拒绝统一出口：记录 IP/配对码失败计数（限速）+ 审计落库（红线 R4.2/R9.1）
+    /// [TASK-PRELAUNCH-FIX-SCAN] 确定性拒绝（errorCode ∈ unpaired/revoked/device_owned_by_other/
+    /// fingerprint_mismatch）时 countFailure=false：它不是爆破信号，计入会导致断线重连
+    /// 携带旧状态无限重试时触发 IP 封禁（生产 117 根因的放大链），审计仍落库。
     /// </summary>
     private async Task<HandshakeResponse> RejectHandshakeAsync(
         AppDbContext db, string deviceId, string remoteEndPoint, string reason,
-        string pairStatus, string? pairCode = null)
+        string pairStatus, string? pairCode = null, string? errorCode = null,
+        bool countFailure = true)
     {
         var ip = ExtractIp(remoteEndPoint);
-        RequestRateLimiter.RecordFailure($"p2p-handshake:ip:{ip}", 10, 300);
-        if (!string.IsNullOrEmpty(pairCode))
-            RequestRateLimiter.RecordFailure($"p2p-paircode:{pairCode}", 10, 300);
+        if (countFailure)
+        {
+            RequestRateLimiter.RecordFailure($"p2p-handshake:ip:{ip}", 10, 300);
+            if (!string.IsNullOrEmpty(pairCode))
+                RequestRateLimiter.RecordFailure($"p2p-paircode:{pairCode}", 10, 300);
+        }
 
         db.AuditLogs.Add(new AuditLog
         {
             Action = "p2p.handshake_reject",
             TargetType = "Device",
-            Detail = JsonSerializer.Serialize(new { deviceId, reason }),
+            Detail = JsonSerializer.Serialize(new { deviceId, reason, errorCode }),
             IpAddress = ip,
         });
         await db.SaveChangesAsync();
 
-        return new HandshakeResponse { Ok = false, Error = reason, PairStatus = pairStatus };
+        return new HandshakeResponse
+        {
+            Ok = false,
+            Error = reason,
+            ErrorCode = errorCode,
+            PairStatus = pairStatus,
+        };
     }
 
     /// <summary>

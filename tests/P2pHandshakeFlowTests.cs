@@ -431,6 +431,201 @@ public class P2pHandshakeFlowTests : IDisposable
         Assert.Equal("fp-rotated", updated.CertFingerprint);
     }
 
+    // ==================== [TASK-PRELAUNCH-FIX-SCAN] 扫码绑定根因修复 ====================
+
+    private async Task SeedPairingCodeOwned(string code, string ownerUserId)
+    {
+        var db = CreateDb();
+        db.PairingInfos.Add(new PairingInfo
+        {
+            DeviceId = 0,
+            PairCode = code,
+            PairMethod = "manual",
+            PairStatus = "pending",
+            OwnerUserId = ownerUserId,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+            CreatedAt = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task Handshake_PairedReconnectWithStalePairCode_IgnoredAndAccepted()
+    {
+        // 生产根因回归：已配对设备断线重连仍携带旧配对码（甚至是他账号签发的 pending 码）时，
+        // 必须按证书指纹直接放行、忽略配对码——旧行为在此触发"配对码归属不匹配"误拒，
+        // 误拒→无限重试→K3 IP 封禁是阿里云生产 117 根因的放大链
+        var db = CreateDb();
+        db.PairingInfos.Add(new PairingInfo
+        {
+            DeviceId = 0,
+            PairCode = "123456",
+            PairMethod = "manual",
+            PairStatus = "pending",
+            OwnerUserId = "2", // 其他账号签发的 pending 码
+            ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+            CreatedAt = DateTime.UtcNow,
+        });
+        db.Devices.Add(new Device
+        {
+            DeviceId = "reconnect-dev",
+            DeviceName = "重连设备",
+            Platform = "android",
+            PairStatus = "paired",
+            OnlineStatus = "offline",
+            CertFingerprint = "fp-reconnect",
+            OwnerUserId = "1",
+        });
+        await db.SaveChangesAsync();
+
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "reconnect-dev", PairCode = "123456" },
+            peerFingerprint: "fp-reconnect", remoteEndPoint: "10.255.250.100:1234");
+
+        Assert.True(response.Ok);
+        // 归属与指纹不被配对码逻辑触碰
+        var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "reconnect-dev");
+        Assert.Equal("1", updated.OwnerUserId);
+        Assert.Equal("fp-reconnect", updated.CertFingerprint);
+        Assert.Equal("online", updated.OnlineStatus);
+    }
+
+    [Fact]
+    public async Task Handshake_RebindOwnershipMismatch_ErrorCodeAndNotRateCounted()
+    {
+        // 设备归属账号 1，pending 码由账号 2 签发 → device_owned_by_other；
+        // 确定性拒绝不计入 IP 失败限速：连试 12 次仍返回明确错误码而不是 ip_rate_limited
+        await SeedPairingCodeOwned("666666", "2");
+        var db = CreateDb();
+        db.Devices.Add(new Device
+        {
+            DeviceId = "owned-dev",
+            DeviceName = "归属设备",
+            Platform = "android",
+            PairStatus = "unpaired",
+            OnlineStatus = "offline",
+            CertFingerprint = "fp-owned-old",
+            OwnerUserId = "1",
+        });
+        await db.SaveChangesAsync();
+
+        var handler = CreateHandler();
+        const string ip = "10.255.250.101:1234";
+
+        for (var i = 0; i < 12; i++)
+        {
+            var (response, _, _, _) = await handler.HandleHandshake(
+                new HandshakeRequest { DeviceId = "owned-dev", PairCode = "666666" },
+                peerFingerprint: "fp-owned-new", remoteEndPoint: ip);
+
+            Assert.False(response.Ok);
+            Assert.Equal("device_owned_by_other", response.ErrorCode);
+            Assert.Contains("解绑", response.Error);
+        }
+    }
+
+    [Fact]
+    public async Task Handshake_FingerprintMismatch_ErrorCodeAndNotRateCounted()
+    {
+        // 指纹不匹配 = 确定性拒绝：error_code=fingerprint_mismatch 且不计入限速，
+        // 儿童端凭错误码停止重试回配对界面，避免重连雪崩触发 K3 封禁
+        var db = CreateDb();
+        db.Devices.Add(new Device
+        {
+            DeviceId = "fp-dev",
+            DeviceName = "指纹设备",
+            Platform = "android",
+            PairStatus = "paired",
+            OnlineStatus = "offline",
+            CertFingerprint = "fp-original",
+        });
+        await db.SaveChangesAsync();
+
+        var handler = CreateHandler();
+        const string ip = "10.255.250.102:1234";
+
+        for (var i = 0; i < 12; i++)
+        {
+            var (response, _, _, _) = await handler.HandleHandshake(
+                new HandshakeRequest { DeviceId = "fp-dev" },
+                peerFingerprint: "fp-attacker", remoteEndPoint: ip);
+
+            Assert.False(response.Ok);
+            Assert.Equal("fingerprint_mismatch", response.ErrorCode);
+        }
+    }
+
+    [Fact]
+    public async Task Handshake_RevokedWithoutCode_ErrorCodeRevoked()
+    {
+        var db = CreateDb();
+        db.Devices.Add(new Device
+        {
+            DeviceId = "revoked-dev",
+            DeviceName = "吊销设备",
+            Platform = "android",
+            PairStatus = "revoked",
+            OnlineStatus = "offline",
+            CertFingerprint = "fp-revoked",
+        });
+        await db.SaveChangesAsync();
+
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "revoked-dev" },
+            peerFingerprint: "fp-revoked", remoteEndPoint: "10.255.250.103:1234");
+
+        Assert.False(response.Ok);
+        Assert.Equal("revoked", response.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Handshake_ExpiredPairCode_HintRefreshQr()
+    {
+        await SeedPairingCode("654321", DateTime.UtcNow.AddMinutes(-1));
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "expired-code-dev", PairCode = "654321" },
+            peerFingerprint: "fp-expired", remoteEndPoint: "10.255.250.104:1234");
+
+        Assert.False(response.Ok);
+        Assert.Equal("invalid_pairing_code", response.ErrorCode);
+        Assert.Contains("请刷新二维码", response.Error);
+    }
+
+    [Fact]
+    public async Task Handshake_RebindSuccess_ConsumesPairingCode()
+    {
+        // 重绑成功后配对码一次性消费（pending → confirmed），不能再次复用
+        await SeedPairingCode("777777");
+        var db = CreateDb();
+        db.Devices.Add(new Device
+        {
+            DeviceId = "consume-dev",
+            DeviceName = "消费设备",
+            Platform = "android",
+            PairStatus = "unpaired",
+            OnlineStatus = "offline",
+            CertFingerprint = "fp-consumed-old",
+        });
+        await db.SaveChangesAsync();
+
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "consume-dev", PairCode = "777777" },
+            peerFingerprint: "fp-consumed-new", remoteEndPoint: "10.255.250.105:1234");
+
+        Assert.True(response.Ok);
+        var pairing = await CreateDb().PairingInfos.SingleAsync(p => p.PairCode == "777777");
+        Assert.Equal("confirmed", pairing.PairStatus);
+        Assert.NotNull(pairing.ConfirmedAt);
+    }
+
     // ==================== [SEC-K2] 家长端中继会话令牌 + 指纹绑定 ====================
 
     private async Task SeedParentSession(string deviceId, string? token, string? fingerprint)

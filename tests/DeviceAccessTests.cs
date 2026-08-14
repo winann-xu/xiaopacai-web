@@ -198,6 +198,61 @@ public class DeviceAccessTests
         Assert.Equal(403, status.StatusCode);
     }
 
+    [Fact]
+    public async Task Devices_Unpair_OwnDevice_ClearsOwnerAndPairCode()
+    {
+        // [TASK-PRELAUNCH-FIX-SCAN] 解绑即释放归属：清空 OwnerUserId 与 PairCode，
+        // 使任意账号凭新 pending 配对码可重新绑定
+        var db = CreateInMemoryDbContext();
+        var (own, _) = await SeedTwoDevices(db);
+        own.PairCode = "111111";
+        await db.SaveChangesAsync();
+
+        var (handler, p2p) = CreateP2pServices(db);
+        var controller = new DevicesController(db, handler, p2p, Mock.Of<XiaopacaiWeb.Services.IJwtService>(),
+            NullLogger<DevicesController>.Instance);
+        SetHttpContext(controller, Principal(1));
+
+        var result = await controller.Unpair(own.Id);
+
+        Assert.IsType<OkObjectResult>(result);
+        var updated = await db.Devices.FindAsync(own.Id);
+        Assert.Equal("unpaired", updated!.PairStatus);
+        Assert.Null(updated.OwnerUserId);
+        Assert.Null(updated.PairCode);
+    }
+
+    [Fact]
+    public async Task Devices_List_ReturnsOwnerAccount_AndUnpairClearsIt()
+    {
+        // [TASK-PRELAUNCH-FIX-SCAN] 设备列表/详情返回绑定账号（跨账号扫码排查）；
+        // 解绑清空归属后 ownerAccount 为 null
+        var db = CreateInMemoryDbContext();
+        db.Users.Add(new User { Id = 1, Username = "parent1" });
+        db.Devices.Add(new Device
+        {
+            Id = 1, DeviceName = "自家设备", DeviceId = "own-001",
+            Platform = "android", OwnerUserId = "1", PairStatus = "paired",
+        });
+        await db.SaveChangesAsync();
+
+        var (handler, p2p) = CreateP2pServices(db);
+        var controller = new DevicesController(db, handler, p2p, Mock.Of<XiaopacaiWeb.Services.IJwtService>(),
+            NullLogger<DevicesController>.Instance);
+        SetHttpContext(controller, Principal(1));
+
+        var ok = Assert.IsType<OkObjectResult>(await controller.List());
+        var first = Assert.IsType<System.Collections.IEnumerable>(ok.Value!).Cast<object>().First();
+        Assert.Equal("parent1", first.GetType().GetProperty("ownerAccount")!.GetValue(first));
+
+        // 解绑后归属清空 → 管理员视角 ownerAccount 为 null
+        await controller.Unpair(1);
+        SetHttpContext(controller, Principal(99, "admin"));
+        var ok2 = Assert.IsType<OkObjectResult>(await controller.List());
+        var first2 = Assert.IsType<System.Collections.IEnumerable>(ok2.Value!).Cast<object>().First();
+        Assert.Null(first2.GetType().GetProperty("ownerAccount")!.GetValue(first2));
+    }
+
     // ==================== PoliciesController ====================
 
     [Fact]
