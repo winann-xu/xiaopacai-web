@@ -534,8 +534,16 @@ onBeforeUnmount(() => {
         </el-tab-pane>
       </el-tabs>
 
+      <!-- 网页管理入口（IP + 域名双地址） -->
+      <div v-if="resetStep === 0" class="web-console-links">
+        <span class="web-console-label">网页管理：</span>
+        <el-link type="primary" href="http://8.217.165.122:5000" target="_blank">8.217.165.122:5000</el-link>
+        <span class="web-console-sep">·</span>
+        <el-link type="primary" href="https://xpc.winann.com" target="_blank">xpc.winann.com</el-link>
+      </div>
+
       <!-- ===== 忘记密码流程（需求 12） ===== -->
-      <div v-else class="reset-flow">
+      <div v-if="resetStep !== 0" class="reset-flow">
         <!-- 步骤 1：输入账号 -->
         <template v-if="resetStep === 1">
           <h3 class="reset-title">找回密码</h3>
@@ -659,6 +667,27 @@ onBeforeUnmount(() => {
 .login-extra {
   text-align: center;
   margin: -4px 0 8px;
+}
+
+/* 网页管理入口（IP + 域名双地址） */
+.web-console-links {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.web-console-label {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.web-console-sep {
+  color: var(--el-text-color-secondary);
 }
 
 /* [TASK-PRELAUNCH-P1-FIX] 替代 el-link 废弃的 underline 属性 */
