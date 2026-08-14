@@ -369,7 +369,7 @@ public class SettingsSaveRequest
     public NotificationSettingsDto? Notification { get; set; }
     public ServerSettingsDto? Server { get; set; }
     public int? DataRetentionDays { get; set; }
-    public string? BackupDir { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string? BackupDir { get; set; }
 }
 
 public class NotificationSettingsDto
@@ -384,8 +384,8 @@ public class ServerSettingsDto
 {
     public int? WebPort { get; set; }
     public int? P2pPort { get; set; }
-    public string? BindAddress { get; set; }
-    public string? RelayHost { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? BindAddress { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string? RelayHost { get; set; }
 }
 
 /// <summary>

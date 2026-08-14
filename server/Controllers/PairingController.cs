@@ -65,7 +65,8 @@ public class PairingController : ControllerBase
         _db.PairingInfos.Add(pairingInfo);
         await _db.SaveChangesAsync();
 
-        _logger.LogInformation("[Pairing] 生成配对码: {Code}, 有效期至 {Expiry}", pairCode, pairingInfo.ExpiresAt);
+        // [SEC-P2] 日志打码：不落明文配对码
+        _logger.LogInformation("[Pairing] 生成配对码: {Code}, 有效期至 {Expiry}", "******", pairingInfo.ExpiresAt);
 
         return Ok(new
         {
@@ -114,7 +115,8 @@ public class PairingController : ControllerBase
             fingerprint = ""
         });
 
-        _logger.LogInformation("[Pairing] 生成绑定二维码: {Code} host={Host}", pairCode, host);
+        // [SEC-P2] 日志打码：不落明文配对码
+        _logger.LogInformation("[Pairing] 生成绑定二维码: {Code} host={Host}", "******", host);
         return Ok(new
         {
             pairCode,
@@ -228,12 +230,12 @@ public class PairingController : ControllerBase
 
         await _db.SaveChangesAsync();
 
-        // [TASK-OPT-12-P4-DEEPEN] 审计日志：设备配对确认
+        // [TASK-OPT-12-P4-DEEPEN] 审计日志：设备配对确认（[SEC-P2] 配对码打码，防审计泄露劫持绑定）
         await AuditAsync("pairing.verify", "Device", device.Id,
-            $"{{\"deviceId\":\"{device.DeviceId}\",\"code\":\"{request.PairCode}\"}}");
+            $"{{\"deviceId\":\"{device.DeviceId}\",\"code\":\"******\"}}");
 
         _logger.LogInformation("[Pairing] 配对确认: device={DeviceId}, code={Code}",
-            device.DeviceId, request.PairCode);
+            device.DeviceId, "******");
 
         return Ok(new
         {
@@ -323,6 +325,7 @@ public class GeneratePairCodeRequest
     public int? DeviceId { get; set; }
 
     /// <summary>配对方式：manual | scan | broadcast</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(32)]
     public string Method { get; set; } = "manual";
 }
 
@@ -332,21 +335,27 @@ public class GeneratePairCodeRequest
 public class VerifyPairCodeRequest
 {
     /// <summary>6 位配对码（必填）</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(16)]
     public string PairCode { get; set; } = string.Empty;
 
     /// <summary>设备唯一标识（新设备时必填）</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(128)]
     public string? DeviceId { get; set; }
 
     /// <summary>设备名称</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(64)]
     public string? DeviceName { get; set; }
 
     /// <summary>平台：android</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(32)]
     public string? Platform { get; set; }
 
     /// <summary>设备 IP 地址</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(64)]
     public string? IpAddress { get; set; }
 
     /// <summary>TLS 证书 SHA-256 指纹</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(64)]
     public string? CertFingerprint { get; set; }
 }
 
@@ -355,5 +364,6 @@ public class VerifyPairCodeRequest
 /// </summary>
 public class CancelPairCodeRequest
 {
+    [System.ComponentModel.DataAnnotations.MaxLength(16)]
     public string PairCode { get; set; } = string.Empty;
 }

@@ -352,10 +352,10 @@ public class AnnouncementsController : ControllerBase
 /// </summary>
 public class AnnouncementSaveRequest
 {
-    public string? Title { get; set; }
-    public string? Content { get; set; }
-    public string? Priority { get; set; }
-    public string? Status { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(200)] public string? Title { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(20000)] public string? Content { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(16)] public string? Priority { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(16)] public string? Status { get; set; }
     public int? TargetDeviceId { get; set; }
     public DateTime? ValidFrom { get; set; }
     public DateTime? ValidUntil { get; set; }

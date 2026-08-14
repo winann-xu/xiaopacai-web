@@ -342,12 +342,12 @@ public class PoliciesController : ControllerBase
 public class PolicySaveRequest
 {
     public int DailyLimitMinutes { get; set; } = 120;
-    public string? BedtimeStart { get; set; }
-    public string? BedtimeEnd { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(32)] public string? BedtimeStart { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(32)] public string? BedtimeEnd { get; set; }
     public List<CategoryLimitItem>? CategoryLimits { get; set; }
     public List<string>? Whitelist { get; set; }
     public List<string>? Blacklist { get; set; }
-    public string? TimeoutAction { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(16)] public string? TimeoutAction { get; set; }
 }
 
 /// <summary>
@@ -355,8 +355,8 @@ public class PolicySaveRequest
 /// </summary>
 public class CategoryLimitItem
 {
-    public string Category { get; set; } = string.Empty;
-    public string Label { get; set; } = string.Empty;
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string Category { get; set; } = string.Empty;
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string Label { get; set; } = string.Empty;
     public int Minutes { get; set; }
     public bool Enabled { get; set; }
 }

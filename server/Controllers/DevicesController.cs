@@ -202,12 +202,15 @@ public class DevicesController : ControllerBase
             PairCode = pairCode,
             PairMethod = "manual",
             PairStatus = "pending",
+            // [SEC-P1] 记录归属账号（cancel 归属校验依赖此字段）
+            OwnerUserId = GetUserId()?.ToString(),
             ExpiresAt = expiresAt,
             CreatedAt = DateTime.UtcNow,
         });
         await _db.SaveChangesAsync();
 
-        await AuditAsync("device.pairing-code", "PairingInfo", null, $"{{\"code\":\"{pairCode}\"}}");
+        // [SEC-P2] 审计打码：不落明文配对码（6 位码泄露可直接劫持绑定流程）
+        await AuditAsync("device.pairing-code", "PairingInfo", null, $"{{\"code\":\"******\"}}");
 
         return Ok(new
         {
@@ -459,8 +462,8 @@ public class DevicesController : ControllerBase
 /// </summary>
 public class ManualPairRequest
 {
-    public string PairingCode { get; set; } = string.Empty;
-    public string? IpAddress { get; set; }
-    public string? DeviceName { get; set; }
-    public string? Platform { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(16)] public string PairingCode { get; set; } = string.Empty;
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? IpAddress { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? DeviceName { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(32)] public string? Platform { get; set; }
 }

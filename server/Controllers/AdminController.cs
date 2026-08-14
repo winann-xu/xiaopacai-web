@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.Security;
 using XiaopacaiWeb.Services;
 
 namespace XiaopacaiWeb.Controllers;
@@ -62,8 +63,10 @@ public class AdminController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))
             return BadRequest(new { error = "用户名和密码不能为空" });
-        if (request.Password.Length < 6)
-            return BadRequest(new { error = "密码至少 6 位" });
+        // [SEC-P2] 密码策略（红线 R4.2）
+        var policyError = PasswordPolicy.Validate(request.Password);
+        if (policyError != null)
+            return BadRequest(new { error = policyError });
         if (await _db.Users.AnyAsync(u => u.Username == request.Username))
             return BadRequest(new { error = "用户名已存在" });
 
@@ -174,8 +177,10 @@ public class AdminController : ControllerBase
         var newPassword = string.IsNullOrWhiteSpace(request?.NewPassword)
             ? GeneratePassword()
             : request!.NewPassword;
-        if (newPassword.Length < 6)
-            return BadRequest(new { error = "密码至少 6 位" });
+        // [SEC-P2] 密码策略（红线 R4.2）
+        var policyError = PasswordPolicy.Validate(newPassword);
+        if (policyError != null)
+            return BadRequest(new { error = policyError });
 
         var (hash, salt) = _hasher.HashPassword(newPassword);
         user.PasswordHash = hash;
@@ -281,19 +286,47 @@ public class AdminController : ControllerBase
     [HttpPut("system")]
     public async Task<IActionResult> SaveSystemConfig([FromBody] SystemConfigSaveRequest request)
     {
+        // [SEC-P2] 值域校验：非法配置值直接拒绝入库
+        if (request.WebPort is < 1 or > 65535)
+            return BadRequest(new { error = "Web 端口超出范围（1-65535）" });
+        if (request.P2pPort is < 1 or > 65535)
+            return BadRequest(new { error = "P2P 端口超出范围（1-65535）" });
+        if (request.DataRetentionDays is < 1 or > 3650)
+            return BadRequest(new { error = "数据保留天数超出范围（1-3650）" });
+        if (request.MaxLoginAttempts is < 3 or > 20)
+            return BadRequest(new { error = "登录失败上限超出范围（3-20）" });
+        if (request.SessionTimeoutMinutes is < 5 or > 1440)
+            return BadRequest(new { error = "会话超时超出范围（5-1440 分钟）" });
+        if (!string.IsNullOrEmpty(request.BindAddress) && !IsValidHostOrIp(request.BindAddress))
+            return BadRequest(new { error = "绑定地址格式无效" });
+        if (!string.IsNullOrEmpty(request.BackupDir) &&
+            (request.BackupDir.Contains("..") || request.BackupDir.StartsWith('/') ||
+             request.BackupDir.StartsWith('\\') || request.BackupDir.Contains(':') || request.BackupDir.Length > 128))
+            return BadRequest(new { error = "备份目录格式无效" });
+
         await SetConfig("web_port", request.WebPort.ToString());
         await SetConfig("p2p_port", request.P2pPort.ToString());
         if (!string.IsNullOrEmpty(request.BindAddress))
-            await SetConfig("bind_address", request.BindAddress);
+            await SetConfig("bind_address", request.BindAddress.Trim());
         await SetConfig("https_enabled", request.HttpsEnabled.ToString());
         if (!string.IsNullOrEmpty(request.BackupDir))
-            await SetConfig("backup_dir", request.BackupDir);
+            await SetConfig("backup_dir", request.BackupDir.Trim());
         await SetConfig("data_retention_days", request.DataRetentionDays.ToString());
         await SetConfig("max_login_attempts", request.MaxLoginAttempts.ToString());
         await SetConfig("session_timeout_minutes", request.SessionTimeoutMinutes.ToString());
 
         await AuditAsync("admin.system.save", "System", null, null);
         return Ok(new { message = "系统配置已保存" });
+    }
+
+    /// <summary>[SEC] 主机名/IP 白名单校验：字母数字/点/连字符/下划线；含冒号时按 IPv6 解析</summary>
+    private static bool IsValidHostOrIp(string value)
+    {
+        var v = value.Trim();
+        if (v.Length is < 1 or > 255) return false;
+        if (v.Contains(':'))
+            return System.Net.IPAddress.TryParse(v.Trim('[', ']'), out _);
+        return v.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_');
     }
 
     // ==================== 数据管理 ====================
@@ -324,12 +357,26 @@ public class AdminController : ControllerBase
     [HttpPost("data/backup")]
     public async Task<IActionResult> BackupData()
     {
+        // [SEC-P1] 备份剥离凭据字段：口令哈希/盐、设备令牌/配对码/证书指纹不入备份（红线 R4.3）
         var backup = new
         {
             version = "3.0",
             exportedAt = DateTime.UtcNow,
-            users = await _db.Users.AsNoTracking().ToListAsync(),
-            devices = await _db.Devices.AsNoTracking().ToListAsync(),
+            users = await _db.Users.AsNoTracking()
+                .Select(u => new
+                {
+                    u.Id, u.Username, u.DisplayName, u.Role, u.Email, u.IsActive,
+                    u.MustChangePassword, u.CreatedAt, u.UpdatedAt, u.LastLoginAt,
+                })
+                .ToListAsync(),
+            devices = await _db.Devices.AsNoTracking()
+                .Select(d => new
+                {
+                    d.Id, d.DeviceId, d.DeviceName, d.Platform, d.MacAddress, d.IpAddress,
+                    d.PairStatus, d.OnlineStatus, d.OwnerUserId, d.AppCategories,
+                    d.LastResetOffsetMinutes, d.LastResetDate, d.TodayAdjustedMinutes, d.IsActive,
+                })
+                .ToListAsync(),
             policies = await _db.Policies.AsNoTracking().ToListAsync(),
             announcements = await _db.Announcements.AsNoTracking().ToListAsync(),
             usageRecords = await _db.UsageRecords.AsNoTracking().ToListAsync(),
@@ -460,13 +507,17 @@ public class AdminController : ControllerBase
 
     private static string GeneratePassword()
     {
-        const string chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-        var random = new byte[10];
+        // [SEC-P2] 保证含字母与数字（满足密码策略）；其余位随机填充（易读字符集）
+        const string letters = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
+        const string digits = "23456789";
+        var random = new byte[8];
         using var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
         rng.GetBytes(random);
         var sb = new StringBuilder();
-        foreach (var b in random)
-            sb.Append(chars[b % chars.Length]);
+        sb.Append(letters[random[0] % letters.Length]);
+        sb.Append(digits[random[1] % digits.Length]);
+        for (var i = 2; i < random.Length; i++)
+            sb.Append(letters[random[i] % letters.Length]);
         return sb.ToString();
     }
 
@@ -504,27 +555,27 @@ public class AdminController : ControllerBase
 public class AccountCreateRequest
 {
     [Required]
-    public string Username { get; set; } = string.Empty;
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string Username { get; set; } = string.Empty;
 
     [Required]
-    public string Password { get; set; } = string.Empty;
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string Password { get; set; } = string.Empty;
 
-    public string? DisplayName { get; set; }
-    public string Role { get; set; } = "parent";
-    public string? Email { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? DisplayName { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(16)] public string Role { get; set; } = "parent";
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string? Email { get; set; }
 }
 
 public class AccountUpdateRequest
 {
-    public string? Username { get; set; }
-    public string? DisplayName { get; set; }
-    public string? Role { get; set; }
-    public string? Email { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? Username { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? DisplayName { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(16)] public string? Role { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string? Email { get; set; }
 }
 
 public class ResetPasswordRequest
 {
-    public string? NewPassword { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string? NewPassword { get; set; }
 }
 
 public class SystemConfigSaveRequest

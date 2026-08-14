@@ -25,6 +25,11 @@ public class AuthController : ControllerBase
     private readonly ILogger<AuthController> _logger;
     private readonly int _refreshTokenExpiryDays;
 
+    // [SEC-P2] 虚拟哈希凭据：账号不存在时执行一次等价的 Argon2 校验，
+    // 消除"用户不存在"与"密码错误"的响应时间差（防账号枚举）
+    private static readonly (string Hash, string Salt) DummyCredential =
+        new PasswordHasher().HashPassword(Guid.NewGuid().ToString("N"));
+
     public AuthController(AppDbContext db, IPasswordHasher hasher, IJwtService jwt, TicketStore tickets,
         ILogger<AuthController> logger, IConfiguration config)
     {
@@ -44,6 +49,10 @@ public class AuthController : ControllerBase
     {
         if (!ModelState.IsValid)
             return BadRequest(ModelState);
+
+        // [SEC-P2] Origin/Host 一致性校验（CSRF 纵深防御，原生客户端无 Origin 头放行）
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
 
         // [TASK-OPT-12-P4-DEEPEN] 登录失败限速：5 次/小时，按用户名 + IP 双维度封锁
         const int maxLoginFailures = 5;
@@ -65,6 +74,8 @@ public class AuthController : ControllerBase
 
         if (user == null)
         {
+            // [SEC-P2] 虚拟哈希：耗时与真实校验对齐，防账号枚举
+            _ = _hasher.VerifyPassword(request.Password, DummyCredential.Hash, DummyCredential.Salt);
             _logger.LogWarning("[Auth] 登录失败 — 用户不存在: {U}", request.Username);
             await AuditAsync("login_failed", null, null, null, null,
                 $"{{\"username\":\"{request.Username}\",\"reason\":\"user_not_found\"}}");
@@ -147,11 +158,17 @@ public class AuthController : ControllerBase
         if (!ModelState.IsValid)
             return BadRequest(ModelState);
 
+        // [SEC-P2] Origin/Host 一致性校验（CSRF 纵深防御）
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
+
         var email = request.Email.Trim().ToLower();
         if (string.IsNullOrWhiteSpace(email))
             return BadRequest(new { error = "邮箱不能为空" });
-        if (request.Password.Length < 6)
-            return BadRequest(new { error = "密码至少 6 位" });
+        // [SEC-P2] 密码策略：≥8 位且含字母与数字（红线 R4.2）
+        var policyError = PasswordPolicy.Validate(request.Password);
+        if (policyError != null)
+            return BadRequest(new { error = policyError });
 
         var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
         if (!RequestRateLimiter.Allow($"register:ip:{clientIp}", 5, 60))
@@ -217,6 +234,10 @@ public class AuthController : ControllerBase
     [HttpPost("logout")]
     public async Task<IActionResult> Logout([FromBody] RefreshRequest? request)
     {
+        // [SEC-P2] Origin/Host 一致性校验（防跨站登出 CSRF）
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
+
         // 吊销当前 Refresh Token（原生客户端走 body；浏览器会话走 httpOnly Cookie）
         var refreshToken = request?.RefreshToken ?? GetRefreshTokenCookie();
         if (!string.IsNullOrEmpty(refreshToken))
@@ -245,6 +266,10 @@ public class AuthController : ControllerBase
     {
         if (request != null && !ModelState.IsValid)
             return BadRequest(ModelState);
+
+        // [SEC-P2] Origin/Host 一致性校验（防跨站刷新 CSRF）
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
 
         var refreshToken = request?.RefreshToken ?? GetRefreshTokenCookie();
         if (string.IsNullOrEmpty(refreshToken))
@@ -296,6 +321,11 @@ public class AuthController : ControllerBase
         var user = await _db.Users.FindAsync(userId.Value);
         if (user == null)
             return NotFound(new { error = "用户不存在" });
+
+        // [SEC-P2] 新密码策略校验（红线 R4.2）
+        var policyError = PasswordPolicy.Validate(request.NewPassword);
+        if (policyError != null)
+            return BadRequest(new { error = policyError });
 
         // 验证旧密码
         if (!_hasher.VerifyPassword(request.OldPassword, user.PasswordHash, user.PasswordSalt))
@@ -673,6 +703,11 @@ public class AuthController : ControllerBase
             return NotFound(new { error = "账号不存在或已停用" });
         }
 
+        // [SEC-P2] 新密码策略校验（红线 R4.2）
+        var policyError = PasswordPolicy.Validate(request.NewPassword);
+        if (policyError != null)
+            return BadRequest(new { error = policyError });
+
         // 哈希新密码 + 吊销全部 Refresh Token
         var (newHash, newSalt) = _hasher.HashPassword(request.NewPassword);
         user.PasswordHash = newHash;
@@ -724,6 +759,27 @@ public class AuthController : ControllerBase
            : ticket.Length <= 8 ? "****" : ticket[..8] + "****";
 
     // [SEC-K5] ========== 浏览器会话 Cookie（httpOnly，防 XSS 窃取；SameSite=Strict 防 CSRF；HTTPS 下 Secure） ==========
+
+    /// <summary>
+    /// [SEC-P2] Origin/Host 一致性校验（CSRF 纵深防御）：
+    /// 浏览器跨站请求带 Origin，与请求 Host 不一致直接拒绝；
+    /// 原生客户端不携带 Origin 头，放行。仅比较主机名（不比较端口），
+    /// 兼容 vite 开发代理（同为本机回环）与 Nginx 反代（Host 已由 $host 覆盖）。
+    /// </summary>
+    private bool IsSameOriginRequest()
+    {
+        var origin = Request.Headers.Origin.ToString();
+        if (string.IsNullOrEmpty(origin)) return true;
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var originUri)) return false;
+
+        var host = Request.Host.Host;
+        if (string.Equals(originUri.Host, host, StringComparison.OrdinalIgnoreCase)) return true;
+        // 开发场景：前端 dev server 与后端均在本机回环，允许端口差异
+        return IsLoopbackHost(originUri.Host) && IsLoopbackHost(host);
+    }
+
+    private static bool IsLoopbackHost(string h)
+        => h == "localhost" || h == "127.0.0.1" || h == "::1";
 
     /// <summary>
     /// 写入浏览器会话 Cookie：

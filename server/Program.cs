@@ -123,7 +123,23 @@ builder.Services.AddDbContext<AppDbContext>(opts =>
 builder.Services.AddScoped<IJwtService, JwtService>();
 
 // ---- JWT 鉴权 ----
-var jwtSecretKey = builder.Configuration["Jwt:SecretKey"] ?? "dev-secret-key-32chars-minimum-ok";
+// [SEC-P2] 弱密钥熵检查：非生产环境下密钥缺失/过弱时，启动即生成随机临时密钥并覆盖配置。
+// JwtService（签发）与 JwtBearer（验签）均从 IConfiguration 读取，保证两端一致；
+// 临时密钥仅进程内存有效，重启轮换（现有令牌失效需重新登录）。生产环境保持硬性拒绝启动（见下方校验）。
+var jwtSecretKey = builder.Configuration["Jwt:SecretKey"];
+var jwtKeyIsWeak = string.IsNullOrEmpty(jwtSecretKey) || jwtSecretKey.Length < 32 ||
+                   jwtSecretKey.Contains("CHANGE-ME") || jwtSecretKey.Contains("dev-secret");
+if (jwtKeyIsWeak && !builder.Environment.IsProduction())
+{
+    // 48 字节随机数 → 64 字符 Base64（SHA-256 HMAC 足够熵）
+    jwtSecretKey = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(48));
+    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["Jwt:SecretKey"] = jwtSecretKey,
+    });
+    Console.WriteLine("[安全] Jwt:SecretKey 缺失或过弱，已生成随机临时密钥（进程内有效，重启后需重新登录）");
+}
+jwtSecretKey ??= "dev-secret-key-32chars-minimum-ok";
 var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "xiaopacai-web";
 var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "xiaopacai-client";
 
@@ -266,7 +282,13 @@ app.UseStaticFiles(new Microsoft.AspNetCore.Builder.StaticFileOptions
 app.MapControllers();
 
 // SPA 路由回退：前端路由（如 /login、/admin/devices）交给 index.html 处理
-app.MapFallbackToFile("index.html");
+// [SEC-P2] 排除 /api：未知 API 路径不再被 SPA 兜底吞掉（返回 200 HTML），
+// 改为 JSON 404，避免调用方把"接口不存在"误判为"接口存在但异常"
+app.MapWhen(ctx => !ctx.Request.Path.StartsWithSegments("/api"), b =>
+{
+    b.MapFallbackToFile("index.html");
+});
+app.Map("/api/{**path}", () => Results.Json(new { error = "接口不存在" }, statusCode: 404));
 
 // SignalR Hub 路由（P3 阶段激活）
 // app.MapHub<DeviceHub>("/hubs/device");

@@ -22,7 +22,7 @@ const changingPassword = ref(false)
 
 async function changePassword() {
   if (!passwordForm.oldPassword) { ElMessage.warning('请输入当前密码'); return }
-  if (passwordForm.newPassword.length < 6) { ElMessage.warning('新密码至少6位'); return }
+  if (passwordForm.newPassword.length < 8) { ElMessage.warning('新密码至少 8 位'); return }
   if (passwordForm.newPassword !== passwordForm.confirmPassword) { ElMessage.warning('两次新密码不一致'); return }
   changingPassword.value = true
   try {

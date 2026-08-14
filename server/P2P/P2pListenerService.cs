@@ -20,6 +20,7 @@ namespace XiaopacaiWeb.P2P;
 public class P2pListenerService : IHostedService
 {
     private readonly int _listenPort;
+    private readonly SslProtocols _sslProtocols;
     private readonly P2pCertificateService _certService;
     private readonly P2pMessageHandler _messageHandler;
     private readonly ILogger<P2pListenerService> _logger;
@@ -50,6 +51,11 @@ public class P2pListenerService : IHostedService
         ILogger<P2pListenerService> logger)
     {
         _listenPort = configuration.GetValue<int>("P2P:ListenPort", 9527);
+        // [SEC-P2] 接入 P2P:TlsMinVersion 配置（此前死配置）：
+        // "1.3" 仅 TLS 1.3；默认/其他值 TLS 1.2+1.3（与 2.0 儿童端兼容底线 TLS 1.2）
+        _sslProtocols = configuration["P2P:TlsMinVersion"] == "1.3"
+            ? SslProtocols.Tls13
+            : SslProtocols.Tls13 | SslProtocols.Tls12;
         _certService = certService;
         _messageHandler = messageHandler;
         _logger = logger;
@@ -223,7 +229,8 @@ public class P2pListenerService : IHostedService
                 {
                     ServerCertificate = certificate,
                     ClientCertificateRequired = true,
-                    EnabledSslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12,
+                    // [SEC-P2] 协议族由 P2P:TlsMinVersion 配置决定（默认 TLS 1.2+1.3）
+                    EnabledSslProtocols = _sslProtocols,
                     CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
                 });
 

@@ -36,7 +36,7 @@ const registerError = ref('')
 
 async function handleRegister() {
   if (!registerForm.email.includes('@')) { ElMessage.warning('请输入有效邮箱'); return }
-  if (registerForm.password.length < 6) { ElMessage.warning('密码至少 6 位'); return }
+  if (registerForm.password.length < 8) { ElMessage.warning('密码至少 8 位'); return }
   if (registerForm.password !== registerForm.confirmPassword) { ElMessage.warning('两次密码不一致'); return }
   registerLoading.value = true
   registerError.value = ''
@@ -313,7 +313,7 @@ async function pollReset() {
 
 // 步骤 3：提交新密码
 async function submitReset() {
-  if (resetForm.newPassword.length < 6) { ElMessage.warning('新密码至少 6 位'); return }
+  if (resetForm.newPassword.length < 8) { ElMessage.warning('新密码至少 8 位'); return }
   if (resetForm.newPassword !== resetForm.confirmPassword) { ElMessage.warning('两次输入的密码不一致'); return }
   resetSubmitting.value = true
   try {
@@ -443,7 +443,7 @@ onBeforeUnmount(() => {
               <el-input
                 v-model="registerForm.password"
                 type="password"
-                placeholder="至少 6 位"
+                placeholder="至少 8 位"
                 :prefix-icon="Lock"
                 show-password
                 autocomplete="new-password"
@@ -563,12 +563,12 @@ onBeforeUnmount(() => {
         <!-- 步骤 3：设置新密码 -->
         <template v-else-if="resetStep === 3">
           <h3 class="reset-title">设置新密码</h3>
-          <p class="reset-hint">身份已确认，请设置新的登录密码（至少 6 位）</p>
+          <p class="reset-hint">身份已确认，请设置新的登录密码（至少 8 位）</p>
           <el-input
             v-model="resetForm.newPassword"
             type="password"
             show-password
-            placeholder="新密码（至少 6 位）"
+            placeholder="新密码（至少 8 位）"
             size="large"
           />
           <el-input

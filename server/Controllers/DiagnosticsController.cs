@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.Security;
 using XiaopacaiWeb.Services;
 
 namespace XiaopacaiWeb.Controllers;
@@ -61,6 +62,15 @@ public class DiagnosticsController : ControllerBase
             _logger.LogWarning("[Diagnostics] 设备令牌校验失败被拒绝: {DeviceId}", request.DeviceId);
             return StatusCode(403, new { error = "设备令牌无效" });
         }
+
+        // [SEC-P2] 上报限速：每设备每 IP 每小时 60 次（正常每天一次/异常补报，防灌库）
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"diagnostics:{request.DeviceId}:{clientIp}", 60, 3600))
+            return StatusCode(429, new { error = "上报过于频繁，请稍后再试" });
+
+        // [SEC-K10] 诊断上报审计（仅设备 ID/大小，不落诊断内容）
+        await AuditAsync("diagnostics.submit", "Diagnostics", device.Id,
+            $"{{\"deviceId\":\"{request.DeviceId}\",\"dbSizeBytes\":{request.DbSizeBytes?.ToString() ?? "null"}}}");
 
         // [SEC-K9] 诊断数据最小化：JSON 字段类型/尺寸收敛，畸形或超限直接拒绝；
         // NetworkType 白名单外一律丢弃（不落库）
@@ -319,34 +329,34 @@ public class DiagnosticsController : ControllerBase
 public class DiagnosticReportRequest
 {
     /// <summary>儿童端设备唯一标识（必填）</summary>
-    public string DeviceId { get; set; } = string.Empty;
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string DeviceId { get; set; } = string.Empty;
 
     /// <summary>设备访问令牌（TASK-OPT-12-P4-DEEPEN：由 /api/devices/{id}/token 生成，设备已配置令牌时必填）</summary>
-    public string? DeviceToken { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string? DeviceToken { get; set; }
 
     /// <summary>儿童端 APP 版本号</summary>
-    public string? AppVersion { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(32)] public string? AppVersion { get; set; }
 
     /// <summary>Android 系统版本号</summary>
-    public string? AndroidVersion { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(32)] public string? AndroidVersion { get; set; }
 
     /// <summary>设备型号</summary>
-    public string? DeviceModel { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? DeviceModel { get; set; }
 
     /// <summary>设备厂商</summary>
-    public string? Manufacturer { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? Manufacturer { get; set; }
 
     /// <summary>权限状态（JSON 对象：无障碍/用量/设备管理器/通知/电池优化）</summary>
-    public string? PermissionStatus { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(4000)] public string? PermissionStatus { get; set; }
 
     /// <summary>服务运行状态（JSON 对象：守护服务/无障碍服务）</summary>
-    public string? ServiceStatus { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(4000)] public string? ServiceStatus { get; set; }
 
     /// <summary>最近崩溃堆栈（JSON 数组，最近 5 条）</summary>
-    public string? RecentCrashes { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(8000)] public string? RecentCrashes { get; set; }
 
     /// <summary>P2P 连接历史（JSON 对象：成功/失败/重连次数）</summary>
-    public string? P2pHistory { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(4000)] public string? P2pHistory { get; set; }
 
     /// <summary>本地数据库大小（字节）</summary>
     public long? DbSizeBytes { get; set; }

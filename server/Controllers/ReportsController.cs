@@ -324,7 +324,12 @@ public class ReportsController : ControllerBase
     }
 
     private static string EscapeCsv(string s)
-        => $"\"{s.Replace("\"", "\"\"")}\"";
+    {
+        // [SEC-P2] CSV 公式注入防护：以 = + - @ 开头的字段前置单引号，防 Excel/WPS 执行公式
+        if (s.Length > 0 && (s[0] is '=' or '+' or '-' or '@'))
+            s = "'" + s;
+        return $"\"{s.Replace("\"", "\"\"")}\"";
+    }
 
     /// <summary>
     /// TXT 可读模板（复用 Android ReportGenerator 文本风格：逐日总览 + 分类 + Top 应用）

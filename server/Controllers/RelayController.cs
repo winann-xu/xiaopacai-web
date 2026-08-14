@@ -254,18 +254,22 @@ public class RelayRegisterRequest
 {
     /// <summary>设备唯一标识（家长端用 "parent-" + ANDROID_ID 前 8 位）</summary>
     [JsonPropertyName("deviceId")]
+    [System.ComponentModel.DataAnnotations.MaxLength(128)]
     public string DeviceId { get; set; } = string.Empty;
 
     /// <summary>角色：parent（家长端）| child（儿童端）</summary>
     [JsonPropertyName("role")]
+    [System.ComponentModel.DataAnnotations.MaxLength(16)]
     public string Role { get; set; } = "parent";
 
     /// <summary>TLS 证书 SHA-256 指纹</summary>
     [JsonPropertyName("fingerprint")]
+    [System.ComponentModel.DataAnnotations.MaxLength(64)]
     public string? Fingerprint { get; set; }
 
     /// <summary>配对码（6 位，用于绑定对应儿童设备）</summary>
     [JsonPropertyName("pairingCode")]
+    [System.ComponentModel.DataAnnotations.MaxLength(16)]
     public string? PairingCode { get; set; }
 
     /// <summary>家长端 P2P 监听端口（默认 9527）</summary>

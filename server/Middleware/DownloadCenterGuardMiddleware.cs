@@ -20,6 +20,8 @@ public class DownloadCenterGuardMiddleware
     {
         ".db", ".sqlite", ".db3", ".dbkey", ".pfx", ".pem", ".key", ".crt",
         ".bak", ".env", ".config",
+        // [SEC-P2] 追加常见泄露面：结构化配置/日志/Java 密钥库（防误部署进 wwwroot 被拉取）
+        ".json", ".conf", ".ini", ".log", ".p12", ".jks", ".der", ".p8",
     };
 
     private readonly RequestDelegate _next;
@@ -33,6 +35,13 @@ public class DownloadCenterGuardMiddleware
         // 路径穿越防护（URL 解码后仍含 .. 或反斜杠即拒绝）
         var decoded = Uri.UnescapeDataString(path);
         if (decoded.Contains("..") || decoded.Contains('\\'))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        // [SEC-P2] 点文件段拒绝（.git/.env.local 等隐藏文件即使无敏感扩展名也一律 404）
+        if (decoded.Split('/').Any(seg => seg.StartsWith('.')))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return;
