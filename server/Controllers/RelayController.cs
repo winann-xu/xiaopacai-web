@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.P2P;
 using XiaopacaiWeb.Security;
 
 namespace XiaopacaiWeb.Controllers;
@@ -23,11 +24,13 @@ public class RelayController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly ILogger<RelayController> _logger;
+    private readonly P2pCertificateService _certService;
 
-    public RelayController(AppDbContext db, ILogger<RelayController> logger)
+    public RelayController(AppDbContext db, ILogger<RelayController> logger, P2pCertificateService certService)
     {
         _db = db;
         _logger = logger;
+        _certService = certService;
     }
 
     /// <summary>
@@ -172,6 +175,10 @@ public class RelayController : ControllerBase
 
         // [SEC-K2] sessionToken 只在此响应中出现一次（家长端持久化保存），服务端仅存于 relay_sessions，
         // 不写入日志、不参与列表接口返回，防止令牌泄露（红线 R8.3）
+        // [SEC-P1] serverFingerprint：P2P 服务端证书指纹，家长端据此固定中继 TLS 证书比对
+        // （经 JWT 鉴权通道下发，消除家长端首次中继连接的 TOFU 中间人窗口，红线 R3.x）
+        _certService.GetOrCreateCertificate();
+        var serverFingerprint = _certService.GetFingerprint() ?? "";
         return Ok(new
         {
             deviceId = request.DeviceId,
@@ -180,6 +187,7 @@ public class RelayController : ControllerBase
             connectedAt = now,
             boundDeviceId,
             sessionToken,
+            serverFingerprint,
             message = "中继注册成功",
         });
     }

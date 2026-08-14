@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.P2P;
 using XiaopacaiWeb.Security;
 
 namespace XiaopacaiWeb.Controllers;
@@ -18,11 +19,13 @@ public class PairingController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly ILogger<PairingController> _logger;
+    private readonly P2pCertificateService _certService;
 
-    public PairingController(AppDbContext db, ILogger<PairingController> logger)
+    public PairingController(AppDbContext db, ILogger<PairingController> logger, P2pCertificateService certService)
     {
         _db = db;
         _logger = logger;
+        _certService = certService;
     }
 
     /// <summary>
@@ -106,13 +109,19 @@ public class PairingController : ControllerBase
         var host = string.IsNullOrWhiteSpace(relayHostConfig?.Value)
             ? Request.Host.Host
             : relayHostConfig!.Value.Trim();
+
+        // [SEC-P1] 二维码携带 P2P 服务端证书指纹：儿童端扫码后直接固定指纹比对，
+        // 消除"扫码首连 TOFU"的中间人窗口（红线 R3.x）。旧版客户端忽略该字段，向后兼容。
+        _certService.GetOrCreateCertificate();
+        var serverFingerprint = _certService.GetFingerprint() ?? "";
+
         var qrContent = System.Text.Json.JsonSerializer.Serialize(new
         {
             type = "web_relay",
             host,
             port = 9527,
             pairingCode = pairCode,
-            fingerprint = ""
+            fingerprint = serverFingerprint
         });
 
         // [SEC-P2] 日志打码：不落明文配对码
