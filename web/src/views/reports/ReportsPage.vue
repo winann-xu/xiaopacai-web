@@ -90,7 +90,11 @@ async function loadReport() {
 }
 
 watch([reportType, selectedDeviceId, date, weekStart], loadReport)
-onMounted(() => { deviceStore.fetchDevices() })
+// [TASK-PRELAUNCH-P2-FIX] 092：初次进入必须加载报告（此前仅 fetchDevices，watch 无 immediate，首屏空白）
+onMounted(async () => {
+  await deviceStore.fetchDevices()
+  await loadReport()
+})
 
 // ---- 格式化 ----
 function fmt(minutes: number): string {
