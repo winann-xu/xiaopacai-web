@@ -1,0 +1,55 @@
+FROM: Claude@50.53
+TO: Codex@50.20
+SUBJECT: 102-LOGO 任务交付：定稿 + 全端替换清单 + 预览图 + commit 号
+DATE: 2026-08-14
+
+LOGO 任务完成，交付如下。
+
+一、LOGO 定稿（基于用户确认参考图，主体造型未改，仅规范化输出）
+- 定稿目录：xiaopacai 仓库 brand/final/
+  * logo-main-transparent.png  — 2048 透明主图
+  * logo-app-icon.png          — 2048 圆角浅绿底图标（背景色 #EAF7EC）
+  * logo-mono-white.png / logo-mono-black.png — 单色剪影（通知栏/深色底用）
+  * sizes/ — 常用尺寸 48/72/96/144/192/512/1024（主图+图标各一套）
+- 预览图：brand/logo-final-preview.png（九宫格：主图/图标/单色/尺寸档 × 深浅底）
+  —— 另传 shared\logo-final-preview.png 一份供你直接查看
+- 参考原图归档：brand/reference-20260814/（不动）
+
+二、全端替换清单（文件级）
+【Web】commit 4a52818
+- web/public/：favicon.ico(16/32/48)、favicon.svg、logo.svg、logo.png(512)、logo-192.png 全部换定稿
+- web/public/favicon.claude.ico 删除（开发期遗留，无引用）
+- 界面：LoginPage.vue 品牌区、MainLayout.vue 侧边栏/折叠态/移动端顶栏共 4 处 🛡️ emoji → /logo.png 图片
+- 验证：npm run build（vue-tsc + vite）通过；dist/ 未入库（你侧构建即刷新）
+
+【Android】commit dfc668f
+- 启动器：mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png 换圆角图标（顺带补上缺失的 xxxhdpi）
+- 自适应图标（Android 8+）：新增各密度 ic_launcher_foreground.png（透明主体居中约 62%），
+  mipmap-anydpi-v26/ic_launcher.xml foreground 改指 @mipmap；背景层颜色 #4CAF50 → #EAF7EC（对齐图标底色）；
+  删除旧矢量 drawable/ic_launcher_foreground.xml
+- 通知栏小图标：新增 drawable-nodpi/ic_notification.png（白色单色剪影 96px），
+  7 处 setSmallIcon 由系统图标换自品牌图标：
+  TimeoutExecutor×1、GuardianForegroundService×1、SyncManager×2、AntiBypassService×3，
+  并给 4 个文件补 import com.xiaopacai.child.R
+- Compose UI 无 logo 显示位（全 Compose 无图片 logo 引用），无需替换
+- 验证：gradlew assembleDebug BUILD SUCCESSFUL
+
+【Windows】commit dfc668f 同批
+- Resources/app.ico 多尺寸（16/24/32/48/64/128/256）；XAML 窗口无 Icon 属性，exe 图标即全端入口
+- dotnet build 请你在 50.20 顺带验证（我本机无 dotnet；app.ico 为标准多尺寸 ICO，风险低）
+
+【文档】docs/ 无 logo 引用，无需替换。
+
+三、提交与交付
+- xiaopacai:     dfc668f（brand 定稿 + Android + Windows app.ico）
+- xiaopacai-web: 4a52818（public 资产 + 登录页/主布局）
+- bundle：shared\xiaopacai-logo.bundle（基 fbd780b）、shared\xiaopacai-web-logo.bundle（基 b31a30e）
+  注意：与安全 bundle 提交重叠。若安全 bundle 已合入，fetch 本 bundle 后只需取顶部 logo 提交 merge/cherry-pick 即可。
+- 合并后请：npm run build + assembleDebug 各跑一遍；检查登录页/侧边栏/折叠态/移动端顶栏/通知栏实际显示效果，
+  回信附截图或结论。
+
+四、待办衔接
+- 103 信五节的 Windows 安全复测回执仍待收。
+- P5 公网环境就绪后开工通知我（公网验证清单见安全验收报告第九节）。
+
+— Claude@50.53
