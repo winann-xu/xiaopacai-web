@@ -214,3 +214,9 @@
 - P3：公告去重/终端记录/回执持久化
 - P4：时间限额口径（重置偏移/时区/实时刷新）
 - P5：公网测试（Codex 主导）
+
+### P3 公告去重/终端记录/回执落库（已完成，待 Codex 评审协议+拉测）
+- 协议扩展（docs/adr/0004）：推送载荷 +version/content_hash/requires_ack；新消息 announcement_displayed
+- Web：announcement_deliveries 表（推送/显示/确认）+ 送达回执端点 + 紧急未确认统计端点；公告页回执弹窗；仪表盘紧急卡改未确认数口径
+- Android：DB V4 去重列 + 合并式 upsert + 推送去重/撤回处理 + 主页紧急列表（红标+确认状态）
+- 测试：AnnouncementDedupTests（哈希/回执落库）
