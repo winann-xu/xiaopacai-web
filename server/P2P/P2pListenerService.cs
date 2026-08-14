@@ -281,7 +281,8 @@ public class P2pListenerService : IHostedService
                         var req = DeserializePayload<HandshakeRequest>(envelope.Payload);
                         if (req == null) break;
 
-                        var (response, policyPushJson, dbDeviceId) = await _messageHandler.HandleHandshake(req, peerFingerprint, remoteEndPoint);
+                        var (response, policyPushJson, resetPushJson, dbDeviceId) =
+                            await _messageHandler.HandleHandshake(req, peerFingerprint, remoteEndPoint);
 
                         if (response.Ok)
                         {
@@ -305,6 +306,11 @@ public class P2pListenerService : IHostedService
                             if (!string.IsNullOrEmpty(annJson))
                             {
                                 await WriteFrameAsync(sslStream, annJson);
+                            }
+                            // [REQ] 离线期间家长点击“重置当日限额” → 重连后补推
+                            if (!string.IsNullOrEmpty(resetPushJson))
+                            {
+                                await WriteFrameAsync(sslStream, resetPushJson);
                             }
                         }
                         else if (!response.Ok)

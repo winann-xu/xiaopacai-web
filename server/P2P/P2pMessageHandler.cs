@@ -32,7 +32,7 @@ public class P2pMessageHandler
     /// 家长端中继连接（deviceId 以 "parent-" 开头且 relay=true）：跳过 devices 表操作，
     /// 仅注册 relay_sessions（role=parent），用于接收中继转发的子设备消息。
     /// </summary>
-    public async Task<(HandshakeResponse response, string? policyPushJson, int? dbDeviceId)>
+    public async Task<(HandshakeResponse response, string? policyPushJson, string? resetPushJson, int? dbDeviceId)>
         HandleHandshake(HandshakeRequest req, string? peerFingerprint, string remoteEndPoint)
     {
         using var scope = _scopeFactory.CreateScope();
@@ -59,7 +59,7 @@ public class P2pMessageHandler
                 Ok = true,
                 PairStatus = "paired",
                 SessionId = Guid.NewGuid().ToString("N")[..12],
-            }, null, null);  // 家长端不需要策略下发
+            }, null, null, null);  // 家长端不需要策略/重置下发
         }
 
         // 1. 查找设备（按 device_id）
@@ -78,7 +78,7 @@ public class P2pMessageHandler
                     Ok = false,
                     Error = "需要配对码",
                     PairStatus = "unpaired",
-                }, null, null);
+                }, null, null, null);
             }
 
             // 验证配对码
@@ -95,7 +95,7 @@ public class P2pMessageHandler
                     Ok = false,
                     Error = "配对码无效或已过期",
                     PairStatus = "unpaired",
-                }, null, null);
+                }, null, null, null);
             }
 
             // 创建新设备
@@ -158,7 +158,7 @@ public class P2pMessageHandler
                 Ok = true,
                 PairStatus = "paired",
                 SessionId = Guid.NewGuid().ToString("N")[..12],
-            }, BuildPolicyPushMessage(device.DeviceId, device.Policy, device.AppCategories), device.Id);
+            }, BuildPolicyPushMessage(device.DeviceId, device.Policy, device.AppCategories), null, device.Id);
         }
 
         // 2. 已解绑/已吊销设备 — 需凭新的待确认配对码重新绑定，否则拒绝
@@ -178,7 +178,7 @@ public class P2pMessageHandler
                     Ok = false,
                     Error = reason,
                     PairStatus = device.PairStatus,
-                }, null, device.Id);
+                }, null, null, device.Id);
             }
 
             // 重新绑定：解除吊销/解绑状态
@@ -243,6 +243,20 @@ public class P2pMessageHandler
         // 构建策略下发
         var policyMsg = BuildPolicyPushMessage(device.DeviceId, device.Policy, device.AppCategories);
 
+        // [REQ] 每日限额重置：离线期间家长点了重置 → 重连握手时补推，推完清空待发标记
+        string? resetPushJson = null;
+        if (device.PendingResetAt.HasValue)
+        {
+            // SQLite 读取后 Kind=Unspecified，显式按 UTC 解释，避免补推时间戳偏移 8 小时
+            var pendingUtc = DateTime.SpecifyKind(device.PendingResetAt.Value, DateTimeKind.Utc);
+            resetPushJson = BuildLimitResetMessage(
+                device.DeviceId,
+                new DateTimeOffset(pendingUtc).ToUnixTimeSeconds());
+            device.PendingResetAt = null;
+            await db.SaveChangesAsync();
+            _logger.LogInformation("[P2P-Handshake] 补推每日限额重置: {DeviceId}", device.DeviceId);
+        }
+
         _logger.LogInformation("[P2P-Handshake] 设备已连接: {DeviceId} ({DeviceName}), status={PairStatus}",
             req.DeviceId, req.DeviceName, device.PairStatus);
 
@@ -251,7 +265,7 @@ public class P2pMessageHandler
             Ok = true,
             PairStatus = device.PairStatus,
             SessionId = Guid.NewGuid().ToString("N")[..12],
-        }, policyMsg, device.Id);
+        }, policyMsg, resetPushJson, device.Id);
     }
 
     // ========== Usage Report ==========
@@ -464,6 +478,25 @@ public class P2pMessageHandler
         {
             ["type"] = P2pMessageType.PolicyUpdate,
             ["payload"] = payload,
+        };
+        return JsonSerializer.Serialize(message);
+    }
+
+    /// <summary>
+    /// 构建 2.0 limit_reset 完整消息 JSON（家长在 Web 端点击“重置当日限额”后下发）
+    /// payload.resetAt：服务器重置时间（Unix 秒），儿童端据此记录当日偏移，重新开始计时
+    /// </summary>
+    public string BuildLimitResetMessage(string deviceId, long resetAtUnix)
+    {
+        var message = new Dictionary<string, object>
+        {
+            ["type"] = P2pMessageType.LimitReset,
+            ["payload"] = new Dictionary<string, object>
+            {
+                ["deviceId"] = deviceId,
+                ["resetAt"] = resetAtUnix,
+                ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            },
         };
         return JsonSerializer.Serialize(message);
     }

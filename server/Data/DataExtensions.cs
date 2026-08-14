@@ -137,6 +137,8 @@ public static class DataExtensions
         await TryAddColumnAsync(db, "devices", "owner_user_id", "TEXT NULL", logger);
         // [TASK-OPT-12-P4-DEEPEN] 设备级访问令牌（诊断上报鉴权）
         await TryAddColumnAsync(db, "devices", "device_token", "TEXT NULL", logger);
+        // [REQ] 每日限额重置：离线时挂起待下发，重连握手补推
+        await TryAddColumnAsync(db, "devices", "PendingResetAt", "TEXT NULL", logger);
         // [REQ] 配对码归属账号：扫码/中继绑定时写入设备 owner
         await TryAddColumnAsync(db, "pairing_info", "OwnerUserId", "TEXT NULL", logger);
     }

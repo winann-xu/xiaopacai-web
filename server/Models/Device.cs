@@ -58,6 +58,9 @@ public class Device
     [MaxLength(64)]
     public string? DeviceToken { get; set; }
 
+    /// <summary>待下发的每日限额重置时间（UTC；设备离线时挂起，重连握手后补推并清空）</summary>
+    public DateTime? PendingResetAt { get; set; }
+
     public bool IsActive { get; set; } = true;
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

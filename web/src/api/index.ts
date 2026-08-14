@@ -127,6 +127,8 @@ export const policyApi = {
   get: (deviceId: number) => apiClient.get(`/policies/${deviceId}`),
   save: (deviceId: number, data: any) => apiClient.put(`/policies/${deviceId}`, data),
   push: (deviceId: number) => apiClient.post(`/policies/${deviceId}/push`),
+  // [REQ] 重置当日使用限额：儿童端重新开始计时，报告仍保留重置前用量
+  resetLimit: (deviceId: number) => apiClient.post(`/policies/${deviceId}/reset-limit`),
 }
 
 // ==================== 公告 ====================
