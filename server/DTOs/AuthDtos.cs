@@ -8,9 +8,11 @@ namespace XiaopacaiWeb.DTOs;
 public class LoginRequest
 {
     [Required]
+    [MaxLength(128)]
     public string Username { get; set; } = string.Empty;
 
     [Required]
+    [MaxLength(128)]
     public string Password { get; set; } = string.Empty;
 }
 
@@ -25,7 +27,8 @@ public class RegisterRequest
     public string Email { get; set; } = string.Empty;
 
     [Required]
-    [MinLength(6)]
+    [MinLength(8)]
+    [MaxLength(128)]
     public string Password { get; set; } = string.Empty;
 
     [MaxLength(64)]
@@ -34,11 +37,12 @@ public class RegisterRequest
 
 /// <summary>
 /// Token 刷新请求
+/// [SEC-K5] RefreshToken 可为空：浏览器会话改由 httpOnly Cookie 携带（body 仅兼容原生客户端）
 /// </summary>
 public class RefreshRequest
 {
-    [Required]
-    public string RefreshToken { get; set; } = string.Empty;
+    [MaxLength(512)]
+    public string? RefreshToken { get; set; }
 }
 
 /// <summary>
@@ -47,10 +51,12 @@ public class RefreshRequest
 public class ChangePasswordRequest
 {
     [Required]
+    [MaxLength(128)]
     public string OldPassword { get; set; } = string.Empty;
 
     [Required]
-    [MinLength(6)]
+    [MinLength(8)]
+    [MaxLength(128)]
     public string NewPassword { get; set; } = string.Empty;
 }
 

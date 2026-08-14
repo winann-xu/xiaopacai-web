@@ -38,6 +38,9 @@ public static class DataExtensions
             logger.LogInformation("[DB] 种子数据已插入（默认管理员 + 默认家长）");
         }
 
+        // 3.1 [SEC-P1] 存量库回填：默认口令仍可用的账号置强制改密标记（红线 R4.2）
+        await FlagDefaultPasswordAccountsAsync(db, passwordHasher, logger);
+
         // 4. 默认系统配置（仅当配置表为空时）
         if (!await db.SystemConfigs.AnyAsync())
         {
@@ -175,10 +178,39 @@ public static class DataExtensions
         await TryAddColumnAsync(db, "devices", "LastReportAt", "TEXT NULL", logger);
         // [FIX-100] 儿童端上报的调整后今日已用（优先展示口径）
         await TryAddColumnAsync(db, "devices", "TodayAdjustedMinutes", "INTEGER NULL", logger);
+        // [SEC-K2] 中继会话令牌（家长端 P2P 握手凭据，/api/relay/register 签发后轮换）
+        await TryAddColumnAsync(db, "relay_sessions", "SessionToken", "TEXT NULL", logger);
+        // [SEC-K2] 注册时绑定的客户端证书指纹（P2P 握手与 TLS 对端指纹比对）
+        await TryAddColumnAsync(db, "relay_sessions", "Fingerprint", "TEXT NULL", logger);
+        // [SEC-P1] 强制改密标记（种子账号/管理员重置口令后置 true）
+        await TryAddColumnAsync(db, "users", "MustChangePassword", "INTEGER NOT NULL DEFAULT 0", logger);
+
+        // [SEC-P1] 清理 RefreshTokens 明文列：历史行置空（验证仅走 TokenHash），
+        // 防止库文件被窃后明文 token 直接可用（红线 R4.3）
+        await PurgePlaintextRefreshTokensAsync(db, logger);
 
         // [FIX-100] usage_records 去重迁移：P4 前历史重复行导致 raw SUM 虚高。
         // 按 (DeviceId, AppPackage, 日期) 保留 Id 最大（最新）一条，删除其余，再建唯一索引防复发。
         await DedupUsageRecordsAsync(db, logger);
+    }
+
+    /// <summary>
+    /// [SEC-P1] 启动时清空 RefreshTokens.Token 明文列（历史数据一次性清理，此后不再写入）
+    /// </summary>
+    private static async Task PurgePlaintextRefreshTokensAsync(AppDbContext db, ILogger logger)
+    {
+        try
+        {
+            var purged = await db.Database.ExecuteSqlRawAsync(
+                """UPDATE "RefreshTokens" SET "Token" = '' WHERE "Token" IS NOT NULL AND "Token" != ''""");
+            if (purged > 0)
+                logger.LogWarning("[DB][SEC] 已清理 {Purged} 行 RefreshToken 明文（验证仅用 TokenHash）", purged);
+        }
+        catch (Exception ex)
+        {
+            // 失败不阻断启动：新写入路径已不再落明文
+            logger.LogWarning(ex, "[DB][SEC] RefreshToken 明文清理失败（不阻断启动）");
+        }
     }
 
     /// <summary>
@@ -242,11 +274,33 @@ public static class DataExtensions
         }
     }
 
+    /// <summary>
+    /// [SEC-P1] 存量库回填：种子账号若仍为出厂默认口令，置 MustChangePassword 标记
+    /// </summary>
+    private static async Task FlagDefaultPasswordAccountsAsync(
+        AppDbContext db, IPasswordHasher hasher, ILogger logger)
+    {
+        var defaults = new Dictionary<string, string> { ["admin"] = "admin123", ["parent"] = "parent123" };
+        foreach (var (username, pwd) in defaults)
+        {
+            var user = await db.Users.FirstOrDefaultAsync(u => u.Username == username && u.IsActive);
+            if (user == null) continue;
+            if (hasher.VerifyPassword(pwd, user.PasswordHash, user.PasswordSalt))
+            {
+                user.MustChangePassword = true;
+                user.UpdatedAt = DateTime.UtcNow;
+                logger.LogWarning("[DB][SEC] 账号 {Username} 仍为默认口令，已置强制改密标记", username);
+            }
+        }
+        await db.SaveChangesAsync();
+    }
+
     private static async Task SeedDefaultUsers(AppDbContext db, IPasswordHasher hasher)
     {
         var (adminHash, adminSalt) = hasher.HashPassword("admin123");
         var (parentHash, parentSalt) = hasher.HashPassword("parent123");
 
+        // [SEC-P1] 种子账号使用默认口令，强制首次登录后改密（红线 R4.2）
         db.Users.Add(new User
         {
             Username = "admin",
@@ -255,6 +309,7 @@ public static class DataExtensions
             DisplayName = "管理员",
             Role = "admin",
             IsActive = true,
+            MustChangePassword = true,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
         });
@@ -268,6 +323,7 @@ public static class DataExtensions
             Role = "parent",
             Email = "parent@xiaopacai.local",
             IsActive = true,
+            MustChangePassword = true,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
         });

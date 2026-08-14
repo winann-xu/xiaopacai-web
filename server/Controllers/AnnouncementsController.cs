@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
 using XiaopacaiWeb.P2P;
+using XiaopacaiWeb.Security;
 
 namespace XiaopacaiWeb.Controllers;
 
@@ -67,6 +68,16 @@ public class AnnouncementsController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.Title) || string.IsNullOrWhiteSpace(request.Content))
             return BadRequest(new { error = "标题和内容不能为空" });
 
+        // [SEC-P1] 定向公告的目标设备必须归属当前用户（红线 R2.1），防向他人设备定向推送
+        if (request.TargetDeviceId is > 0)
+        {
+            var (access, _) = await DeviceAccess.CheckAsync(_db, request.TargetDeviceId.Value, User);
+            if (access == DeviceAccessResult.NotFound)
+                return NotFound(new { error = "目标设备不存在" });
+            if (access == DeviceAccessResult.Forbidden)
+                return StatusCode(403, new { error = "无权向该设备推送公告" });
+        }
+
         var item = new Announcement
         {
             Title = request.Title.Trim(),
@@ -98,8 +109,22 @@ public class AnnouncementsController : ControllerBase
         if (item == null)
             return NotFound(new { error = "公告不存在" });
 
+        // [SEC-P1] 仅创建者或管理员可编辑他人公告（红线 R2.1）
+        if (!CanManage(item))
+            return StatusCode(403, new { error = "无权操作该公告" });
+
         if (item.Status == "published")
             return BadRequest(new { error = "已发布的公告不可编辑，请先撤回" });
+
+        // [SEC-P1] 定向目标变更时重新校验新设备的归属
+        if (request.TargetDeviceId is > 0 && request.TargetDeviceId != item.TargetDeviceId)
+        {
+            var (access, _) = await DeviceAccess.CheckAsync(_db, request.TargetDeviceId.Value, User);
+            if (access == DeviceAccessResult.NotFound)
+                return NotFound(new { error = "目标设备不存在" });
+            if (access == DeviceAccessResult.Forbidden)
+                return StatusCode(403, new { error = "无权向该设备推送公告" });
+        }
 
         if (!string.IsNullOrWhiteSpace(request.Title))
             item.Title = request.Title.Trim();
@@ -126,6 +151,10 @@ public class AnnouncementsController : ControllerBase
         if (item == null)
             return NotFound(new { error = "公告不存在" });
 
+        // [SEC-P1] 仅创建者或管理员可删除（红线 R2.1）
+        if (!CanManage(item))
+            return StatusCode(403, new { error = "无权操作该公告" });
+
         _db.Announcements.Remove(item);
         await _db.SaveChangesAsync();
 
@@ -143,6 +172,10 @@ public class AnnouncementsController : ControllerBase
         var item = await _db.Announcements.FindAsync(id);
         if (item == null)
             return NotFound(new { error = "公告不存在" });
+
+        // [SEC-P1] 发布会向全量儿童端推送，仅创建者或管理员可操作（红线 R2.1）
+        if (!CanManage(item))
+            return StatusCode(403, new { error = "无权操作该公告" });
 
         item.Status = "published";
         item.PublishedAt = DateTime.UtcNow;
@@ -169,6 +202,10 @@ public class AnnouncementsController : ControllerBase
         var item = await _db.Announcements.FindAsync(id);
         if (item == null)
             return NotFound(new { error = "公告不存在" });
+
+        // [SEC-P1] 仅创建者或管理员可撤回（红线 R2.1）
+        if (!CanManage(item))
+            return StatusCode(403, new { error = "无权操作该公告" });
 
         item.Status = "revoked";
         item.RevokedAt = DateTime.UtcNow;
@@ -256,6 +293,16 @@ public class AnnouncementsController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// [SEC-P1] 公告归属校验：仅创建者或管理员可管理（改/删/发布/撤回）
+    /// </summary>
+    private bool CanManage(Announcement item)
+    {
+        if (User.IsInRole("admin")) return true;
+        var userId = GetUserId();
+        return userId != null && item.CreatedBy == userId;
+    }
+
     private static object ToDto(Announcement a)
     {
         return new
@@ -305,10 +352,10 @@ public class AnnouncementsController : ControllerBase
 /// </summary>
 public class AnnouncementSaveRequest
 {
-    public string? Title { get; set; }
-    public string? Content { get; set; }
-    public string? Priority { get; set; }
-    public string? Status { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(200)] public string? Title { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(20000)] public string? Content { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(16)] public string? Priority { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(16)] public string? Status { get; set; }
     public int? TargetDeviceId { get; set; }
     public DateTime? ValidFrom { get; set; }
     public DateTime? ValidUntil { get; set; }

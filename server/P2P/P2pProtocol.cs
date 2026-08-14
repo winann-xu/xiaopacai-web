@@ -85,6 +85,11 @@ public class HandshakeRequest
     // [TASK-OPT-12-P4-DEEPEN] 是否通过云端中继连接（true 时服务端写入 relay_sessions 会话记录）
     [JsonPropertyName("relay")]
     public bool Relay { get; set; }
+
+    /// <summary>[SEC-K2] 中继会话令牌（家长端经 /api/relay/register JWT 注册后获得；
+    /// P2P 握手必须携带并与 relay_sessions.session_token 匹配，防止冒充家长端接收儿童数据）</summary>
+    [JsonPropertyName("sessionToken")]
+    public string? SessionToken { get; set; }
 }
 
 /// <summary>

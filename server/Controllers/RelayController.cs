@@ -1,10 +1,12 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.P2P;
 using XiaopacaiWeb.Security;
 
 namespace XiaopacaiWeb.Controllers;
@@ -22,11 +24,13 @@ public class RelayController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly ILogger<RelayController> _logger;
+    private readonly P2pCertificateService _certService;
 
-    public RelayController(AppDbContext db, ILogger<RelayController> logger)
+    public RelayController(AppDbContext db, ILogger<RelayController> logger, P2pCertificateService certService)
     {
         _db = db;
         _logger = logger;
+        _certService = certService;
     }
 
     /// <summary>
@@ -49,6 +53,20 @@ public class RelayController : ControllerBase
         if (!RequestRateLimiter.Allow($"relay-register:{clientIp}", 10, 60))
             return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
 
+        // [SEC-K2][SEC-K7] 指纹必填且格式校验：64 位小写十六进制（SHA-256），
+        // 它是 P2P 握手时与 TLS 对端证书比对的身份锚点，缺失/格式错误直接拒绝
+        var fingerprint = request.Fingerprint?.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(fingerprint) ||
+            fingerprint.Length != 64 || !fingerprint.All(c => Uri.IsHexDigit(c)))
+        {
+            return BadRequest(new { error = "客户端证书指纹缺失或格式错误（需 64 位十六进制）" });
+        }
+
+        // [SEC-P1] 本 REST 端点仅服务家长端注册；儿童端中继会话由 P2P 握手路径维护，
+        // 开放 role=child 会让任意登录账号冒用他设备 DeviceId 轮换其 sessionToken/指纹劫持会话
+        if (request.Role != "parent")
+            return BadRequest(new { error = "不支持的角色" });
+
         var userId = GetUserId();
         var now = DateTime.UtcNow;
 
@@ -60,7 +78,16 @@ public class RelayController : ControllerBase
                 .OrderByDescending(p => p.CreatedAt)
                 .FirstOrDefaultAsync();
 
-            if (pairingInfo?.DeviceId is > 0)
+            // [SEC-P1] 仅"归属本人（或归属为空）且 pending 未过期"的配对码可用于绑定，
+            // 防跨账号冒用他人配对码抢绑新设备（红线 R2.1）。
+            // 绑定失败不阻断注册主流程，避免家长端携带旧码重连时注册被拒
+            var codeUsable = pairingInfo != null &&
+                pairingInfo.PairStatus == "pending" &&
+                pairingInfo.ExpiresAt >= now &&
+                (string.IsNullOrEmpty(pairingInfo.OwnerUserId) ||
+                 pairingInfo.OwnerUserId == userId.ToString() || User.IsInRole("admin"));
+
+            if (codeUsable && pairingInfo!.DeviceId is > 0)
             {
                 var device = await _db.Devices.FindAsync(pairingInfo.DeviceId.Value);
                 if (device != null && string.IsNullOrEmpty(device.OwnerUserId))
@@ -79,6 +106,16 @@ public class RelayController : ControllerBase
             .OrderByDescending(s => s.ConnectedAt)
             .FirstOrDefaultAsync();
 
+        // [SEC-K2] 签发会话令牌：家长端后续 P2P 握手凭据（每次注册轮换，防止冒充家长端接收儿童数据，红线 R2.3）
+        var sessionToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+
+        // [SEC-P1] 会话合并归属校验：已存在的 parent 会话若归属其他账号，禁止接管
+        // （防冒用他人 DeviceId 轮换其 sessionToken/指纹劫持中继身份，红线 R2.1）
+        if (existingSession != null && existingSession.Role == "parent" &&
+            existingSession.UserId != null && existingSession.UserId != userId &&
+            !User.IsInRole("admin"))
+            return StatusCode(403, new { error = "该中继会话已被其他账号占用" });
+
         if (existingSession != null)
         {
             // 更新已有会话
@@ -86,6 +123,8 @@ public class RelayController : ControllerBase
             existingSession.ConnectedAt = now;
             existingSession.DisconnectedAt = null;
             existingSession.IpAddress = clientIp;
+            existingSession.SessionToken = sessionToken;
+            existingSession.Fingerprint = fingerprint;
             if (userId != null && existingSession.Role == "parent")
                 existingSession.UserId = userId.Value;
             _logger.LogInformation("[Relay] 更新中继会话: device={DeviceId}, role={Role}, id={Id}",
@@ -102,6 +141,8 @@ public class RelayController : ControllerBase
                 IpAddress = clientIp,
                 Status = "connected",
                 ConnectedAt = now,
+                SessionToken = sessionToken,
+                Fingerprint = fingerprint,
             });
             _logger.LogInformation("[Relay] 新建中继会话: device={DeviceId}, role={Role}, userId={UserId}",
                 request.DeviceId, request.Role, userId);
@@ -119,6 +160,25 @@ public class RelayController : ControllerBase
                 boundDeviceId = device.Id;
         }
 
+        // [SEC-K10] 中继注册安全事件审计（只记设备/角色/绑定结果，绝不记录 sessionToken）
+        _db.AuditLogs.Add(new AuditLog
+        {
+            UserId = userId,
+            Action = "relay.register",
+            TargetType = "RelaySession",
+            TargetId = (request.Role == "parent" && userId != null) ? userId.Value : null,
+            Detail = $"{{\"deviceId\":\"{request.DeviceId}\",\"role\":\"{request.Role}\",\"boundDeviceId\":{(boundDeviceId?.ToString() ?? "null")}}}",
+            IpAddress = clientIp,
+            CreatedAt = DateTime.UtcNow,
+        });
+        await _db.SaveChangesAsync();
+
+        // [SEC-K2] sessionToken 只在此响应中出现一次（家长端持久化保存），服务端仅存于 relay_sessions，
+        // 不写入日志、不参与列表接口返回，防止令牌泄露（红线 R8.3）
+        // [SEC-P1] serverFingerprint：P2P 服务端证书指纹，家长端据此固定中继 TLS 证书比对
+        // （经 JWT 鉴权通道下发，消除家长端首次中继连接的 TOFU 中间人窗口，红线 R3.x）
+        _certService.GetOrCreateCertificate();
+        var serverFingerprint = _certService.GetFingerprint() ?? "";
         return Ok(new
         {
             deviceId = request.DeviceId,
@@ -126,6 +186,8 @@ public class RelayController : ControllerBase
             status = "connected",
             connectedAt = now,
             boundDeviceId,
+            sessionToken,
+            serverFingerprint,
             message = "中继注册成功",
         });
     }
@@ -200,18 +262,22 @@ public class RelayRegisterRequest
 {
     /// <summary>设备唯一标识（家长端用 "parent-" + ANDROID_ID 前 8 位）</summary>
     [JsonPropertyName("deviceId")]
+    [System.ComponentModel.DataAnnotations.MaxLength(128)]
     public string DeviceId { get; set; } = string.Empty;
 
     /// <summary>角色：parent（家长端）| child（儿童端）</summary>
     [JsonPropertyName("role")]
+    [System.ComponentModel.DataAnnotations.MaxLength(16)]
     public string Role { get; set; } = "parent";
 
     /// <summary>TLS 证书 SHA-256 指纹</summary>
     [JsonPropertyName("fingerprint")]
+    [System.ComponentModel.DataAnnotations.MaxLength(64)]
     public string? Fingerprint { get; set; }
 
     /// <summary>配对码（6 位，用于绑定对应儿童设备）</summary>
     [JsonPropertyName("pairingCode")]
+    [System.ComponentModel.DataAnnotations.MaxLength(16)]
     public string? PairingCode { get; set; }
 
     /// <summary>家长端 P2P 监听端口（默认 9527）</summary>

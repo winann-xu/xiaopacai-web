@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.P2P;
 using XiaopacaiWeb.Security;
 
 namespace XiaopacaiWeb.Controllers;
@@ -18,11 +19,13 @@ public class PairingController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly ILogger<PairingController> _logger;
+    private readonly P2pCertificateService _certService;
 
-    public PairingController(AppDbContext db, ILogger<PairingController> logger)
+    public PairingController(AppDbContext db, ILogger<PairingController> logger, P2pCertificateService certService)
     {
         _db = db;
         _logger = logger;
+        _certService = certService;
     }
 
     /// <summary>
@@ -40,6 +43,17 @@ public class PairingController : ControllerBase
 
         var deviceId = request?.DeviceId ?? 0;
 
+        // [SEC] 指定已有设备时校验归属（红线 R2.1）：防生成指向他人设备的配对码
+        // 后在 verify 环节篡改该设备的证书指纹锚点/劫持身份
+        if (deviceId > 0)
+        {
+            var (access, _) = await DeviceAccess.CheckAsync(_db, deviceId, User);
+            if (access == DeviceAccessResult.NotFound)
+                return NotFound(new { error = "设备不存在" });
+            if (access == DeviceAccessResult.Forbidden)
+                return StatusCode(403, new { error = "无权访问该设备" });
+        }
+
         var pairingInfo = new PairingInfo
         {
             DeviceId = deviceId > 0 ? deviceId : null, // NULL 表示尚未分配设备（避免 FK 约束失败）
@@ -54,7 +68,8 @@ public class PairingController : ControllerBase
         _db.PairingInfos.Add(pairingInfo);
         await _db.SaveChangesAsync();
 
-        _logger.LogInformation("[Pairing] 生成配对码: {Code}, 有效期至 {Expiry}", pairCode, pairingInfo.ExpiresAt);
+        // [SEC-P2] 日志打码：不落明文配对码
+        _logger.LogInformation("[Pairing] 生成配对码: {Code}, 有效期至 {Expiry}", "******", pairingInfo.ExpiresAt);
 
         return Ok(new
         {
@@ -94,16 +109,23 @@ public class PairingController : ControllerBase
         var host = string.IsNullOrWhiteSpace(relayHostConfig?.Value)
             ? Request.Host.Host
             : relayHostConfig!.Value.Trim();
+
+        // [SEC-P1] 二维码携带 P2P 服务端证书指纹：儿童端扫码后直接固定指纹比对，
+        // 消除"扫码首连 TOFU"的中间人窗口（红线 R3.x）。旧版客户端忽略该字段，向后兼容。
+        _certService.GetOrCreateCertificate();
+        var serverFingerprint = _certService.GetFingerprint() ?? "";
+
         var qrContent = System.Text.Json.JsonSerializer.Serialize(new
         {
             type = "web_relay",
             host,
             port = 9527,
             pairingCode = pairCode,
-            fingerprint = ""
+            fingerprint = serverFingerprint
         });
 
-        _logger.LogInformation("[Pairing] 生成绑定二维码: {Code} host={Host}", pairCode, host);
+        // [SEC-P2] 日志打码：不落明文配对码
+        _logger.LogInformation("[Pairing] 生成绑定二维码: {Code} host={Host}", "******", host);
         return Ok(new
         {
             pairCode,
@@ -144,10 +166,28 @@ public class PairingController : ControllerBase
             return BadRequest(new { error = "配对码已过期" });
         }
 
+        // [SEC] 指纹格式校验：仅接受 64 位小写十六进制 SHA-256 指纹，防非法值污染设备指纹锚点
+        if (!string.IsNullOrEmpty(request.CertFingerprint) &&
+            !System.Text.RegularExpressions.Regex.IsMatch(request.CertFingerprint, "^[0-9a-f]{64}$"))
+            return BadRequest(new { error = "证书指纹格式无效" });
+
+        // [SEC] 配对码归属校验：防跨账号猜测 6 位配对码劫持绑定流程
+        var currentUserId = GetUserId()?.ToString();
+        if (!string.IsNullOrEmpty(pairingInfo.OwnerUserId) && !User.IsInRole("admin") &&
+            pairingInfo.OwnerUserId != currentUserId)
+            return StatusCode(403, new { error = "无权验证该配对码" });
+
         // 创建或更新设备
         Device device;
         if (pairingInfo.DeviceId is > 0)
         {
+            // [SEC] 已有设备时校验归属（红线 R2.1）：防他人在 verify 环节覆盖本设备的证书指纹
+            var (access, _) = await DeviceAccess.CheckAsync(_db, pairingInfo.DeviceId.Value, User);
+            if (access == DeviceAccessResult.NotFound)
+                return NotFound(new { error = "设备不存在" });
+            if (access == DeviceAccessResult.Forbidden)
+                return StatusCode(403, new { error = "无权访问该设备" });
+
             device = await _db.Devices.FindAsync(pairingInfo.DeviceId);
             if (device == null)
                 return NotFound(new { error = "设备不存在" });
@@ -199,12 +239,12 @@ public class PairingController : ControllerBase
 
         await _db.SaveChangesAsync();
 
-        // [TASK-OPT-12-P4-DEEPEN] 审计日志：设备配对确认
+        // [TASK-OPT-12-P4-DEEPEN] 审计日志：设备配对确认（[SEC-P2] 配对码打码，防审计泄露劫持绑定）
         await AuditAsync("pairing.verify", "Device", device.Id,
-            $"{{\"deviceId\":\"{device.DeviceId}\",\"code\":\"{request.PairCode}\"}}");
+            $"{{\"deviceId\":\"{device.DeviceId}\",\"code\":\"******\"}}");
 
         _logger.LogInformation("[Pairing] 配对确认: device={DeviceId}, code={Code}",
-            device.DeviceId, request.PairCode);
+            device.DeviceId, "******");
 
         return Ok(new
         {
@@ -225,13 +265,23 @@ public class PairingController : ControllerBase
             .Where(p => p.PairCode == request.PairCode && p.PairStatus == "pending")
             .ToListAsync();
 
-        foreach (var pi in pairingInfos)
+        // [SEC] 仅配对码归属者或管理员可取消（红线 R2.1），防跨账号作废他人配对码
+        var currentUserId = GetUserId()?.ToString();
+        var isAdmin = User.IsInRole("admin");
+        var owned = pairingInfos
+            .Where(p => isAdmin || p.OwnerUserId == currentUserId)
+            .ToList();
+
+        foreach (var pi in owned)
         {
             pi.PairStatus = "expired";
         }
 
-        if (pairingInfos.Count > 0)
+        if (owned.Count > 0)
             await _db.SaveChangesAsync();
+
+        if (pairingInfos.Count > 0 && owned.Count == 0)
+            return StatusCode(403, new { error = "无权取消该配对码" });
 
         return Ok(new { message = "配对码已取消" });
     }
@@ -284,6 +334,7 @@ public class GeneratePairCodeRequest
     public int? DeviceId { get; set; }
 
     /// <summary>配对方式：manual | scan | broadcast</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(32)]
     public string Method { get; set; } = "manual";
 }
 
@@ -293,21 +344,27 @@ public class GeneratePairCodeRequest
 public class VerifyPairCodeRequest
 {
     /// <summary>6 位配对码（必填）</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(16)]
     public string PairCode { get; set; } = string.Empty;
 
     /// <summary>设备唯一标识（新设备时必填）</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(128)]
     public string? DeviceId { get; set; }
 
     /// <summary>设备名称</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(64)]
     public string? DeviceName { get; set; }
 
     /// <summary>平台：android</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(32)]
     public string? Platform { get; set; }
 
     /// <summary>设备 IP 地址</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(64)]
     public string? IpAddress { get; set; }
 
     /// <summary>TLS 证书 SHA-256 指纹</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(64)]
     public string? CertFingerprint { get; set; }
 }
 
@@ -316,5 +373,6 @@ public class VerifyPairCodeRequest
 /// </summary>
 public class CancelPairCodeRequest
 {
+    [System.ComponentModel.DataAnnotations.MaxLength(16)]
     public string PairCode { get; set; } = string.Empty;
 }

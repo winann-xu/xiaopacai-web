@@ -40,6 +40,16 @@ public class RelaySession
     [MaxLength(16)]
     public string Status { get; set; } = "connected";
 
+    /// <summary>[SEC-K2] 会话令牌（/api/relay/register 签发，家长端 P2P 握手凭据；
+    /// 随机 64 位十六进制，每次注册轮换）</summary>
+    [MaxLength(64)]
+    public string? SessionToken { get; set; }
+
+    /// <summary>[SEC-K2] 注册时绑定的客户端证书 SHA-256 指纹（P2P 握手时与 TLS 对端指纹比对，
+    /// 与 sessionToken 双重绑定家长端身份）</summary>
+    [MaxLength(64)]
+    public string? Fingerprint { get; set; }
+
     /// <summary>连接建立时间（UTC）</summary>
     public DateTime ConnectedAt { get; set; } = DateTime.UtcNow;
 

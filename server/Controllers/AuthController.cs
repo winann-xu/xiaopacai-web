@@ -23,14 +23,22 @@ public class AuthController : ControllerBase
     private readonly IJwtService _jwt;
     private readonly TicketStore _tickets;
     private readonly ILogger<AuthController> _logger;
+    private readonly int _refreshTokenExpiryDays;
 
-    public AuthController(AppDbContext db, IPasswordHasher hasher, IJwtService jwt, TicketStore tickets, ILogger<AuthController> logger)
+    // [SEC-P2] 虚拟哈希凭据：账号不存在时执行一次等价的 Argon2 校验，
+    // 消除"用户不存在"与"密码错误"的响应时间差（防账号枚举）
+    private static readonly (string Hash, string Salt) DummyCredential =
+        new PasswordHasher().HashPassword(Guid.NewGuid().ToString("N"));
+
+    public AuthController(AppDbContext db, IPasswordHasher hasher, IJwtService jwt, TicketStore tickets,
+        ILogger<AuthController> logger, IConfiguration config)
     {
         _db = db;
         _hasher = hasher;
         _jwt = jwt;
         _tickets = tickets;
         _logger = logger;
+        _refreshTokenExpiryDays = config.GetValue<int>("Jwt:RefreshTokenExpiryDays", 7);
     }
 
     /// <summary>
@@ -41,6 +49,10 @@ public class AuthController : ControllerBase
     {
         if (!ModelState.IsValid)
             return BadRequest(ModelState);
+
+        // [SEC-P2] Origin/Host 一致性校验（CSRF 纵深防御，原生客户端无 Origin 头放行）
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
 
         // [TASK-OPT-12-P4-DEEPEN] 登录失败限速：5 次/小时，按用户名 + IP 双维度封锁
         const int maxLoginFailures = 5;
@@ -62,6 +74,8 @@ public class AuthController : ControllerBase
 
         if (user == null)
         {
+            // [SEC-P2] 虚拟哈希：耗时与真实校验对齐，防账号枚举
+            _ = _hasher.VerifyPassword(request.Password, DummyCredential.Hash, DummyCredential.Salt);
             _logger.LogWarning("[Auth] 登录失败 — 用户不存在: {U}", request.Username);
             await AuditAsync("login_failed", null, null, null, null,
                 $"{{\"username\":\"{request.Username}\",\"reason\":\"user_not_found\"}}");
@@ -116,13 +130,19 @@ public class AuthController : ControllerBase
             LastLoginAt = user.LastLoginAt,
         };
 
+        // [SEC-K5] 浏览器端会话走 httpOnly Cookie（防 XSS 窃取 localStorage token）；
+        // Body 仍返回 token 供 Android/Windows 原生客户端（无法用 httpOnly Cookie）使用
+        SetAuthCookies(accessToken, refreshToken, accessExpiry, refreshExpiry);
+
         // 同时返回 profile 与 user 字段，兼容新旧前端调用
+        // [SEC-P1] mustChangePassword：前端据此强制跳转改密页（默认口令/管理员重置后）
         return Ok(new
         {
             accessToken,
             refreshToken,
             expiresAt = accessExpiry,
             tokenType = "Bearer",
+            mustChangePassword = user.MustChangePassword,
             profile,
             user = profile,
         });
@@ -138,11 +158,17 @@ public class AuthController : ControllerBase
         if (!ModelState.IsValid)
             return BadRequest(ModelState);
 
+        // [SEC-P2] Origin/Host 一致性校验（CSRF 纵深防御）
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
+
         var email = request.Email.Trim().ToLower();
         if (string.IsNullOrWhiteSpace(email))
             return BadRequest(new { error = "邮箱不能为空" });
-        if (request.Password.Length < 6)
-            return BadRequest(new { error = "密码至少 6 位" });
+        // [SEC-P2] 密码策略：≥8 位且含字母与数字（红线 R4.2）
+        var policyError = PasswordPolicy.Validate(request.Password);
+        if (policyError != null)
+            return BadRequest(new { error = policyError });
 
         var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
         if (!RequestRateLimiter.Allow($"register:ip:{clientIp}", 5, 60))
@@ -187,6 +213,8 @@ public class AuthController : ControllerBase
             Role = user.Role,
             Email = user.Email,
         };
+        // [SEC-K5] 注册即登录：同样设置 httpOnly Cookie
+        SetAuthCookies(accessToken, refreshToken, accessExpiry, refreshExpiry);
         return Ok(new
         {
             accessToken,
@@ -200,16 +228,29 @@ public class AuthController : ControllerBase
 
     /// <summary>
     /// POST /api/auth/logout — 用户登出
+    /// [SEC-K5] 允许匿名调用：access_token 已过期的浏览器会话也能清除 Cookie；
+    /// 吊销凭据本身安全（refresh token 只有请求方自己持有）
     /// </summary>
     [HttpPost("logout")]
-    [Authorize]
     public async Task<IActionResult> Logout([FromBody] RefreshRequest? request)
     {
-        // 吊销当前 Refresh Token
-        if (request != null && !string.IsNullOrEmpty(request.RefreshToken))
+        // [SEC-P2] Origin/Host 一致性校验（防跨站登出 CSRF）
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
+
+        // 吊销当前 Refresh Token（原生客户端走 body；浏览器会话走 httpOnly Cookie）
+        var refreshToken = request?.RefreshToken ?? GetRefreshTokenCookie();
+        if (!string.IsNullOrEmpty(refreshToken))
         {
-            await _jwt.RevokeToken(request.RefreshToken);
+            await _jwt.RevokeToken(refreshToken);
         }
+
+        // [SEC-K10] 登出安全事件审计（不含 token 内容）
+        await AuditAsync("logout", GetUserId(), null, null, null,
+            $"{{\"revoked\":{!string.IsNullOrEmpty(refreshToken)}}}");
+
+        // [SEC-K5] 清除浏览器会话 Cookie
+        ClearAuthCookies();
 
         _logger.LogInformation("[Auth] 登出: userId={U}", GetUserId());
         return Ok(new { message = "已登出" });
@@ -217,19 +258,36 @@ public class AuthController : ControllerBase
 
     /// <summary>
     /// POST /api/auth/refresh — 刷新 Access Token
+    /// [SEC-K5] 浏览器会话可从 httpOnly refresh_token Cookie 刷新（body 可空）；
+    /// 原生客户端仍走 body（Bearer 流程不变）
     /// </summary>
     [HttpPost("refresh")]
-    public async Task<IActionResult> Refresh([FromBody] RefreshRequest request)
+    public async Task<IActionResult> Refresh([FromBody] RefreshRequest? request)
     {
-        if (!ModelState.IsValid)
+        if (request != null && !ModelState.IsValid)
             return BadRequest(ModelState);
 
-        var result = await _jwt.RefreshTokens(request.RefreshToken);
+        // [SEC-P2] Origin/Host 一致性校验（防跨站刷新 CSRF）
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
+
+        var refreshToken = request?.RefreshToken ?? GetRefreshTokenCookie();
+        if (string.IsNullOrEmpty(refreshToken))
+        {
+            _logger.LogWarning("[Auth] Token 刷新缺少凭据");
+            return Unauthorized(new { error = "Refresh Token 无效或已过期" });
+        }
+
+        var result = await _jwt.RefreshTokens(refreshToken);
         if (result == null)
         {
             _logger.LogWarning("[Auth] Token 刷新失败");
             return Unauthorized(new { error = "Refresh Token 无效或已过期" });
         }
+
+        // [SEC-K5] 刷新轮换后同步更新浏览器会话 Cookie
+        var refreshExpiry = DateTime.UtcNow.AddDays(_refreshTokenExpiryDays);
+        SetAuthCookies(result.AccessToken, result.RefreshToken, result.ExpiresAt, refreshExpiry);
 
         _logger.LogInformation("[Auth] Token 刷新成功: userId={U}", result.Profile.Id);
         return Ok(result);
@@ -264,6 +322,11 @@ public class AuthController : ControllerBase
         if (user == null)
             return NotFound(new { error = "用户不存在" });
 
+        // [SEC-P2] 新密码策略校验（红线 R4.2）
+        var policyError = PasswordPolicy.Validate(request.NewPassword);
+        if (policyError != null)
+            return BadRequest(new { error = policyError });
+
         // 验证旧密码
         if (!_hasher.VerifyPassword(request.OldPassword, user.PasswordHash, user.PasswordSalt))
         {
@@ -278,6 +341,8 @@ public class AuthController : ControllerBase
         var (newHash, newSalt) = _hasher.HashPassword(request.NewPassword);
         user.PasswordHash = newHash;
         user.PasswordSalt = newSalt;
+        // [SEC-P1] 改密成功清除强制改密标记（红线 R4.2）
+        user.MustChangePassword = false;
         user.UpdatedAt = DateTime.UtcNow;
 
         // 吊销所有 Refresh Token（强制所有设备重新登录）
@@ -331,8 +396,17 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> CreateLoginTicket([FromBody] LoginTicketRequest? request)
     {
+        // [SEC-P1] 匿名端点限速：防批量生成撑爆 TicketStore
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"login-ticket:ip:{clientIp}", 10, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
+
         var entry = _tickets.CreateLoginTicket(request?.ClientId);
-        _logger.LogInformation("[Auth] 扫码登录 Ticket 已生成: {Ticket}", entry.Ticket);
+        if (entry == null)
+            return StatusCode(429, new { error = "系统繁忙，请稍后重试" });
+
+        // [SEC-P1] 日志打码：不落完整 Ticket
+        _logger.LogInformation("[Auth] 扫码登录 Ticket 已生成: {Ticket}", MaskTicket(entry.Ticket));
 
         // [TASK-OPT-12-P4-DEEPEN] 审计日志：生成登录 Ticket（ticket 打码防日志泄露）
         await AuditAsync("login_ticket_generate", null, null, null, null,
@@ -349,6 +423,11 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> PollLoginTicket(string ticket)
     {
+        // [SEC-P1] 匿名轮询限速（正常轮询 ~2s/次，60/分钟足够宽裕）
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"login-ticket-poll:ip:{clientIp}", 60, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请稍后再试" });
+
         var entry = _tickets.Get(ticket);
         if (entry == null || entry.Kind != "login")
             return Ok(new LoginTicketResponse
@@ -383,6 +462,10 @@ public class AuthController : ControllerBase
                     TokenType = "Bearer",
                     Profile = BuildProfile(user),
                 };
+
+                // [SEC-K5] 浏览器轮询方（Web 管理端）同时写入 httpOnly Cookie 会话；
+                // Body 中的 token 保留仅作兼容，前端不再持久化到 localStorage。
+                SetAuthCookies(accessToken, refreshToken, accessExpiry, refreshExpiry);
 
                 // [TASK-OPT-12-P4-DEEPEN] 审计日志：扫码登录 Ticket 消费（完成登录）
                 await AuditAsync("login_ticket_consume", user.Id, null, null, null,
@@ -445,7 +528,7 @@ public class AuthController : ControllerBase
         await AuditAsync("login_ticket_confirm", userId, null, null, null,
             $"{{\"ticket\":\"{MaskTicket(ticket)}\"}}");
 
-        _logger.LogInformation("[Auth] 扫码登录 Ticket 已确认: {Ticket} by userId={U}", ticket, userId);
+        _logger.LogInformation("[Auth] 扫码登录 Ticket 已确认: {Ticket} by userId={U}", MaskTicket(ticket), userId);
         return Ok(new { status = TicketStore.StatusConfirmed, message = "已确认，网页端即将自动登录" });
     }
 
@@ -462,6 +545,11 @@ public class AuthController : ControllerBase
         if (!ModelState.IsValid)
             return BadRequest(ModelState);
 
+        // [SEC-P1] 匿名端点限速：防批量生成/账号枚举（账号不存在也返回相同 Ticket 流程）
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"reset-ticket:ip:{clientIp}", 5, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
+
         // 校验账号是否存在（仅记录日志，不向调用方泄露）
         var exists = await _db.Users.AnyAsync(u => u.Username == request.Username && u.IsActive);
         if (!exists)
@@ -470,7 +558,11 @@ public class AuthController : ControllerBase
         }
 
         var entry = _tickets.CreateResetTicket(request.Username);
-        _logger.LogInformation("[Auth] 重置 Ticket 已生成: {Ticket} (target={U})", entry.Ticket, request.Username);
+        if (entry == null)
+            return StatusCode(429, new { error = "系统繁忙，请稍后重试" });
+
+        // [SEC-P1] 日志打码：不落完整 Ticket
+        _logger.LogInformation("[Auth] 重置 Ticket 已生成: {Ticket} (target={U})", MaskTicket(entry.Ticket), request.Username);
 
         // [TASK-OPT-12-P4-DEEPEN] 审计日志：生成重置 Ticket
         await AuditAsync("reset_ticket_generate", null, null, null, null,
@@ -487,6 +579,11 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public IActionResult PollResetTicket(string ticket)
     {
+        // [SEC-P1] 匿名轮询限速
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"reset-ticket-poll:ip:{clientIp}", 60, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请稍后再试" });
+
         var entry = _tickets.Get(ticket);
         if (entry == null || entry.Kind != "reset")
             return Ok(new ResetTicketResponse
@@ -554,7 +651,7 @@ public class AuthController : ControllerBase
         await AuditAsync("reset_ticket_confirm", userId, null, null, null,
             $"{{\"ticket\":\"{MaskTicket(ticket)}\"}}");
 
-        _logger.LogInformation("[Auth] 重置 Ticket 已确认: {Ticket} by userId={U}", ticket, userId);
+        _logger.LogInformation("[Auth] 重置 Ticket 已确认: {Ticket} by userId={U}", MaskTicket(ticket), userId);
         return Ok(new { status = TicketStore.StatusConfirmed, message = "身份已确认，可设置新密码" });
     }
 
@@ -606,10 +703,17 @@ public class AuthController : ControllerBase
             return NotFound(new { error = "账号不存在或已停用" });
         }
 
+        // [SEC-P2] 新密码策略校验（红线 R4.2）
+        var policyError = PasswordPolicy.Validate(request.NewPassword);
+        if (policyError != null)
+            return BadRequest(new { error = policyError });
+
         // 哈希新密码 + 吊销全部 Refresh Token
         var (newHash, newSalt) = _hasher.HashPassword(request.NewPassword);
         user.PasswordHash = newHash;
         user.PasswordSalt = newSalt;
+        // [SEC-P1] 用户自设新密码，清除强制改密标记
+        user.MustChangePassword = false;
         user.UpdatedAt = DateTime.UtcNow;
 
         await _jwt.RevokeAllUserTokens(user.Id);
@@ -653,6 +757,68 @@ public class AuthController : ControllerBase
     private static string MaskTicket(string ticket)
         => string.IsNullOrEmpty(ticket) ? string.Empty
            : ticket.Length <= 8 ? "****" : ticket[..8] + "****";
+
+    // [SEC-K5] ========== 浏览器会话 Cookie（httpOnly，防 XSS 窃取；SameSite=Strict 防 CSRF；HTTPS 下 Secure） ==========
+
+    /// <summary>
+    /// [SEC-P2] Origin/Host 一致性校验（CSRF 纵深防御）：
+    /// 浏览器跨站请求带 Origin，与请求 Host 不一致直接拒绝；
+    /// 原生客户端不携带 Origin 头，放行。仅比较主机名（不比较端口），
+    /// 兼容 vite 开发代理（同为本机回环）与 Nginx 反代（Host 已由 $host 覆盖）。
+    /// </summary>
+    private bool IsSameOriginRequest()
+    {
+        var origin = Request.Headers.Origin.ToString();
+        if (string.IsNullOrEmpty(origin)) return true;
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var originUri)) return false;
+
+        var host = Request.Host.Host;
+        if (string.Equals(originUri.Host, host, StringComparison.OrdinalIgnoreCase)) return true;
+        // 开发场景：前端 dev server 与后端均在本机回环，允许端口差异
+        return IsLoopbackHost(originUri.Host) && IsLoopbackHost(host);
+    }
+
+    private static bool IsLoopbackHost(string h)
+        => h == "localhost" || h == "127.0.0.1" || h == "::1";
+
+    /// <summary>
+    /// 写入浏览器会话 Cookie：
+    /// - access_token：httpOnly，Path=/（API 全局可用，JwtBearer 从 Cookie 读取）
+    /// - refresh_token：httpOnly，Path=/api/auth（仅刷新/登出接口可见，缩小暴露面）
+    /// - logged_in：非敏感标记，JS 可读（路由守卫判断登录态，不含任何凭据）
+    /// </summary>
+    private void SetAuthCookies(string accessToken, string refreshToken, DateTime accessExpiry, DateTime refreshExpiry)
+    {
+        // 单元测试直接调用 Action 时无 HttpContext，跳过 Cookie 写入
+        if (ControllerContext?.HttpContext == null) return;
+
+        var secure = Request.IsHttps;
+        Response.Cookies.Append("access_token", accessToken, new CookieOptions
+            { HttpOnly = true, SameSite = SameSiteMode.Strict, Secure = secure, Expires = accessExpiry, Path = "/" });
+        Response.Cookies.Append("refresh_token", refreshToken, new CookieOptions
+            { HttpOnly = true, SameSite = SameSiteMode.Strict, Secure = secure, Expires = refreshExpiry, Path = "/api/auth" });
+        Response.Cookies.Append("logged_in", "1", new CookieOptions
+            { HttpOnly = false, SameSite = SameSiteMode.Strict, Secure = secure, Expires = accessExpiry, Path = "/" });
+    }
+
+    /// <summary>
+    /// 清除浏览器会话 Cookie（登出 / 登录失败兜底）
+    /// </summary>
+    private void ClearAuthCookies()
+    {
+        // 单元测试直接调用 Action 时无 HttpContext，跳过 Cookie 清除
+        if (ControllerContext?.HttpContext == null) return;
+
+        Response.Cookies.Delete("access_token");
+        Response.Cookies.Delete("refresh_token", new CookieOptions { Path = "/api/auth" });
+        Response.Cookies.Delete("logged_in");
+    }
+
+    /// <summary>
+    /// 读取 refresh_token Cookie（浏览器会话）；无 HttpContext（单元测试直调）时返回 null
+    /// </summary>
+    private string? GetRefreshTokenCookie()
+        => ControllerContext?.HttpContext == null ? null : Request.Cookies["refresh_token"];
 
     /// <summary>
     /// 记录一次重置密码失败（审计 + 计数），超限时由调用方返回 429

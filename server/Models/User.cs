@@ -38,6 +38,9 @@ public class User
 
     public bool IsActive { get; set; } = true;
 
+    /// <summary>[SEC] 强制改密标记：种子账号（默认口令）或管理员重置口令后置 true，改密成功后清除</summary>
+    public bool MustChangePassword { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastLoginAt { get; set; }

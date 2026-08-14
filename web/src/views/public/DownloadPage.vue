@@ -69,7 +69,8 @@ const router = useRouter()
 const loggedIn = ref(false)
 
 onMounted(() => {
-  loggedIn.value = !!localStorage.getItem('access_token')
+  // [SEC-K5] 登录态由 httpOnly Cookie 的 logged_in 标记判断（token 不再存 localStorage）
+  loggedIn.value = document.cookie.split(';').some(c => c.trim().startsWith('logged_in='))
 })
 
 function go(path: string) {

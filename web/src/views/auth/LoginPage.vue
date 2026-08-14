@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { authApi, ticketApi } from '@/api'
 import { ElMessage } from 'element-plus'
 import {
-  UserFilled, Lock, Key,
+  UserFilled, Lock,
   Loading, CircleCheck, RefreshRight, ArrowLeft,
 } from '@element-plus/icons-vue'
 import { toDataURL as qrToDataURL } from 'qrcode'
@@ -36,7 +36,7 @@ const registerError = ref('')
 
 async function handleRegister() {
   if (!registerForm.email.includes('@')) { ElMessage.warning('请输入有效邮箱'); return }
-  if (registerForm.password.length < 6) { ElMessage.warning('密码至少 6 位'); return }
+  if (registerForm.password.length < 8) { ElMessage.warning('密码至少 8 位'); return }
   if (registerForm.password !== registerForm.confirmPassword) { ElMessage.warning('两次密码不一致'); return }
   registerLoading.value = true
   registerError.value = ''
@@ -75,7 +75,13 @@ async function handleLogin() {
   loading.value = true
   loginError.value = ''
   try {
-    await auth.login(loginForm.username, loginForm.password)
+    // [SEC-P1] 强制改密：种子账号/管理员重置口令后首次登录必须先改密（红线 R4.2）
+    const mustChange = await auth.login(loginForm.username, loginForm.password)
+    if (mustChange) {
+      ElMessage.warning('首次登录请先修改密码')
+      router.push({ path: '/settings', query: { mustChange: '1' } })
+      return
+    }
     // 保存角色到 localStorage（路由守卫用）
     localStorage.setItem('user_role', auth.user?.role || 'parent')
     ElMessage.success('登录成功')
@@ -87,18 +93,6 @@ async function handleLogin() {
     ElMessage.error(msg)
   } finally {
     loading.value = false
-  }
-}
-
-// 快速填入演示账号
-function fillDemo(role: 'admin' | 'parent') {
-  registerMode.value = false
-  if (role === 'admin') {
-    loginForm.username = 'admin'
-    loginForm.password = 'admin123'
-  } else {
-    loginForm.username = 'parent'
-    loginForm.password = 'parent123'
   }
 }
 
@@ -176,7 +170,7 @@ async function pollQrLogin() {
       clearQrTimers()
       qrStatus.value = 'confirmed'
       if (data.auth?.accessToken) {
-        // 首次确认轮询返回 JWT，直接完成登录
+        // [SEC-K5] 服务端已写入 httpOnly Cookie 会话；Body 中 token 仅作兼容，本地不持久化
         await auth.loginWithAuthResponse(data.auth)
         localStorage.setItem('user_role', auth.user?.role || 'parent')
         ElMessage.success('扫码登录成功')
@@ -319,7 +313,7 @@ async function pollReset() {
 
 // 步骤 3：提交新密码
 async function submitReset() {
-  if (resetForm.newPassword.length < 6) { ElMessage.warning('新密码至少 6 位'); return }
+  if (resetForm.newPassword.length < 8) { ElMessage.warning('新密码至少 8 位'); return }
   if (resetForm.newPassword !== resetForm.confirmPassword) { ElMessage.warning('两次输入的密码不一致'); return }
   resetSubmitting.value = true
   try {
@@ -449,7 +443,7 @@ onBeforeUnmount(() => {
               <el-input
                 v-model="registerForm.password"
                 type="password"
-                placeholder="至少 6 位"
+                placeholder="至少 8 位"
                 :prefix-icon="Lock"
                 show-password
                 autocomplete="new-password"
@@ -503,18 +497,6 @@ onBeforeUnmount(() => {
             </el-link>
           </div>
 
-          <!-- 演示账号 -->
-          <div class="demo-accounts">
-            <p class="demo-hint">演示账号：</p>
-            <div class="demo-buttons">
-              <el-button size="small" text type="primary" @click="fillDemo('parent')">
-                <el-icon><UserFilled /></el-icon> 家长 (parent / parent123)
-              </el-button>
-              <el-button size="small" text type="warning" @click="fillDemo('admin')">
-                <el-icon><Key /></el-icon> 管理员 (admin / admin123)
-              </el-button>
-            </div>
-          </div>
         </el-tab-pane>
 
         <!-- ===== 扫码登录（需求 10） ===== -->
@@ -581,12 +563,12 @@ onBeforeUnmount(() => {
         <!-- 步骤 3：设置新密码 -->
         <template v-else-if="resetStep === 3">
           <h3 class="reset-title">设置新密码</h3>
-          <p class="reset-hint">身份已确认，请设置新的登录密码（至少 6 位）</p>
+          <p class="reset-hint">身份已确认，请设置新的登录密码（至少 8 位）</p>
           <el-input
             v-model="resetForm.newPassword"
             type="password"
             show-password
-            placeholder="新密码（至少 6 位）"
+            placeholder="新密码（至少 8 位）"
             size="large"
           />
           <el-input

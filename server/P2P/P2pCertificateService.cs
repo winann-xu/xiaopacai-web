@@ -15,6 +15,7 @@ public class P2pCertificateService
     private readonly string _certDir;
     private readonly string _certPath;
     private readonly string _keyPath;
+    private readonly string? _configuredPassword;
     private readonly ILogger<P2pCertificateService> _logger;
 
     private X509Certificate2? _certificate;
@@ -22,6 +23,12 @@ public class P2pCertificateService
     public P2pCertificateService(IConfiguration configuration, ILogger<P2pCertificateService> logger)
     {
         _logger = logger;
+
+        // [SEC-P2] 接入 P2P:CertPassword 配置（此前死配置）：
+        // 配置后 PFX 密码仅存环境变量，不再写 .key 文件（红线 K4：密钥不落盘）
+        _configuredPassword = string.IsNullOrEmpty(configuration["P2P:CertPassword"])
+            ? null
+            : configuration["P2P:CertPassword"];
 
         // 证书目录优先从配置读取，否则使用 Data/certs/
         var configuredPath = configuration["P2P:CertPath"];
@@ -54,11 +61,12 @@ public class P2pCertificateService
             Directory.CreateDirectory(_certDir);
 
         // 尝试从磁盘加载已有证书（LEGACY-e：指纹稳定）
-        if (File.Exists(_certPath) && File.Exists(_keyPath))
+        // [SEC-P2] 优先用配置密码（环境变量注入）；未配置则回退 .key 文件（兼容 2.0 旧证书）
+        if (File.Exists(_certPath) && (_configuredPassword != null || File.Exists(_keyPath)))
         {
             try
             {
-                var password = File.ReadAllText(_keyPath).Trim();
+                var password = _configuredPassword ?? File.ReadAllText(_keyPath).Trim();
                 _certificate = new X509Certificate2(_certPath, password);
                 _logger.LogInformation("[P2P-Cert] 已加载持久化证书: {Path}, 指纹={Fingerprint}",
                     _certPath, ComputeFingerprint(_certificate));
@@ -104,19 +112,22 @@ public class P2pCertificateService
     {
         try
         {
-            var password = Guid.NewGuid().ToString("N"); // 随机 PFX 密码
+            // [SEC-P2] 配置了 CertPassword 时：密码仅存环境变量，.key 文件不落盘（红线 K4）；
+            // 未配置（开发模式）时：随机密码 + .key 文件（兼容 2.0 方案）
+            var password = _configuredPassword ?? Guid.NewGuid().ToString("N");
             var pfxBytes = cert.Export(X509ContentType.Pfx, password);
 
             File.WriteAllBytes(_certPath, pfxBytes);
-            File.WriteAllText(_keyPath, password);
+            if (_configuredPassword == null)
+                File.WriteAllText(_keyPath, password);
 
             // 隐藏密钥文件（与 2.0 风格一致）
-            if (!OperatingSystem.IsWindows())
+            if (_configuredPassword == null && !OperatingSystem.IsWindows())
             {
                 // Linux 下设置文件权限（仅 owner 可读写）
                 File.SetUnixFileMode(_keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
-            else
+            else if (_configuredPassword == null)
             {
                 File.SetAttributes(_keyPath, FileAttributes.Hidden);
             }

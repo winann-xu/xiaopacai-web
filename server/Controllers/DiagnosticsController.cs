@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.Security;
 using XiaopacaiWeb.Services;
 
 namespace XiaopacaiWeb.Controllers;
@@ -62,6 +63,29 @@ public class DiagnosticsController : ControllerBase
             return StatusCode(403, new { error = "设备令牌无效" });
         }
 
+        // [SEC-P2] 上报限速：每设备每 IP 每小时 60 次（正常每天一次/异常补报，防灌库）
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"diagnostics:{request.DeviceId}:{clientIp}", 60, 3600))
+            return StatusCode(429, new { error = "上报过于频繁，请稍后再试" });
+
+        // [SEC-K10] 诊断上报审计（仅设备 ID/大小，不落诊断内容）
+        await AuditAsync("diagnostics.submit", "Diagnostics", device.Id,
+            $"{{\"deviceId\":\"{request.DeviceId}\",\"dbSizeBytes\":{request.DbSizeBytes?.ToString() ?? "null"}}}");
+
+        // [SEC-K9] 诊断数据最小化：JSON 字段类型/尺寸收敛，畸形或超限直接拒绝；
+        // NetworkType 白名单外一律丢弃（不落库）
+        var permissionStatus = NormalizeDiagnosticsJson(request.PermissionStatus, JsonValueKind.Object, 4096, 0, out var pValid);
+        var serviceStatus = NormalizeDiagnosticsJson(request.ServiceStatus, JsonValueKind.Object, 4096, 0, out var sValid);
+        var recentCrashes = NormalizeDiagnosticsJson(request.RecentCrashes, JsonValueKind.Array, 16384, 20, out var cValid);
+        var p2pHistory = NormalizeDiagnosticsJson(request.P2pHistory, JsonValueKind.Object, 4096, 0, out var hValid);
+        if (!pValid || !sValid || !cValid || !hValid)
+        {
+            _logger.LogWarning("[Diagnostics] 设备 {DeviceId} 上报非法字段被拒绝", request.DeviceId);
+            return BadRequest(new { error = "诊断字段格式无效" });
+        }
+
+        var networkType = NormalizeNetworkType(request.NetworkType);
+
         var record = new DiagnosticRecord
         {
             DeviceId = request.DeviceId,
@@ -69,12 +93,12 @@ public class DiagnosticsController : ControllerBase
             AndroidVersion = Truncate(request.AndroidVersion, 16),
             DeviceModel = Truncate(request.DeviceModel, 64),
             Manufacturer = Truncate(request.Manufacturer, 64),
-            PermissionStatus = request.PermissionStatus,
-            ServiceStatus = request.ServiceStatus,
-            RecentCrashes = request.RecentCrashes,
-            P2pHistory = request.P2pHistory,
+            PermissionStatus = permissionStatus,
+            ServiceStatus = serviceStatus,
+            RecentCrashes = recentCrashes,
+            P2pHistory = p2pHistory,
             DbSizeBytes = request.DbSizeBytes,
-            NetworkType = Truncate(request.NetworkType, 16),
+            NetworkType = networkType,
             ReportedAt = DateTime.UtcNow,
         };
 
@@ -188,6 +212,10 @@ public class DiagnosticsController : ControllerBase
 
         _logger.LogInformation("[Diagnostics] 管理端导出诊断数据 {Count} 条", items.Count);
 
+        // [SEC-K10] 诊断数据导出审计（条数/筛选范围）
+        await AuditAsync("diagnostics.export", "Diagnostics", null,
+            $"{{\"count\":{items.Count},\"deviceId\":\"{deviceId ?? ""}\",\"from\":\"{from ?? ""}\",\"to\":\"{to ?? ""}\"}}");
+
         var json = JsonSerializer.Serialize(items, new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -224,6 +252,73 @@ public class DiagnosticsController : ControllerBase
         if (string.IsNullOrEmpty(value)) return null;
         return value.Length <= maxLength ? value : value[..maxLength];
     }
+
+    /// <summary>
+    /// [SEC-K10] 审计日志落库（管理端数据导出等安全事件）
+    /// </summary>
+    private async Task AuditAsync(string action, string? targetType, int? targetId, string? detail)
+    {
+        _db.AuditLogs.Add(new AuditLog
+        {
+            UserId = int.TryParse(Security.DeviceAccess.GetUserId(User), out var uid) ? uid : null,
+            Action = action,
+            TargetType = targetType,
+            TargetId = targetId,
+            Detail = detail,
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+            CreatedAt = DateTime.UtcNow,
+        });
+        await _db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// [SEC-K9] 诊断 JSON 字段收敛：必须为合法 JSON 且根类型匹配，
+    /// 尺寸/条目数受限（防恶意设备灌入超大或畸形数据）
+    /// </summary>
+    private static string? NormalizeDiagnosticsJson(string? value, JsonValueKind expectedKind,
+        int maxLength, int maxItems, out bool valid)
+    {
+        valid = true;
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (value.Length > maxLength)
+        {
+            valid = false;
+            return null;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(value);
+            var root = doc.RootElement;
+            if (root.ValueKind != expectedKind)
+            {
+                valid = false;
+                return null;
+            }
+            if (expectedKind == JsonValueKind.Array && root.GetArrayLength() > maxItems)
+            {
+                valid = false;
+                return null;
+            }
+            return value;
+        }
+        catch (JsonException)
+        {
+            valid = false;
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// [SEC-K9] 网络类型白名单：wifi/cellular/none，其余值丢弃（不落库）
+    /// </summary>
+    private static string? NormalizeNetworkType(string? value)
+        => value?.ToLowerInvariant() switch
+        {
+            "wifi" => "wifi",
+            "cellular" => "cellular",
+            "none" => "none",
+            _ => null,
+        };
 }
 
 // ========== DTOs ==========
@@ -234,34 +329,34 @@ public class DiagnosticsController : ControllerBase
 public class DiagnosticReportRequest
 {
     /// <summary>儿童端设备唯一标识（必填）</summary>
-    public string DeviceId { get; set; } = string.Empty;
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string DeviceId { get; set; } = string.Empty;
 
     /// <summary>设备访问令牌（TASK-OPT-12-P4-DEEPEN：由 /api/devices/{id}/token 生成，设备已配置令牌时必填）</summary>
-    public string? DeviceToken { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string? DeviceToken { get; set; }
 
     /// <summary>儿童端 APP 版本号</summary>
-    public string? AppVersion { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(32)] public string? AppVersion { get; set; }
 
     /// <summary>Android 系统版本号</summary>
-    public string? AndroidVersion { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(32)] public string? AndroidVersion { get; set; }
 
     /// <summary>设备型号</summary>
-    public string? DeviceModel { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? DeviceModel { get; set; }
 
     /// <summary>设备厂商</summary>
-    public string? Manufacturer { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? Manufacturer { get; set; }
 
     /// <summary>权限状态（JSON 对象：无障碍/用量/设备管理器/通知/电池优化）</summary>
-    public string? PermissionStatus { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(4000)] public string? PermissionStatus { get; set; }
 
     /// <summary>服务运行状态（JSON 对象：守护服务/无障碍服务）</summary>
-    public string? ServiceStatus { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(4000)] public string? ServiceStatus { get; set; }
 
     /// <summary>最近崩溃堆栈（JSON 数组，最近 5 条）</summary>
-    public string? RecentCrashes { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(8000)] public string? RecentCrashes { get; set; }
 
     /// <summary>P2P 连接历史（JSON 对象：成功/失败/重连次数）</summary>
-    public string? P2pHistory { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(4000)] public string? P2pHistory { get; set; }
 
     /// <summary>本地数据库大小（字节）</summary>
     public long? DbSizeBytes { get; set; }

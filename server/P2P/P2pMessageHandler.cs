@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.Security;
 using XiaopacaiWeb.Services;
 
 namespace XiaopacaiWeb.P2P;
@@ -41,19 +42,98 @@ public class P2pMessageHandler
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
+        // [SEC-K3] 握手入口 IP 级失败限速（10 次失败/5 分钟），防 6 位配对码 TCP 爆破（红线 R4.2）
+        var handshakeIp = ExtractIp(remoteEndPoint);
+        if (RequestRateLimiter.IsBlocked($"p2p-handshake:ip:{handshakeIp}", 10, 300))
+        {
+            _logger.LogWarning("[P2P-Handshake][SEC-K3] IP 握手失败过多，临时拒绝: {Ip}", handshakeIp);
+            // [SEC] 被限速拦截的尝试同样审计（红线 R9.1：越权/暴力尝试必须留痕）
+            db.AuditLogs.Add(new AuditLog
+            {
+                Action = "p2p.handshake_blocked",
+                TargetType = "Device",
+                Detail = JsonSerializer.Serialize(new { deviceId = req.DeviceId, reason = "ip_rate_limited" }),
+                IpAddress = handshakeIp,
+            });
+            await db.SaveChangesAsync();
+            return (new HandshakeResponse
+            {
+                Ok = false,
+                Error = "尝试次数过多，请稍后再试",
+                PairStatus = "unpaired",
+            }, null, null, null);
+        }
+
+        // [SEC-K1] 身份前置校验：mTLS 下对端必须提交客户端证书（P2pListenerService 已强制），
+        // 指纹由 TLS 层提取、不可伪造；payload 自报 certFingerprint 一律不作为信任依据（红线 R3.2）。
+        // 此守卫同时防御 TLS 配置回退（如有人改回 ClientCertificateRequired=false）。
+        if (string.IsNullOrEmpty(peerFingerprint))
+        {
+            _logger.LogWarning("[P2P-Handshake][SEC-K1] 缺少客户端证书，拒绝: {DeviceId} @ {Ip}",
+                req.DeviceId, remoteEndPoint);
+            return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                "缺少客户端证书，无法校验身份", "unpaired"), null, null, null);
+        }
+
         // [TASK-OPT-12-P4-DEEPEN] 家长端中继连接：不创建 Device，仅维护 relay_sessions
+        // [SEC-K2] 必须携带 /api/relay/register 签发的会话令牌并匹配，防止冒充家长端接收儿童数据（红线 R2.3）
         if (req.Relay && req.DeviceId.StartsWith("parent-"))
         {
-            _logger.LogInformation("[P2P-Handshake] 家长端中继连接: {DeviceId} @ {Ip}",
+            if (string.IsNullOrEmpty(req.SessionToken))
+            {
+                _logger.LogWarning("[P2P-Handshake][SEC-K2] 家长端中继连接缺少会话令牌，拒绝: {DeviceId} @ {Ip}",
+                    req.DeviceId, remoteEndPoint);
+                return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                    "缺少中继会话令牌", "paired"), null, null, null);
+            }
+
+            var parentSession = await db.RelaySessions
+                .Where(s => s.DeviceId == req.DeviceId && s.Role == "parent")
+                .OrderByDescending(s => s.ConnectedAt)
+                .FirstOrDefaultAsync();
+
+            // 令牌比对：常数时间比较，防时序侧信道
+            if (parentSession == null || parentSession.SessionToken == null ||
+                !CryptographicOperations.FixedTimeEquals(
+                    Encoding.UTF8.GetBytes(parentSession.SessionToken),
+                    Encoding.UTF8.GetBytes(req.SessionToken)))
+            {
+                _logger.LogWarning("[P2P-Handshake][SEC-K2] 家长端中继令牌不匹配，拒绝: {DeviceId} @ {Ip}",
+                    req.DeviceId, remoteEndPoint);
+                return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                    "中继会话未授权", "paired"), null, null, null);
+            }
+
+            // [SEC-K2] 身份绑定：TLS 客户端证书指纹必须与注册时绑定的一致
+            // （注册走 JWT 鉴权，指纹在此处被密码学验证，令牌+指纹双重绑定防冒充）
+            if (string.IsNullOrEmpty(parentSession.Fingerprint) ||
+                !string.Equals(parentSession.Fingerprint.Trim(), peerFingerprint.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("[P2P-Handshake][SEC-K2] 家长端证书指纹不匹配，拒绝: {DeviceId} @ {Ip}",
+                    req.DeviceId, remoteEndPoint);
+                return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                    "中继会话未授权", "paired"), null, null, null);
+            }
+
+            // 令牌有效：更新已注册会话（不再新建重复行，避免 UserId 悬空行）
+            parentSession.Status = "connected";
+            parentSession.ConnectedAt = DateTime.UtcNow;
+            parentSession.DisconnectedAt = null;
+            parentSession.IpAddress = remoteEndPoint;
+            await db.SaveChangesAsync();
+
+            _logger.LogInformation("[P2P-Handshake] 家长端中继连接已授权: {DeviceId} @ {Ip}",
                 req.DeviceId, remoteEndPoint);
 
-            db.RelaySessions.Add(new RelaySession
+            // [SEC-K10] 中继授权成功审计（只记设备，不记令牌，红线 R9.1/R9.2）
+            db.AuditLogs.Add(new AuditLog
             {
-                DeviceId = req.DeviceId,
-                Role = "parent",
-                IpAddress = remoteEndPoint,
-                Status = "connected",
-                ConnectedAt = DateTime.UtcNow,
+                Action = "p2p.relay.authorized",
+                TargetType = "RelaySession",
+                TargetId = parentSession.Id,
+                Detail = JsonSerializer.Serialize(new { deviceId = req.DeviceId, role = "parent" }),
+                IpAddress = handshakeIp,
             });
             await db.SaveChangesAsync();
 
@@ -76,12 +156,16 @@ public class P2pMessageHandler
             if (string.IsNullOrEmpty(req.PairCode))
             {
                 _logger.LogWarning("[P2P-Handshake] 新设备缺少配对码: {DeviceId}", req.DeviceId);
-                return (new HandshakeResponse
-                {
-                    Ok = false,
-                    Error = "需要配对码",
-                    PairStatus = "unpaired",
-                }, null, null, null);
+                return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                    "需要配对码", "unpaired"), null, null, null);
+            }
+
+            // [SEC-K3] 配对码失败次数限制：单个配对码最多 10 次失败尝试（防 10^6 爆破）
+            if (RequestRateLimiter.IsBlocked($"p2p-paircode:{req.PairCode}", 10, 300))
+            {
+                _logger.LogWarning("[P2P-Handshake][SEC-K3] 配对码尝试次数过多，拒绝: {PairCode}", req.PairCode);
+                return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                    "配对码尝试次数过多", "unpaired", req.PairCode), null, null, null);
             }
 
             // 验证配对码
@@ -93,22 +177,19 @@ public class P2pMessageHandler
             if (pairingInfo == null || pairingInfo.ExpiresAt < DateTime.UtcNow)
             {
                 _logger.LogWarning("[P2P-Handshake] 配对码无效或已过期: {PairCode}", req.PairCode);
-                return (new HandshakeResponse
-                {
-                    Ok = false,
-                    Error = "配对码无效或已过期",
-                    PairStatus = "unpaired",
-                }, null, null, null);
+                return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                    "配对码无效或已过期", "unpaired", req.PairCode), null, null, null);
             }
 
             // 创建新设备
+            // [SEC-K1] 指纹一律取 TLS 对端证书（顶部守卫已保证非空），不接受 payload 自报值
             device = new Device
             {
                 DeviceId = req.DeviceId,
                 DeviceName = req.DeviceName ?? req.DeviceId,
                 Platform = req.Platform ?? "android",
                 IpAddress = remoteEndPoint,
-                CertFingerprint = peerFingerprint ?? req.CertFingerprint,
+                CertFingerprint = peerFingerprint,
                 PairCode = req.PairCode,
                 PairStatus = "paired",
                 OnlineStatus = "online",
@@ -119,7 +200,7 @@ public class P2pMessageHandler
             await db.SaveChangesAsync();
 
             // 更新配对信息状态
-            pairingInfo.TlsFingerprint = peerFingerprint ?? req.CertFingerprint;
+            pairingInfo.TlsFingerprint = peerFingerprint;
             pairingInfo.PairStatus = "confirmed";
             pairingInfo.ConfirmedAt = DateTime.UtcNow;
             pairingInfo.DeviceId = device.Id;
@@ -153,6 +234,16 @@ public class P2pMessageHandler
 
             _logger.LogInformation("[P2P-Handshake] 新设备已配对: {DeviceId} ({DeviceName})", req.DeviceId, req.DeviceName);
 
+            // [SEC-K10] 配对成功审计（不记配对码明文，红线 R9.1/R9.2）
+            db.AuditLogs.Add(new AuditLog
+            {
+                Action = "p2p.pair.success",
+                TargetType = "Device",
+                TargetId = device.Id,
+                Detail = JsonSerializer.Serialize(new { deviceId = req.DeviceId }),
+                IpAddress = handshakeIp,
+            });
+
             // 重新加载带策略的设备
             device = await db.Devices.Include(d => d.Policy).FirstAsync(d => d.Id == device.Id);
 
@@ -176,21 +267,61 @@ public class P2pMessageHandler
             {
                 var reason = device.PairStatus == "revoked" ? "设备已被吊销" : "设备已解绑，请重新扫码绑定";
                 _logger.LogWarning("[P2P-Handshake] {Reason}: {DeviceId}", reason, req.DeviceId);
-                return (new HandshakeResponse
-                {
-                    Ok = false,
-                    Error = reason,
-                    PairStatus = device.PairStatus,
-                }, null, null, device.Id);
+                return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                    reason, device.PairStatus, req.PairCode), null, null, device.Id);
             }
 
-            // 重新绑定：解除吊销/解绑状态
+            // [SEC] 重绑归属校验（红线 R2.1/R2.2）：设备已有归属时，
+            // 配对码必须由原 owner（或未绑定时任意家长）签发，防止他人凭 deviceId+自造码接管设备
+            if (!string.IsNullOrEmpty(device.OwnerUserId) &&
+                (string.IsNullOrEmpty(rePairInfo.OwnerUserId) ||
+                 !string.Equals(rePairInfo.OwnerUserId, device.OwnerUserId, StringComparison.Ordinal)))
+            {
+                _logger.LogWarning("[P2P-Handshake][SEC] 重绑配对码归属不匹配，拒绝: {DeviceId} owner={Owner} codeOwner={CodeOwner}",
+                    req.DeviceId, device.OwnerUserId, rePairInfo.OwnerUserId);
+                return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                    "设备已被其他账号绑定", device.PairStatus, req.PairCode), null, null, device.Id);
+            }
+
+            // 重新绑定：解除吊销/解绑状态。
+            // [SEC-K1] 凭新配对码重新绑定 = 信任轮换：采纳本次对端证书指纹为新可信指纹
             device.PairStatus = "paired";
             device.PairCode = req.PairCode;
             device.IsActive = true;
+            if (!string.IsNullOrEmpty(peerFingerprint))
+                device.CertFingerprint = peerFingerprint;
+            // [SEC] 重绑归属：设备无主时绑定配对码签发账号
+            if (string.IsNullOrEmpty(device.OwnerUserId) && !string.IsNullOrEmpty(rePairInfo.OwnerUserId))
+                device.OwnerUserId = rePairInfo.OwnerUserId;
         }
 
-        // 3. 已配对设备 — 更新状态
+        // 3. 已配对设备
+        // [SEC-K1] 校验证书指纹必须先于任何状态更新（红线 R3.2：禁止接受任意客户端证书）：
+        // 有指纹记录 → 必须与 TLS 对端证书一致，否则拒绝（防冒充/中间人，此前此处是静默覆盖 = 违反项）；
+        // [SEC] 无指纹记录（历史设备）→ 不再 TOFU 采纳（任意证书可借此冒充无指纹设备 = P1 身份冒充口）。
+        // 此类设备必须走"解绑 → 重新配对"路径（带有效配对码），由重绑流程写入新指纹。
+        // peerFingerprint 已由顶部守卫保证非空，且一律取 TLS 层值，payload 自报值不作信任依据。
+        if (!string.IsNullOrEmpty(device.CertFingerprint))
+        {
+            if (!string.Equals(device.CertFingerprint.Trim(), peerFingerprint.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(
+                    "[P2P-Handshake][SEC-K1] 证书指纹不匹配，拒绝: {DeviceId} 期望 {Expected} 实际 {Actual}",
+                    req.DeviceId, device.CertFingerprint, peerFingerprint);
+                return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                    "证书指纹不匹配", device.PairStatus), null, null, device.Id);
+            }
+        }
+        else
+        {
+            _logger.LogWarning("[P2P-Handshake][SEC-K1] 设备无指纹记录，拒绝并要求重新配对: {DeviceId}",
+                req.DeviceId);
+            return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                "设备缺少可信指纹，请解绑后重新配对", device.PairStatus), null, null, device.Id);
+        }
+
+        // 更新状态
         device.OnlineStatus = "online";
         device.LastSeenAt = DateTime.UtcNow;
         device.IpAddress = remoteEndPoint;
@@ -209,22 +340,28 @@ public class P2pMessageHandler
                 // [REQ] 仅首次扫码绑定（pending → confirmed）时重绑归属账号；
                 // 后续重连复用同一已确认配对码，不再覆盖已绑定的 owner。
                 var isFirstBind = linkedPairing.PairStatus == "pending";
+                // [SEC] 首次绑定归属校验（红线 R2.1）：设备已有归属且与配对码签发账号不一致时拒绝
+                if (isFirstBind &&
+                    !string.IsNullOrEmpty(linkedPairing.OwnerUserId) &&
+                    !string.IsNullOrEmpty(device.OwnerUserId) &&
+                    !string.Equals(linkedPairing.OwnerUserId, device.OwnerUserId, StringComparison.Ordinal))
+                {
+                    _logger.LogWarning("[P2P-Handshake][SEC] 绑定配对码归属不匹配，拒绝: {DeviceId}",
+                        req.DeviceId);
+                    return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                        "配对码归属不匹配", device.PairStatus, req.PairCode), null, null, device.Id);
+                }
                 linkedPairing.DeviceId = device.Id;
                 if (isFirstBind)
                 {
                     linkedPairing.PairStatus = "confirmed";
                     linkedPairing.ConfirmedAt = DateTime.UtcNow;
-                    if (!string.IsNullOrEmpty(linkedPairing.OwnerUserId))
+                    if (!string.IsNullOrEmpty(linkedPairing.OwnerUserId) &&
+                        string.IsNullOrEmpty(device.OwnerUserId))
                         device.OwnerUserId = linkedPairing.OwnerUserId;
                 }
             }
         }
-
-        // 更新证书指纹
-        if (!string.IsNullOrEmpty(peerFingerprint))
-            device.CertFingerprint = peerFingerprint;
-        else if (!string.IsNullOrEmpty(req.CertFingerprint) && string.IsNullOrEmpty(device.CertFingerprint))
-            device.CertFingerprint = req.CertFingerprint;
 
         device.UpdatedAt = DateTime.UtcNow;
 
@@ -269,6 +406,40 @@ public class P2pMessageHandler
             PairStatus = device.PairStatus,
             SessionId = Guid.NewGuid().ToString("N")[..12],
         }, policyMsg, resetPushJson, device.Id);
+    }
+
+    /// <summary>
+    /// [SEC-K3] 握手拒绝统一出口：记录 IP/配对码失败计数（限速）+ 审计落库（红线 R4.2/R9.1）
+    /// </summary>
+    private async Task<HandshakeResponse> RejectHandshakeAsync(
+        AppDbContext db, string deviceId, string remoteEndPoint, string reason,
+        string pairStatus, string? pairCode = null)
+    {
+        var ip = ExtractIp(remoteEndPoint);
+        RequestRateLimiter.RecordFailure($"p2p-handshake:ip:{ip}", 10, 300);
+        if (!string.IsNullOrEmpty(pairCode))
+            RequestRateLimiter.RecordFailure($"p2p-paircode:{pairCode}", 10, 300);
+
+        db.AuditLogs.Add(new AuditLog
+        {
+            Action = "p2p.handshake_reject",
+            TargetType = "Device",
+            Detail = JsonSerializer.Serialize(new { deviceId, reason }),
+            IpAddress = ip,
+        });
+        await db.SaveChangesAsync();
+
+        return new HandshakeResponse { Ok = false, Error = reason, PairStatus = pairStatus };
+    }
+
+    /// <summary>
+    /// 从 "ip:port" 提取 IP（兼容 IPv4 与 [IPv6]:port）
+    /// </summary>
+    private static string ExtractIp(string remoteEndPoint)
+    {
+        if (string.IsNullOrEmpty(remoteEndPoint)) return "unknown";
+        var idx = remoteEndPoint.LastIndexOf(':');
+        return idx > 0 ? remoteEndPoint[..idx].Trim('[', ']') : remoteEndPoint;
     }
 
     // ========== Usage Report ==========
@@ -606,7 +777,10 @@ public class P2pMessageHandler
         }));
 
         // 就寝时段
-        if (!string.IsNullOrEmpty(policy.BedtimeStart) && !string.IsNullOrEmpty(policy.BedtimeEnd))
+        // [SEC-K7] 仅推送合法 HH:mm：历史脏数据（ISO 时间戳）按未设置跳过，避免儿童端解析异常
+        var sleepStart = NormalizeTime(policy.BedtimeStart);
+        var sleepEnd = NormalizeTime(policy.BedtimeEnd);
+        if (sleepStart != null && sleepEnd != null)
         {
             items.Add(JsonSerializer.Serialize(new Dictionary<string, object>
             {
@@ -614,8 +788,8 @@ public class P2pMessageHandler
                 ["deviceId"] = deviceId,
                 ["isActive"] = true,
                 ["version"] = version,
-                ["sleepStart"] = policy.BedtimeStart,
-                ["sleepEnd"] = policy.BedtimeEnd,
+                ["sleepStart"] = sleepStart,
+                ["sleepEnd"] = sleepEnd,
                 ["label"] = "就寝时段",
             }));
         }
@@ -965,6 +1139,26 @@ public class P2pMessageHandler
             return;
         }
 
+        // [SEC] 回执归属校验：公告必须存在，且面向本设备（广播或定向本设备），
+        // 否则忽略并审计（防伪造他人公告送达记录，红线 R2.2）
+        var announcement = await db.Announcements
+            .FirstOrDefaultAsync(a => a.Id == announcementId);
+        if (announcement == null ||
+            (announcement.TargetDeviceId is > 0 && announcement.TargetDeviceId != device.Id))
+        {
+            _logger.LogWarning("[P2P-Announce][SEC] 回执公告不存在或非本设备目标，忽略: ann={Id} device={DeviceId}",
+                announcementId, childDeviceId);
+            db.AuditLogs.Add(new AuditLog
+            {
+                Action = "p2p.announcement_ack_invalid",
+                TargetType = "Announcement",
+                TargetId = announcementId,
+                Detail = JsonSerializer.Serialize(new { deviceId = childDeviceId }),
+            });
+            await db.SaveChangesAsync();
+            return;
+        }
+
         var row = await db.AnnouncementDeliveries
             .FirstOrDefaultAsync(d => d.AnnouncementId == announcementId && d.DeviceId == device.Id);
         if (row == null)
@@ -1110,6 +1304,13 @@ public class P2pMessageHandler
         if (string.IsNullOrEmpty(c)) return "other";
         return c == "study" ? "learning" : c;
     }
+
+    /// <summary>
+    /// [SEC-K7] 时间归一化：仅合法 HH:mm 原样返回，其余（历史 ISO 时间戳等）视为 null
+    /// </summary>
+    private static string? NormalizeTime(string? value)
+        => string.IsNullOrEmpty(value) ? null
+           : TimeOnly.TryParseExact(value, "HH:mm", out _) ? value : null;
 
     /// <summary>
     /// 反序列化 JSON 字符串列表

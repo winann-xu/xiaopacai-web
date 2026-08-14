@@ -8,21 +8,18 @@ const apiClient: AxiosInstance = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-// ===== 请求拦截器：注入 JWT =====
-apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
-})
+// ===== [SEC-K5] Cookie 会话：本地不再存储任何 token =====
+// access_token / refresh_token 由服务端写入 httpOnly Cookie（JS 不可读，防 XSS 窃取）。
+// 请求自动携带 Cookie，无需手动注入 Authorization。
+// 401 时调用 /auth/refresh（服务端从 Cookie 读取 refresh_token 并轮换，新 Cookie 自动落盘），
+// 失败则登出并跳转登录页。
 
-// ===== 响应拦截器：token 过期自动刷新 =====
+// ===== 响应拦截器：401 自动刷新会话 =====
 let isRefreshing = false
-let refreshSubscribers: ((token: string) => void)[] = []
+let refreshSubscribers: (() => void)[] = []
 
-function onRefreshed(token: string) {
-  refreshSubscribers.forEach(cb => cb(token))
+function onRefreshed() {
+  refreshSubscribers.forEach(cb => cb())
   refreshSubscribers = []
 }
 
@@ -30,34 +27,26 @@ apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config
-    // 401 且非刷新请求 → 尝试刷新 token
+    // 401 且非刷新请求 → 尝试刷新会话（httpOnly Cookie 携带 refresh_token）
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (isRefreshing) {
         return new Promise(resolve => {
-          refreshSubscribers.push((token: string) => {
-            originalRequest.headers.Authorization = `Bearer ${token}`
-            resolve(apiClient(originalRequest))
-          })
+          refreshSubscribers.push(() => resolve(apiClient(originalRequest)))
         })
       }
       originalRequest._retry = true
       isRefreshing = true
       try {
-        const refreshToken = localStorage.getItem('refresh_token')
-        const res = await axios.post(
-          `${apiClient.defaults.baseURL}/auth/refresh`,
-          { refreshToken },
-        )
-        const newToken = res.data.accessToken
-        localStorage.setItem('access_token', newToken)
-        apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`
-        onRefreshed(newToken)
-        originalRequest.headers.Authorization = `Bearer ${newToken}`
+        await axios.post(`${apiClient.defaults.baseURL}/auth/refresh`, {})
+        onRefreshed()
         return apiClient(originalRequest)
       } catch {
-        // 刷新失败，跳转登录
-        localStorage.removeItem('access_token')
-        localStorage.removeItem('refresh_token')
+        // 刷新失败：登出（清除会话 Cookie）并跳转登录
+        try {
+          await axios.post(`${apiClient.defaults.baseURL}/auth/logout`, {})
+        } catch {
+          // 登出失败忽略，页面跳转后 Cookie 自然过期
+        }
         window.location.href = '/login'
         return Promise.reject(error)
       } finally {
@@ -78,7 +67,8 @@ export const authApi = {
     apiClient.post('/auth/login', { username, password }),
   register: (email: string, password: string, displayName?: string) =>
     apiClient.post('/auth/register', { email, password, displayName }),
-  logout: () => apiClient.post('/auth/logout'),
+  // [SEC-K5] 空 body（{}）：[ApiController] 对空 body 的 [FromBody] 会 400，传空对象走 Cookie 吊销
+  logout: () => apiClient.post('/auth/logout', {}),
   refresh: () => apiClient.post('/auth/refresh'),
   profile: () => apiClient.get('/auth/profile'),
   changePassword: (oldPwd: string, newPwd: string) =>

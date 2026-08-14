@@ -20,6 +20,7 @@ namespace XiaopacaiWeb.P2P;
 public class P2pListenerService : IHostedService
 {
     private readonly int _listenPort;
+    private readonly SslProtocols _sslProtocols;
     private readonly P2pCertificateService _certService;
     private readonly P2pMessageHandler _messageHandler;
     private readonly ILogger<P2pListenerService> _logger;
@@ -27,6 +28,16 @@ public class P2pListenerService : IHostedService
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
     private Task? _acceptLoop;
+    private Task? _reaperLoop;
+
+    // [SEC] 连接数上限（防放大攻击/连接耗尽，红线 R4.3）
+    private const int MaxConnectionsGlobal = 200;
+    private const int MaxConnectionsPerIp = 10;
+    private int _activeConnections;
+    private readonly ConcurrentDictionary<string, int> _connectionsPerIp = new();
+
+    // [SEC] 心跳超时回收：心跳间隔约 30s，3 倍无心跳即判定失联（静默断网无 FIN 场景）
+    private static readonly TimeSpan HeartbeatTimeout = TimeSpan.FromSeconds(90);
 
     /// <summary>
     /// 活跃的客户端会话（deviceId → session info）
@@ -40,6 +51,11 @@ public class P2pListenerService : IHostedService
         ILogger<P2pListenerService> logger)
     {
         _listenPort = configuration.GetValue<int>("P2P:ListenPort", 9527);
+        // [SEC-P2] 接入 P2P:TlsMinVersion 配置（此前死配置）：
+        // "1.3" 仅 TLS 1.3；默认/其他值 TLS 1.2+1.3（与 2.0 儿童端兼容底线 TLS 1.2）
+        _sslProtocols = configuration["P2P:TlsMinVersion"] == "1.3"
+            ? SslProtocols.Tls13
+            : SslProtocols.Tls13 | SslProtocols.Tls12;
         _certService = certService;
         _messageHandler = messageHandler;
         _logger = logger;
@@ -94,6 +110,9 @@ public class P2pListenerService : IHostedService
 
         _acceptLoop = AcceptLoopAsync(_cts.Token);
 
+        // [SEC] 心跳超时回收器：周期扫描静默失联会话（防死会话永久占用 DB 在线态/中继路由）
+        _reaperLoop = ReaperLoopAsync(_cts.Token);
+
         _logger.LogInformation("[P2P] TCP/TLS 监听已启动 → 0.0.0.0:{Port}, TLS 1.2/1.3", _listenPort);
         await Task.CompletedTask;
     }
@@ -124,6 +143,12 @@ public class P2pListenerService : IHostedService
             catch (OperationCanceledException) { }
         }
 
+        if (_reaperLoop != null)
+        {
+            try { await _reaperLoop.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken); }
+            catch (OperationCanceledException) { }
+        }
+
         _logger.LogInformation("[P2P] 监听已停止");
     }
 
@@ -136,11 +161,25 @@ public class P2pListenerService : IHostedService
             try
             {
                 var tcpClient = await _listener!.AcceptTcpClientAsync(ct);
-                _logger.LogDebug("[P2P] 新 TCP 连接: {RemoteEndPoint}",
-                    tcpClient.Client.RemoteEndPoint?.ToString());
+                var remoteEndPoint = tcpClient.Client.RemoteEndPoint?.ToString() ?? "unknown";
+                _logger.LogDebug("[P2P] 新 TCP 连接: {RemoteEndPoint}", remoteEndPoint);
+
+                // [SEC] 连接数上限：全局 + 每 IP（防连接耗尽放大攻击，红线 R4.3）
+                var remoteIp = ExtractIp(remoteEndPoint);
+                var ipCount = _connectionsPerIp.AddOrUpdate(remoteIp, 1, (_, c) => c + 1);
+                var globalCount = Interlocked.Increment(ref _activeConnections);
+                if (ipCount > MaxConnectionsPerIp || globalCount > MaxConnectionsGlobal)
+                {
+                    Interlocked.Decrement(ref _activeConnections);
+                    _connectionsPerIp.AddOrUpdate(remoteIp, 0, (_, c) => Math.Max(0, c - 1));
+                    tcpClient.Close();
+                    _logger.LogWarning("[P2P][SEC] 连接超上限被拒绝: {RemoteEndPoint} (perIp={IpCount}, global={Global})",
+                        remoteEndPoint, ipCount, globalCount);
+                    continue;
+                }
 
                 // 每个客户端一个独立 Task
-                _ = HandleConnectionAsync(tcpClient, ct);
+                _ = HandleConnectionAsync(tcpClient, ct, remoteIp);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -159,7 +198,7 @@ public class P2pListenerService : IHostedService
 
     // ========== TLS 连接处理 ==========
 
-    private async Task HandleConnectionAsync(TcpClient tcpClient, CancellationToken ct)
+    private async Task HandleConnectionAsync(TcpClient tcpClient, CancellationToken ct, string remoteIp)
     {
         var remoteEndPoint = tcpClient.Client.RemoteEndPoint?.ToString() ?? "unknown";
         SslStream? sslStream = null;
@@ -170,6 +209,11 @@ public class P2pListenerService : IHostedService
             var certificate = _certService.GetOrCreateCertificate();
 
             // 创建 TLS 流
+            // [SEC-K1] 注意：TLS 回调返回 true 仅表示"接受任何客户端证书"，并非身份豁免——
+            // 真实身份校验在 P2pMessageHandler.HandleHandshake 完成（cert_fingerprint 与
+            // devices.cert_fingerprint 固定比对/TOFU 采纳，不匹配即拒绝，见安全基线 R3.2/R3.3）。
+            // TLS 层无法将证书映射到具体设备（握手指纹字段才携带 deviceId），因此此处必须放行，
+            // 由握手层做强校验；若在此回调按 CA 链拒绝，自签名设备将全部无法连接。
             sslStream = new SslStream(
                 tcpClient.GetStream(),
                 leaveInnerStreamOpen: false,
@@ -177,12 +221,16 @@ public class P2pListenerService : IHostedService
                 userCertificateValidationCallback: (sender, clientCert, chain, errors) => true);
 
             // TLS 1.2 / 1.3，不检查证书吊销
+            // [SEC-K1] 双向 TLS（mTLS）：强制要求客户端证书（红线 R3.2 禁止"接受任意客户端证书"）。
+            // 客户端（Android 3.x）生成设备身份证书并在 TLS 层提交；无证书的旧版客户端 TLS 握手直接失败，
+            // 不会进入消息层（身份校验见 P2pMessageHandler 指纹固定比对）。
             await sslStream.AuthenticateAsServerAsync(
                 new SslServerAuthenticationOptions
                 {
                     ServerCertificate = certificate,
-                    ClientCertificateRequired = false,
-                    EnabledSslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12,
+                    ClientCertificateRequired = true,
+                    // [SEC-P2] 协议族由 P2P:TlsMinVersion 配置决定（默认 TLS 1.2+1.3）
+                    EnabledSslProtocols = _sslProtocols,
                     CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
                 });
 
@@ -223,6 +271,10 @@ public class P2pListenerService : IHostedService
                 tcpClient.Close();
             }
             catch { /* ignore */ }
+
+            // [SEC] 释放连接配额
+            Interlocked.Decrement(ref _activeConnections);
+            _connectionsPerIp.AddOrUpdate(remoteIp, 0, (_, c) => Math.Max(0, c - 1));
         }
     }
 
@@ -232,10 +284,24 @@ public class P2pListenerService : IHostedService
         string? peerFingerprint, CancellationToken ct)
     {
         string? deviceId = null;
+        P2pSession? mySession = null;   // 本连接注册的会话（断线清理时比对引用，防竞态误删新会话）
+        var unauthenticatedMessages = 0;
 
         while (!ct.IsCancellationRequested)
         {
-            var frame = await ReadFrameAsync(sslStream, ct);
+            // [SEC] 帧读超时 60s：防"只发长度前缀后挂死"的慢速占用攻击（红线 R4.3）
+            using var frameCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            frameCts.CancelAfter(TimeSpan.FromSeconds(60));
+            string? frame;
+            try
+            {
+                frame = await ReadFrameAsync(sslStream, frameCts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                _logger.LogDebug("[P2P][SEC] 读帧超时，关闭连接: {RemoteEndPoint}", remoteEndPoint);
+                break;
+            }
             if (frame == null) break; // 连接关闭
 
             P2pEnvelope? envelope;
@@ -252,13 +318,33 @@ public class P2pListenerService : IHostedService
             if (envelope == null || string.IsNullOrEmpty(envelope.Type))
                 continue;
 
-        var deviceIdHolder = new DeviceIdHolder { Value = deviceId };
-        await HandleMessageAsync(sslStream, envelope, deviceIdHolder, peerFingerprint, remoteEndPoint, ct);
-        deviceId = deviceIdHolder.Value;
+            var deviceIdHolder = new DeviceIdHolder { Value = deviceId };
+
+            // [SEC-P0] 握手门禁：未完成握手的连接只允许发 Handshake；
+            // 其余消息一律拒绝并计数，累计 5 条即断开（红线 R2.2/R4.3）
+            if (deviceIdHolder.Value == null && envelope.Type != P2pMessageType.Handshake)
+            {
+                unauthenticatedMessages++;
+                _logger.LogWarning("[P2P][SEC] 未握手连接发送 {Type} 被拒绝（第 {N} 次）: {RemoteEndPoint}",
+                    envelope.Type, unauthenticatedMessages, remoteEndPoint);
+                if (unauthenticatedMessages >= 5) break;
+                continue;
+            }
+
+            var keepConnection = await HandleMessageAsync(sslStream, envelope, deviceIdHolder,
+                peerFingerprint, remoteEndPoint, ct);
+            deviceId = deviceIdHolder.Value;
+            if (deviceId != null && mySession == null && _sessions.TryGetValue(deviceId, out var registered))
+                mySession = registered; // 握手成功后记住本连接注册的会话引用
+            if (mySession != null) mySession.LastHeartbeat = DateTime.UtcNow; // 任何帧都视为存活信号
+            if (!keepConnection) break;
         }
 
         // 连接断开，清理会话
-        if (deviceId != null)
+        // [SEC] 仅当当前登记会话仍是本连接注册的那个时才移除，
+        // 防止旧连接断线清理误删设备刚重连建立的新会话（会话互踢竞态）
+        if (deviceId != null && mySession != null &&
+            _sessions.TryGetValue(deviceId, out var current) && ReferenceEquals(current, mySession))
         {
             _sessions.TryRemove(deviceId, out _);
             await _messageHandler.OnDeviceDisconnected(deviceId);
@@ -267,9 +353,9 @@ public class P2pListenerService : IHostedService
     }
 
     /// <summary>
-    /// 消息分发
+    /// 消息分发。返回 false 表示连接应关闭（握手被拒/未认证滥用）。
     /// </summary>
-    private async Task HandleMessageAsync(SslStream sslStream, P2pEnvelope envelope,
+    private async Task<bool> HandleMessageAsync(SslStream sslStream, P2pEnvelope envelope,
         DeviceIdHolder deviceIdHolder, string? peerFingerprint, string remoteEndPoint, CancellationToken ct)
     {
         try
@@ -279,7 +365,7 @@ public class P2pListenerService : IHostedService
                 case P2pMessageType.Handshake:
                     {
                         var req = DeserializePayload<HandshakeRequest>(envelope.Payload);
-                        if (req == null) break;
+                        if (req == null) return true;
 
                         var (response, policyPushJson, resetPushJson, dbDeviceId) =
                             await _messageHandler.HandleHandshake(req, peerFingerprint, remoteEndPoint);
@@ -315,17 +401,45 @@ public class P2pListenerService : IHostedService
                         }
                         else if (!response.Ok)
                         {
+                            // [SEC] 握手被拒：发送拒绝回执后关闭连接（防同连接反复试探，红线 R4.2）
                             _logger.LogWarning("[P2P] 握手被拒绝: {DeviceId}, 原因={Error}",
                                 req.DeviceId, response.Error);
+                            try
+                            {
+                                await WriteFrameAsync(sslStream,
+                                    $"{{\"type\":\"handshake_rejected\",\"error\":\"{EscapeJsonString(response.Error)}\"}}");
+                            }
+                            catch { /* ignore */ }
+                            return false;
                         }
                         break;
                     }
 
                 case P2pMessageType.UsageReport:
                     {
+                        // [SEC-P0] 上报身份必须绑定握手会话：payload 自报 deviceId 与会话不一致即拒绝
+                        // （防任意证书连接伪造他人设备上报，红线 R2.2/R2.3）
                         if (envelope.Payload is JsonElement usagePayload)
                         {
-                            var deviceId = GetPayloadString(usagePayload, "deviceId") ?? string.Empty;
+                            // [SEC] 上报消息级限速：每 IP 60 条/分钟（防高频灌库放大，红线 R4.3）
+                            if (!XiaopacaiWeb.Security.RequestRateLimiter.Allow(
+                                    $"p2p-usage:{ExtractIp(remoteEndPoint)}", 60, 60))
+                            {
+                                _logger.LogWarning("[P2P][SEC] 上报频率超限，丢弃: {RemoteEndPoint}", remoteEndPoint);
+                                return true;
+                            }
+
+                            var payloadDeviceId = GetPayloadString(usagePayload, "deviceId");
+                            var deviceId = deviceIdHolder.Value!;
+                            if (!string.IsNullOrEmpty(payloadDeviceId) &&
+                                !string.Equals(payloadDeviceId, deviceId, StringComparison.Ordinal))
+                            {
+                                _logger.LogWarning(
+                                    "[P2P][SEC] usage_report deviceId 与会话不符被拒绝: session={Session}, payload={Payload} @ {Ip}",
+                                    deviceId, payloadDeviceId, remoteEndPoint);
+                                return false;
+                            }
+
                             var recordsJson = GetPayloadString(usagePayload, "records") ?? "[]";
                             // [TASK-PRELAUNCH-P4] 读取儿童端上报的重置偏移（缺省 0 = 未重置）
                             var offsetReported = usagePayload.TryGetProperty(
@@ -349,11 +463,8 @@ public class P2pListenerService : IHostedService
                             await WriteFrameAsync(sslStream, _messageHandler.BuildSyncAckJson(ack.Synced));
 
                             // [TASK-OPT-12-P4-DEEPEN] 中继转发：儿童端使用上报实时转发给绑定家长端
-                            if (!string.IsNullOrEmpty(deviceId))
-                            {
-                                await _messageHandler.RelayMessageToParent(
-                                    deviceId, EnvelopeToJson(envelope), this);
-                            }
+                            await _messageHandler.RelayMessageToParent(
+                                deviceId, EnvelopeToJson(envelope), this);
                         }
                         break;
                     }
@@ -423,6 +534,7 @@ public class P2pListenerService : IHostedService
         {
             _logger.LogError(ex, "[P2P] 消息处理异常: type={Type}", envelope.Type);
         }
+        return true;
     }
 
     // ========== 帧协议（4 字节大端长度前缀 + JSON） ==========
@@ -513,6 +625,64 @@ public class P2pListenerService : IHostedService
     }
 
     // ========== 辅助 ==========
+
+    /// <summary>
+    /// [SEC] JSON 字符串转义（拒绝回执帧拼接用）
+    /// </summary>
+    private static string EscapeJsonString(string? value)
+        => (value ?? string.Empty)
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\r", "")
+            .Replace("\n", "\\n");
+
+    /// <summary>
+    /// 从 "ip:port" / "[v6]:port" 中提取纯 IP
+    /// </summary>
+    private static string ExtractIp(string remoteEndPoint)
+    {
+        var s = remoteEndPoint.Trim();
+        if (s.StartsWith('['))
+        {
+            var idx = s.IndexOf(']');
+            return idx > 0 ? s[1..idx] : s;
+        }
+        var lastColon = s.LastIndexOf(':');
+        return lastColon > 0 ? s[..lastColon] : s;
+    }
+
+    /// <summary>
+    /// [SEC] 心跳超时回收器：每 60s 扫描一次，静默失联（无 FIN）的会话强制回收，
+    /// 避免死会话永久占用 _sessions 与 DB 在线态/中继路由（红线 4.4 会话生命周期）。
+    /// 家长端中继会话（parent- 前缀）不参与回收（其存活由 relay_sessions 状态管理）。
+    /// </summary>
+    private async Task ReaperLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(60), ct);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            var now = DateTime.UtcNow;
+            foreach (var kv in _sessions)
+            {
+                if (kv.Key.StartsWith("parent-", StringComparison.Ordinal)) continue;
+                if (now - kv.Value.LastHeartbeat <= HeartbeatTimeout) continue;
+
+                _logger.LogWarning("[P2P][SEC] 心跳超时，回收会话: {DeviceId}（最后心跳 {Last}）",
+                    kv.Key, kv.Value.LastHeartbeat);
+                try { kv.Value.SslStream?.Close(); } catch { /* ignore */ }
+                if (_sessions.TryRemove(kv.Key, out var removed) && ReferenceEquals(removed, kv.Value))
+                    await _messageHandler.OnDeviceDisconnected(kv.Key);
+            }
+        }
+    }
 
     private static T? DeserializePayload<T>(System.Text.Json.JsonElement? payload)
     {

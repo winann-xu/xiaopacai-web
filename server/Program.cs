@@ -3,8 +3,10 @@
 // P2 阶段：数据层 + 认证鉴权 完成
 
 using System.IO.Compression;
+using System.Net;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -97,6 +99,8 @@ builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 
 // ---- 扫码登录/重置 Ticket 内存存储（OPT12 需求 10/12，Singleton） ----
 builder.Services.AddSingleton<TicketStore>();
+// [SEC-P1] 过期 Ticket 定时清理（防内存无限增长）
+builder.Services.AddHostedService<TicketCleanupService>();
 
 // ---- SQLCipher 服务（Singleton：密钥管理 + 连接字符串提供） ----
 var sqlCipherService = SqlCipherService.CreateFromConfig(builder.Configuration);
@@ -119,7 +123,23 @@ builder.Services.AddDbContext<AppDbContext>(opts =>
 builder.Services.AddScoped<IJwtService, JwtService>();
 
 // ---- JWT 鉴权 ----
-var jwtSecretKey = builder.Configuration["Jwt:SecretKey"] ?? "dev-secret-key-32chars-minimum-ok";
+// [SEC-P2] 弱密钥熵检查：非生产环境下密钥缺失/过弱时，启动即生成随机临时密钥并覆盖配置。
+// JwtService（签发）与 JwtBearer（验签）均从 IConfiguration 读取，保证两端一致；
+// 临时密钥仅进程内存有效，重启轮换（现有令牌失效需重新登录）。生产环境保持硬性拒绝启动（见下方校验）。
+var jwtSecretKey = builder.Configuration["Jwt:SecretKey"];
+var jwtKeyIsWeak = string.IsNullOrEmpty(jwtSecretKey) || jwtSecretKey.Length < 32 ||
+                   jwtSecretKey.Contains("CHANGE-ME") || jwtSecretKey.Contains("dev-secret");
+if (jwtKeyIsWeak && !builder.Environment.IsProduction())
+{
+    // 48 字节随机数 → 64 字符 Base64（SHA-256 HMAC 足够熵）
+    jwtSecretKey = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(48));
+    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["Jwt:SecretKey"] = jwtSecretKey,
+    });
+    Console.WriteLine("[安全] Jwt:SecretKey 缺失或过弱，已生成随机临时密钥（进程内有效，重启后需重新登录）");
+}
+jwtSecretKey ??= "dev-secret-key-32chars-minimum-ok";
 var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "xiaopacai-web";
 var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "xiaopacai-client";
 
@@ -140,6 +160,22 @@ builder.Services.AddAuthentication(opts =>
         ValidAudience = jwtAudience,
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecretKey)),
         ClockSkew = TimeSpan.FromMinutes(1), // 1 分钟时钟偏差容忍
+    };
+
+    // [SEC-K5] 浏览器会话无 Authorization 头时，从 httpOnly Cookie 读取 access_token；
+    // 原生客户端（Android/Windows）仍走 Bearer 头，两套链路并存。
+    opts.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = ctx =>
+        {
+            if (string.IsNullOrEmpty(ctx.Request.Headers.Authorization))
+            {
+                var token = ctx.Request.Cookies["access_token"];
+                if (!string.IsNullOrEmpty(token))
+                    ctx.Token = token;
+            }
+            return Task.CompletedTask;
+        }
     };
 });
 
@@ -170,6 +206,30 @@ if (app.Environment.IsProduction() &&
 await app.Services.InitializeDatabaseAsync();
 
 // ========== 中间件管道 ==========
+
+// [SEC-K4/K6] 反向代理转发头：默认关闭。启用后（ReverseProxy:Enabled=true）信任来自
+// 本机回环（127.0.0.0/8，即同机 Nginx 等 TLS 终结代理）的 X-Forwarded-For / X-Forwarded-Proto，
+// 使 Request.IsHttps 正确（认证 Cookie 的 Secure 标记、HSTS 下发均依赖此值）、
+// 审计日志与登录限速拿到真实客户端 IP。回环之外的对端一律不信任，防伪造转发头。
+if (builder.Configuration.GetValue<bool>("ReverseProxy:Enabled", false))
+{
+    app.UseForwardedHeaders(new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+        KnownNetworks = { new IPNetwork(IPAddress.Loopback, 8) },
+    });
+}
+
+// [SEC-K6] HTTPS 强化：HSTS（仅 HTTPS 请求下发，localhost 自动豁免）；
+// HttpsRedirection 在未配置 https_port 时为无操作，部署配 https_port 后自动生效
+app.UseHsts();
+app.UseHttpsRedirection();
+
+// [SEC-K6] 安全响应头（X-Content-Type-Options / X-Frame-Options / CSP 等）
+app.UseMiddleware<SecurityHeadersMiddleware>();
+
+// [SEC-K8] 下载中心白名单 + 敏感文件拒绝 + 路径穿越防护（先于静态文件中间件）
+app.UseMiddleware<DownloadCenterGuardMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -222,7 +282,13 @@ app.UseStaticFiles(new Microsoft.AspNetCore.Builder.StaticFileOptions
 app.MapControllers();
 
 // SPA 路由回退：前端路由（如 /login、/admin/devices）交给 index.html 处理
-app.MapFallbackToFile("index.html");
+// [SEC-P2] 排除 /api：未知 API 路径不再被 SPA 兜底吞掉（返回 200 HTML），
+// 改为 JSON 404，避免调用方把"接口不存在"误判为"接口存在但异常"
+app.MapWhen(ctx => !ctx.Request.Path.StartsWithSegments("/api"), b =>
+{
+    b.MapFallbackToFile("index.html");
+});
+app.Map("/api/{**path}", () => Results.Json(new { error = "接口不存在" }, statusCode: 404));
 
 // SignalR Hub 路由（P3 阶段激活）
 // app.MapHub<DeviceHub>("/hubs/device");

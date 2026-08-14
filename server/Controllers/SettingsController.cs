@@ -71,26 +71,86 @@ public class SettingsController : ControllerBase
             if (!User.IsInRole("admin"))
                 return Forbid();
 
-            if (request.Server.WebPort > 0) await SetConfig("web_port", request.Server.WebPort.ToString());
-            if (request.Server.P2pPort > 0) await SetConfig("p2p_port", request.Server.P2pPort.ToString());
-            if (!string.IsNullOrEmpty(request.Server.BindAddress)) await SetConfig("bind_address", request.Server.BindAddress);
-            if (!string.IsNullOrEmpty(request.Server.RelayHost)) await SetConfig("relay_host", request.Server.RelayHost.Trim());
+            // [SEC-P1] 值域校验：端口范围、地址格式白名单，防非法配置值入库
+            if (request.Server.WebPort is > 0 and <= 65535)
+                await SetConfig("web_port", request.Server.WebPort.Value.ToString());
+            else if (request.Server.WebPort is not null)
+                return BadRequest(new { error = "Web 端口超出范围（1-65535）" });
+            if (request.Server.P2pPort is > 0 and <= 65535)
+                await SetConfig("p2p_port", request.Server.P2pPort.Value.ToString());
+            else if (request.Server.P2pPort is not null)
+                return BadRequest(new { error = "P2P 端口超出范围（1-65535）" });
+            if (!string.IsNullOrEmpty(request.Server.BindAddress))
+            {
+                if (!IsValidHostOrIp(request.Server.BindAddress))
+                    return BadRequest(new { error = "绑定地址格式无效" });
+                await SetConfig("bind_address", request.Server.BindAddress.Trim());
+            }
+            if (!string.IsNullOrEmpty(request.Server.RelayHost))
+            {
+                if (!IsValidHostOrIp(request.Server.RelayHost.Trim()))
+                    return BadRequest(new { error = "中继地址格式无效" });
+                await SetConfig("relay_host", request.Server.RelayHost.Trim());
+            }
         }
-        if (request.DataRetentionDays > 0)
-            await SetConfig("data_retention_days", request.DataRetentionDays.ToString());
-        if (!string.IsNullOrEmpty(request.BackupDir))
-            await SetConfig("backup_dir", request.BackupDir);
+
+        // [SEC-P1] 数据保留/备份目录为全局配置，仅管理员可设置（防家长改全局数据生命周期）
+        if (request.DataRetentionDays is > 0 || !string.IsNullOrEmpty(request.BackupDir))
+        {
+            if (!User.IsInRole("admin"))
+                return Forbid();
+
+            if (request.DataRetentionDays is > 0)
+            {
+                if (request.DataRetentionDays > 3650)
+                    return BadRequest(new { error = "数据保留天数超出范围（1-3650）" });
+                await SetConfig("data_retention_days", request.DataRetentionDays.Value.ToString());
+            }
+            if (!string.IsNullOrEmpty(request.BackupDir))
+            {
+                if (!IsValidBackupDir(request.BackupDir))
+                    return BadRequest(new { error = "备份目录格式无效" });
+                await SetConfig("backup_dir", request.BackupDir.Trim());
+            }
+        }
+
+        // [SEC-K10] 设置保存审计（不记录具体值）
+        await AuditAsync("settings.save", "Settings", null, null);
 
         return Ok(new { message = "设置已保存" });
     }
 
     /// <summary>
     /// POST /api/settings/backup — 导出备份（JSON）
+    /// [SEC-P1] 仅管理员可导出；设备导出剥离凭据字段（证书指纹/配对码/设备令牌），
+    /// 防止备份文件泄露成为身份锚点/令牌的侧信道。恢复后设备需重新配对（红线 R4.3）。
     /// </summary>
     [HttpPost("backup")]
     public async Task<IActionResult> Backup()
     {
-        var devices = await _db.Devices.AsNoTracking().ToListAsync();
+        // [SEC-P1] 备份含全量设备/用户/配置，仅管理员可导出
+        if (!User.IsInRole("admin"))
+            return Forbid();
+
+        var devices = await _db.Devices.AsNoTracking()
+            .Select(d => new
+            {
+                d.Id,
+                d.DeviceId,
+                d.DeviceName,
+                d.Platform,
+                d.MacAddress,
+                d.IpAddress,
+                d.PairStatus,
+                d.OnlineStatus,
+                d.OwnerUserId,
+                d.AppCategories,
+                d.LastResetOffsetMinutes,
+                d.LastResetDate,
+                d.TodayAdjustedMinutes,
+                d.IsActive,
+            })
+            .ToListAsync();
         var policies = await _db.Policies.AsNoTracking().ToListAsync();
         var announcements = await _db.Announcements.AsNoTracking().ToListAsync();
         var configs = await _db.SystemConfigs.AsNoTracking().ToDictionaryAsync(c => c.Key, c => c.Value);
@@ -102,12 +162,16 @@ public class SettingsController : ControllerBase
         {
             version = "3.0",
             exportedAt = DateTime.UtcNow,
+            // [SEC-P1] 备份中不含凭据字段（CertFingerprint/PairCode/DeviceToken/PasswordHash）
             configs,
             users,
             devices,
             policies,
             announcements,
         };
+
+        // [SEC-K10] 备份导出审计
+        await AuditAsync("settings.backup", "Settings", null, $"{{\"devices\":{devices.Count},\"users\":{users.Count}}}");
 
         return Ok(payload);
     }
@@ -191,6 +255,10 @@ public class SettingsController : ControllerBase
         }
 
         await _db.SaveChangesAsync();
+
+        // [SEC-K10] 恢复操作审计
+        await AuditAsync("settings.restore", "Settings", null, $"{{\"restored\":{restored}}}");
+
         return Ok(new { message = "数据已恢复", restored });
     }
 
@@ -209,6 +277,19 @@ public class SettingsController : ControllerBase
 
         await _db.UsageRecords.ExecuteDeleteAsync();
         await _db.DailySummaries.ExecuteDeleteAsync();
+
+        // [SEC-K10] 数据清除安全事件审计（审计日志本身保留，保证可追溯）
+        _db.AuditLogs.Add(new AuditLog
+        {
+            UserId = GetUserId(),
+            Action = "settings.clear_data",
+            TargetType = "Data",
+            TargetId = null,
+            Detail = $"{{\"usageRecords\":{usage},\"summaries\":{summaries}}}",
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+            CreatedAt = DateTime.UtcNow,
+        });
+        await _db.SaveChangesAsync();
 
         return Ok(new { message = "使用数据已清除", removedUsageRecords = usage, removedSummaries = summaries });
     }
@@ -242,6 +323,42 @@ public class SettingsController : ControllerBase
                  ?? User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
         return int.TryParse(claim, out var id) ? id : null;
     }
+
+    // [SEC-K10] 审计日志
+    private async Task AuditAsync(string action, string? targetType, int? targetId, string? detail)
+    {
+        _db.AuditLogs.Add(new AuditLog
+        {
+            UserId = GetUserId(),
+            Action = action,
+            TargetType = targetType,
+            TargetId = targetId,
+            Detail = detail,
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+            CreatedAt = DateTime.UtcNow,
+        });
+        await _db.SaveChangesAsync();
+    }
+
+    /// <summary>[SEC] 主机名/IP 白名单校验：字母数字/点/连字符/下划线；含冒号时按 IPv6 解析</summary>
+    private static bool IsValidHostOrIp(string value)
+    {
+        var v = value.Trim();
+        if (v.Length is < 1 or > 255) return false;
+        if (v.Contains(':'))
+            return System.Net.IPAddress.TryParse(v.Trim('[', ']'), out _); // 仅允许合法 IPv6
+        return v.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_');
+    }
+
+    /// <summary>[SEC] 备份目录校验：相对简单路径，禁止穿越（..）/绝对路径/盘符</summary>
+    private static bool IsValidBackupDir(string value)
+    {
+        var v = value.Trim();
+        if (v.Length is < 1 or > 128) return false;
+        if (v.Contains("..") || v.StartsWith('/') || v.StartsWith('\\') || v.Contains(':'))
+            return false;
+        return v.All(c => char.IsAsciiLetterOrDigit(c) || c is '/' or '\\' or '-' or '_' or '.');
+    }
 }
 
 /// <summary>
@@ -252,7 +369,7 @@ public class SettingsSaveRequest
     public NotificationSettingsDto? Notification { get; set; }
     public ServerSettingsDto? Server { get; set; }
     public int? DataRetentionDays { get; set; }
-    public string? BackupDir { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string? BackupDir { get; set; }
 }
 
 public class NotificationSettingsDto
@@ -267,8 +384,8 @@ public class ServerSettingsDto
 {
     public int? WebPort { get; set; }
     public int? P2pPort { get; set; }
-    public string? BindAddress { get; set; }
-    public string? RelayHost { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? BindAddress { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(128)] public string? RelayHost { get; set; }
 }
 
 /// <summary>
