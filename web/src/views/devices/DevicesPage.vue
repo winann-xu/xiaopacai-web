@@ -56,7 +56,10 @@ function showDetail(device: Device) { detailDevice.value = device; showDetailDia
 
 async function handleUnpair(device: Device) {
   try {
-    await ElMessageBox.confirm(`确定要解绑设备「${device.name}」吗？解绑后该设备将无法连接。`, '确认解绑', { type: 'warning' })
+    // [TASK-PRELAUNCH-FIX-SCAN] 解绑即释放归属：明确告知可用任意账号重新扫码绑定
+    await ElMessageBox.confirm(
+      `确定要解绑设备「${device.name}」吗？解绑后将清空设备归属，可用任意账号重新扫码绑定。`,
+      '确认解绑', { type: 'warning' })
     await deviceStore.unpairDevice(device.id)
     ElMessage.success('解绑成功')
   } catch { /* 取消 */ }
@@ -177,6 +180,8 @@ function fmtTime(iso?: string | null) { return iso ? new Date(iso).toLocaleStrin
           <el-descriptions-item label="IP 地址">{{ detailDevice.ipAddress }}</el-descriptions-item>
           <el-descriptions-item label="最后在线">{{ fmtTime(detailDevice.lastSeen) }}</el-descriptions-item>
           <el-descriptions-item label="配对时间">{{ fmtTime(detailDevice.pairedAt) }}</el-descriptions-item>
+          <!-- [TASK-PRELAUNCH-FIX-SCAN] 绑定账号显示（null=无归属），便于排查跨账号扫码 -->
+          <el-descriptions-item label="绑定账号">{{ detailDevice.ownerAccount || '—' }}</el-descriptions-item>
           <!-- [TASK-PRELAUNCH-P4] 需求 7 第 5 条：最近上报 + 采集延迟说明 -->
           <el-descriptions-item label="最近上报">
             {{ fmtTime(detailDevice.lastReportAt) }}

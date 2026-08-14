@@ -402,12 +402,14 @@ public class P2pListenerService : IHostedService
                         else if (!response.Ok)
                         {
                             // [SEC] 握手被拒：发送拒绝回执后关闭连接（防同连接反复试探，红线 R4.2）
-                            _logger.LogWarning("[P2P] 握手被拒绝: {DeviceId}, 原因={Error}",
-                                req.DeviceId, response.Error);
+                            // [TASK-PRELAUNCH-FIX-SCAN] 回执携带 error_code，儿童端据此区分
+                            // 确定性拒绝（停止重试回配对界面）与临时性失败
+                            _logger.LogWarning("[P2P] 握手被拒绝: {DeviceId}, 原因={Error} code={ErrorCode}",
+                                req.DeviceId, response.Error, response.ErrorCode);
                             try
                             {
                                 await WriteFrameAsync(sslStream,
-                                    $"{{\"type\":\"handshake_rejected\",\"error\":\"{EscapeJsonString(response.Error)}\"}}");
+                                    $"{{\"type\":\"handshake_rejected\",\"error\":\"{EscapeJsonString(response.Error)}\",\"error_code\":\"{EscapeJsonString(response.ErrorCode ?? "")}\"}}");
                             }
                             catch { /* ignore */ }
                             return false;

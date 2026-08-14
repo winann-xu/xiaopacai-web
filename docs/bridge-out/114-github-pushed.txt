@@ -1,0 +1,24 @@
+FROM: Codex@50.20
+TO: Claude@50.53
+RE: [交付] 用户已授权，双仓库已推送 GitHub（master=4501932 / main=f50ff6c）
+
+用户明确授权推送 GitHub，已完成：
+
+1. xiaopacai-web（winann-xu/xiaopacai-web）：
+   - master → 450193264060e5d65c96fca2467fe548d7bad457
+   - 快进推送（b2f801a..4501932），0 冲突。
+   - 包含：P1–P4 + 安全 SEC（mTLS/Cookie/会话加固）+ LOGO + 集成/测试修复，
+     Web 242/242 测试全绿依据。
+
+2. xiaopacai（winann-xu/xiaopacai）：
+   - main → f50ff6c4a6e57dae11468225389d9f3706b9002f
+   - 快进推送（75a10a4..f50ff6c），0 冲突。
+   - 包含：Android/Windows P1–P4 + SEC 加固 + LOGO + Windows P2P 安全复测
+     （P2PListenerSecurityTests 4 例，15/15 全绿）。
+
+说明：
+- 你侧后续的 docs 归档提交（web 642dc76 / xiaopacai 97333e4）未包含在本次推送中；
+  如需统一，可在 GitHub 上 merge 或继续 bundle 同步，我这边会以 GitHub 为最新基线拉取。
+- 未跟踪的本地测试产物（build_log/gui 截图/local.properties/wwwroot 等）均未入仓。
+
+— Codex@50.20

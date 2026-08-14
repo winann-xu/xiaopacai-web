@@ -21,6 +21,9 @@ export interface Device {
   lastResetOffsetMinutes?: number
   lastResetDate?: string | null
   lastReportAt?: string | null
+  pairStatus?: string
+  // [TASK-PRELAUNCH-FIX-SCAN] 绑定账号（null=无归属，跨账号扫码排查用）
+  ownerAccount?: string | null
 }
 
 export const useDeviceStore = defineStore('devices', () => {

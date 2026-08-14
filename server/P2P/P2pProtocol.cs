@@ -105,6 +105,14 @@ public class HandshakeResponse
     [JsonPropertyName("error")]
     public string? Error { get; set; }
 
+    /// <summary>
+    /// [TASK-PRELAUNCH-FIX-SCAN] 确定性错误码（ok=false 时）：
+    /// unpaired | revoked | device_owned_by_other | fingerprint_mismatch | invalid_pairing_code 等；
+    /// 儿童端据此区分"确定性拒绝（停止重试回配对界面）"与"临时性失败（可重试）"。
+    /// </summary>
+    [JsonPropertyName("error_code")]
+    public string? ErrorCode { get; set; }
+
     /// <summary>配对状态：unpaired | paired | revoked</summary>
     [JsonPropertyName("pair_status")]
     public string PairStatus { get; set; } = "unpaired";
