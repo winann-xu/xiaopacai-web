@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS devices (
     -- OPT12 需求 1/3：应用分类配置（JSON 数组）+ 绑定家长账号（配对确认时绑定）
     owner_user_id   TEXT    DEFAULT NULL,                   -- 绑定家长账号（用户 ID 字符串，可空）
     app_categories  TEXT    DEFAULT NULL,                   -- 应用分类 JSON 数组 [{packageName,appName,category}]
+    pending_reset_at TEXT   DEFAULT NULL,                   -- 待下发的每日限额重置时间（UTC ISO8601）
     is_active       INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))

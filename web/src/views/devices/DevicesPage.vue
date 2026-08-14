@@ -3,16 +3,20 @@
 import { ref, onMounted, computed } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import type { Device } from '@/stores/devices'
+import { pairingApi } from '@/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Monitor } from '@element-plus/icons-vue'
+import { toDataURL as qrToDataURL } from 'qrcode'
 
 const deviceStore = useDeviceStore()
 const searchText = ref('')
-const showPairDialog = ref(false)
-const pairingCode = ref('')
-const manualIp = ref('')
 const showDetailDialog = ref(false)
 const detailDevice = ref<Device | null>(null)
+const showBindQr = ref(false)
+const bindLoading = ref(false)
+const bindPairCode = ref('')
+const bindQrDataUrl = ref('')
+const bindExpiresAt = ref('')
 
 const filteredDevices = computed(() => {
   if (!searchText.value) return deviceStore.devices
@@ -23,14 +27,22 @@ const filteredDevices = computed(() => {
 
 onMounted(() => { deviceStore.fetchDevices() })
 
-function generatePairingCode() {
-  pairingCode.value = String(Math.floor(100000 + Math.random() * 900000))
-  showPairDialog.value = true
-}
-
-function confirmPair() {
-  ElMessage.success(`配对码 ${pairingCode.value} 已生成，请在儿童设备上输入`)
-  showPairDialog.value = false
+// 生成儿童端扫码绑定二维码（服务端配对码，归属当前家长账号）
+async function openBindQr() {
+  bindLoading.value = true
+  showBindQr.value = true
+  bindPairCode.value = ''
+  bindQrDataUrl.value = ''
+  try {
+    const res = await pairingApi.bindingQr()
+    bindPairCode.value = res.data.pairCode
+    bindExpiresAt.value = res.data.expiresAt
+    bindQrDataUrl.value = await qrToDataURL(res.data.qrContent, { width: 280, margin: 1 })
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '生成二维码失败')
+  } finally {
+    bindLoading.value = false
+  }
 }
 
 function showDetail(device: Device) { detailDevice.value = device; showDetailDialog.value = true }
@@ -53,7 +65,7 @@ function statusText(s: string) { return s === 'online' ? '在线' : s === 'recon
       <h2 class="page-title">设备管理</h2>
       <div class="page-actions">
         <el-input v-model="searchText" placeholder="搜索设备" :prefix-icon="Search" clearable style="width: 220px" />
-        <el-button type="primary" :icon="Plus" @click="generatePairingCode">添加设备</el-button>
+        <el-button type="primary" :icon="Plus" @click="openBindQr">添加设备</el-button>
       </div>
     </div>
 
@@ -83,19 +95,21 @@ function statusText(s: string) { return s === 'online' ? '在线' : s === 'recon
       </el-card>
     </div>
 
-    <!-- 配对弹窗 -->
-    <el-dialog v-model="showPairDialog" title="添加设备" width="460px">
-      <el-form label-position="top">
-        <el-form-item label="配对码">
-          <el-input v-model="pairingCode" readonly
-            style="font-size: 24px; letter-spacing: 6px; text-align: center; font-weight: 700" />
-          <el-button size="small" style="margin-top:8px" @click="pairingCode = String(Math.floor(100000 + Math.random() * 900000))">重新生成</el-button>
-        </el-form-item>
-        <el-form-item label="手动指定 IP（可选）"><el-input v-model="manualIp" placeholder="192.168.1.xxx" /></el-form-item>
-      </el-form>
+    <!-- 儿童端扫码绑定 -->
+    <el-dialog v-model="showBindQr" title="扫码绑定儿童端" width="420px">
+      <div v-loading="bindLoading" class="bind-qr-body">
+        <p class="bind-hint">用儿童端「连接家长端 → 扫码」扫描下方二维码，即可把儿童端绑定到你的账号。</p>
+        <div v-if="bindQrDataUrl" class="bind-qr-img">
+          <img :src="bindQrDataUrl" alt="绑定二维码" />
+        </div>
+        <div v-if="bindPairCode" class="bind-code">
+          <span>配对码</span>
+          <strong>{{ bindPairCode }}</strong>
+          <em>5 分钟内有效</em>
+        </div>
+      </div>
       <template #footer>
-        <el-button @click="showPairDialog = false">取消</el-button>
-        <el-button type="primary" :disabled="!pairingCode" @click="confirmPair">确认</el-button>
+        <el-button @click="showBindQr = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -139,6 +153,15 @@ function statusText(s: string) { return s === 'online' ? '在线' : s === 'recon
 .device-meta, .device-ip { font-size: 12px; color: var(--el-text-color-secondary); margin: 0 0 2px; }
 .device-usage { font-size: 12px; color: var(--el-text-color-secondary); margin: 4px 0 0; }
 .card-actions { display: flex; justify-content: flex-end; gap: 4px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--el-border-color-lighter); }
+
+/* 扫码绑定二维码（基线） */
+.bind-qr-body { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.bind-hint { font-size: 13px; color: var(--el-text-color-secondary); text-align: center; margin: 0; }
+.bind-qr-img { padding: 12px; border: 1px dashed var(--el-border-color); border-radius: 8px; }
+.bind-qr-img img { display: block; }
+.bind-code { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--el-text-color-secondary); }
+.bind-code strong { font-size: 22px; letter-spacing: 4px; color: var(--el-color-primary); }
+.bind-code em { font-size: 12px; font-style: normal; color: var(--el-text-color-placeholder); }
 
 /* [TASK-PRELAUNCH-P1] 移动端：页头堆叠、搜索全宽、单列卡片、按钮触控区 */
 @media (max-width: 768px) {

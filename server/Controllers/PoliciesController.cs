@@ -109,6 +109,46 @@ public class PoliciesController : ControllerBase
             : BadRequest(new { error = "设备不在线，策略已保存，将在设备重连后自动下发" });
     }
 
+    /// <summary>
+    /// POST /api/policies/{deviceId}/reset-limit — 重置当日使用限额（重新开始计时）
+    /// 说明：仅重置“今日已用”的计时基准；重置前已产生的使用记录仍保留，报告照常统计
+    /// </summary>
+    [HttpPost("{deviceId:int}/reset-limit")]
+    public async Task<IActionResult> ResetLimit(int deviceId)
+    {
+        var device = await _db.Devices.FindAsync(deviceId);
+        if (device == null)
+            return NotFound(new { error = "设备不存在" });
+
+        var resetAt = DateTime.UtcNow;
+        var resetAtUnix = new DateTimeOffset(resetAt).ToUnixTimeSeconds();
+
+        // 先挂起待发标记（设备离线时保留，重连握手补推）
+        device.PendingResetAt = resetAt;
+        await _db.SaveChangesAsync();
+
+        // 设备在线则立即推送
+        var json = _messageHandler.BuildLimitResetMessage(device.DeviceId, resetAtUnix);
+        var pushed = await _p2p.SendToDevice(device.DeviceId, json);
+        if (pushed)
+        {
+            device.PendingResetAt = null;
+            await _db.SaveChangesAsync();
+        }
+
+        await AuditAsync("policy.reset_limit", "Device", deviceId,
+            $"{{\"pushed\":{pushed},\"resetAt\":{resetAtUnix}}}");
+
+        return Ok(new
+        {
+            message = pushed
+                ? "当日限额已重置，儿童端已重新开始计时"
+                : "设备离线，重置指令已挂起，儿童端重连后自动生效",
+            pushed,
+            resetAt = resetAtUnix,
+        });
+    }
+
     // ========== helpers ==========
 
     private async Task<bool> TryPush(Device device, Policy? policy)

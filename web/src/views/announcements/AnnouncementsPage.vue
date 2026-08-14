@@ -14,7 +14,10 @@ const filterStatus = ref<string>('all')
 const filteredAnnouncements = computed(() =>
   filterStatus.value === 'all' ? announcementStore.announcements : announcementStore.announcements.filter(a => a.status === filterStatus.value))
 
-onMounted(() => { announcementStore.fetchAnnouncements() })
+onMounted(async () => {
+  try { await announcementStore.fetchAnnouncements() }
+  catch { ElMessage.error('公告加载失败，请刷新重试') }
+})
 
 function openCreate() {
   editingId.value = null
@@ -90,6 +93,12 @@ function sText(s: string) { return s==='published'?'已发布':s==='draft'?'草�
           </template>
           <template v-else-if="ann.status==='published'">
             <el-button size="small" :icon="Remove" text type="warning" @click="handleRevoke(ann)">撤回</el-button>
+            <el-button size="small" :icon="Delete" text type="danger" @click="handleDelete(ann)">删除</el-button>
+          </template>
+          <template v-else-if="ann.status==='revoked'">
+            <el-button size="small" :icon="Edit" text type="primary" @click="openEdit(ann)">编辑</el-button>
+            <el-button size="small" :icon="Promotion" text type="success" @click="handlePublish(ann)">重新发布</el-button>
+            <el-button size="small" :icon="Delete" text type="danger" @click="handleDelete(ann)">删除</el-button>
           </template>
         </div>
       </el-card>

@@ -41,6 +41,16 @@
           <p class="dl-meta">期待上线</p>
           <el-button size="large" class="dl-btn" disabled>期待上线</el-button>
         </el-card>
+
+        <el-card class="dl-card" shadow="hover">
+          <div class="dl-icon">🛠️</div>
+          <h3>电脑一键授权脚本</h3>
+          <p class="dl-desc">孩子手机快速开通守护权限<br />Windows · 双击运行 · 约30秒</p>
+          <p class="dl-meta">BAT · 使用方法见小趴菜家长端首页</p>
+          <el-button type="success" size="large" class="dl-btn" @click="download('/downloads/xiaopacai-adb-grant.bat')">
+            下载脚本
+          </el-button>
+        </el-card>
       </div>
 
       <footer class="dl-footer">

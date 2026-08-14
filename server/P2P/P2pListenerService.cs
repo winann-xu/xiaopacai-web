@@ -281,7 +281,8 @@ public class P2pListenerService : IHostedService
                         var req = DeserializePayload<HandshakeRequest>(envelope.Payload);
                         if (req == null) break;
 
-                        var (response, policyPushJson, dbDeviceId) = await _messageHandler.HandleHandshake(req, peerFingerprint, remoteEndPoint);
+                        var (response, policyPushJson, resetPushJson, dbDeviceId) =
+                            await _messageHandler.HandleHandshake(req, peerFingerprint, remoteEndPoint);
 
                         if (response.Ok)
                         {
@@ -300,6 +301,17 @@ public class P2pListenerService : IHostedService
                         if (response.Ok && !string.IsNullOrEmpty(policyPushJson) && deviceIdHolder.Value != null)
                         {
                             await WriteFrameAsync(sslStream, policyPushJson);
+                            // [FIX] 补推最近公告：儿童端离线期间发布的公告，重连后也能收到
+                            var annJson = await _messageHandler.BuildAnnouncementSyncJson(deviceIdHolder.Value);
+                            if (!string.IsNullOrEmpty(annJson))
+                            {
+                                await WriteFrameAsync(sslStream, annJson);
+                            }
+                            // [REQ] 离线期间家长点击“重置当日限额” → 重连后补推
+                            if (!string.IsNullOrEmpty(resetPushJson))
+                            {
+                                await WriteFrameAsync(sslStream, resetPushJson);
+                            }
                         }
                         else if (!response.Ok)
                         {

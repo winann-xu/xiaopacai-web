@@ -46,6 +46,7 @@ public class PairingController : ControllerBase
             PairCode = pairCode,
             PairMethod = request?.Method ?? "manual",
             PairStatus = "pending",
+            OwnerUserId = GetUserId()?.ToString(),
             ExpiresAt = DateTime.UtcNow.AddMinutes(5),
             CreatedAt = DateTime.UtcNow,
         };
@@ -58,6 +59,57 @@ public class PairingController : ControllerBase
         return Ok(new
         {
             pairCode = pairCode,
+            expiresAt = pairingInfo.ExpiresAt,
+            expiresInSeconds = 300,
+        });
+    }
+
+    /// <summary>
+    /// POST /api/pairing/binding-qr — 生成儿童端扫码绑定二维码内容
+    /// 家长在 Web 登录后展示二维码，儿童端扫码即绑定到当前家长账号。
+    /// </summary>
+    [HttpPost("binding-qr")]
+    public async Task<IActionResult> BindingQr()
+    {
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"pairing-code:{clientIp}", 5, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
+
+        var pairCode = GenerateRandomCode();
+        var pairingInfo = new PairingInfo
+        {
+            PairCode = pairCode,
+            PairMethod = "scan",
+            PairStatus = "pending",
+            OwnerUserId = GetUserId()?.ToString(),
+            ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+            CreatedAt = DateTime.UtcNow,
+        };
+        _db.PairingInfos.Add(pairingInfo);
+        await _db.SaveChangesAsync();
+
+        // [REQ] 中继地址优先读配置（LAN 用内网 IP；跨网用公网域名并需转发 9527），未配置回退请求 Host
+        var relayHostConfig = await _db.SystemConfigs
+            .FirstOrDefaultAsync(c => c.Key == "relay_host");
+        var host = string.IsNullOrWhiteSpace(relayHostConfig?.Value)
+            ? Request.Host.Host
+            : relayHostConfig!.Value.Trim();
+        var qrContent = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            type = "web_relay",
+            host,
+            port = 9527,
+            pairingCode = pairCode,
+            fingerprint = ""
+        });
+
+        _logger.LogInformation("[Pairing] 生成绑定二维码: {Code} host={Host}", pairCode, host);
+        return Ok(new
+        {
+            pairCode,
+            host,
+            port = 9527,
+            qrContent,
             expiresAt = pairingInfo.ExpiresAt,
             expiresInSeconds = 300,
         });
@@ -139,10 +191,10 @@ public class PairingController : ControllerBase
             device.CertFingerprint = request.CertFingerprint;
         if (!string.IsNullOrEmpty(request.IpAddress))
             device.IpAddress = request.IpAddress;
-        // [TASK-OPT-12-P4-DEEPEN] 绑定当前家长账号到设备
-        var currentUserId = GetUserId();
-        if (currentUserId != null && string.IsNullOrEmpty(device.OwnerUserId))
-            device.OwnerUserId = currentUserId.ToString();
+        // [REQ] 绑定配对码归属账号到设备（无归属时回退当前登录账号）
+        var ownerId = pairingInfo.OwnerUserId ?? GetUserId()?.ToString();
+        if (ownerId != null && string.IsNullOrEmpty(device.OwnerUserId))
+            device.OwnerUserId = ownerId;
         device.UpdatedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync();

@@ -3,7 +3,7 @@
 import { ref, reactive, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { ticketApi } from '@/api'
+import { authApi, ticketApi } from '@/api'
 import { ElMessage } from 'element-plus'
 import {
   UserFilled, Lock, Key,
@@ -22,6 +22,43 @@ const loginForm = reactive({
 })
 const loading = ref(false)
 const loginError = ref('')
+
+// ==================== 注册（邮箱账号） ====================
+const registerMode = ref(false)
+const registerForm = reactive({
+  email: '',
+  displayName: '',
+  password: '',
+  confirmPassword: '',
+})
+const registerLoading = ref(false)
+const registerError = ref('')
+
+async function handleRegister() {
+  if (!registerForm.email.includes('@')) { ElMessage.warning('请输入有效邮箱'); return }
+  if (registerForm.password.length < 6) { ElMessage.warning('密码至少 6 位'); return }
+  if (registerForm.password !== registerForm.confirmPassword) { ElMessage.warning('两次密码不一致'); return }
+  registerLoading.value = true
+  registerError.value = ''
+  try {
+    const res = await authApi.register(
+      registerForm.email,
+      registerForm.password,
+      registerForm.displayName || undefined,
+    )
+    await auth.loginWithAuthResponse(res.data)
+    localStorage.setItem('user_role', auth.user?.role || 'parent')
+    ElMessage.success('注册成功，已自动登录')
+    const redirect = (route.query.redirect as string) || '/dashboard'
+    router.push(redirect)
+  } catch (e: any) {
+    const msg = e.response?.data?.error || '注册失败，请稍后重试'
+    registerError.value = msg
+    ElMessage.error(msg)
+  } finally {
+    registerLoading.value = false
+  }
+}
 
 // 登录表单校验规则
 const rules = {
@@ -55,6 +92,7 @@ async function handleLogin() {
 
 // 快速填入演示账号
 function fillDemo(role: 'admin' | 'parent') {
+  registerMode.value = false
   if (role === 'admin') {
     loginForm.username = 'admin'
     loginForm.password = 'admin123'
@@ -331,6 +369,7 @@ onBeforeUnmount(() => {
         <!-- ===== 密码登录 ===== -->
         <el-tab-pane label="密码登录" name="password">
           <el-form
+            v-if="!registerMode"
             ref="formRef"
             :model="loginForm"
             :rules="rules"
@@ -339,10 +378,10 @@ onBeforeUnmount(() => {
             class="login-form"
             @submit.prevent="handleLogin"
           >
-            <el-form-item label="用户名" prop="username">
+            <el-form-item label="用户名 / 邮箱" prop="username">
               <el-input
                 v-model="loginForm.username"
-                placeholder="请输入用户名"
+                placeholder="请输入用户名或邮箱"
                 :prefix-icon="UserFilled"
                 autocomplete="username"
               />
@@ -381,9 +420,86 @@ onBeforeUnmount(() => {
             </el-form-item>
           </el-form>
 
+          <!-- 注册（邮箱账号） -->
+          <el-form
+            v-else
+            :model="registerForm"
+            label-position="top"
+            size="large"
+            class="login-form"
+            @submit.prevent="handleRegister"
+          >
+            <el-form-item label="邮箱" required>
+              <el-input
+                v-model="registerForm.email"
+                placeholder="请输入邮箱（作为唯一登录账号）"
+                autocomplete="email"
+              />
+            </el-form-item>
+
+            <el-form-item label="昵称（可选）">
+              <el-input
+                v-model="registerForm.displayName"
+                placeholder="家长称呼"
+                :prefix-icon="UserFilled"
+              />
+            </el-form-item>
+
+            <el-form-item label="密码" required>
+              <el-input
+                v-model="registerForm.password"
+                type="password"
+                placeholder="至少 6 位"
+                :prefix-icon="Lock"
+                show-password
+                autocomplete="new-password"
+              />
+            </el-form-item>
+
+            <el-form-item label="确认密码" required>
+              <el-input
+                v-model="registerForm.confirmPassword"
+                type="password"
+                placeholder="再次输入密码"
+                :prefix-icon="Lock"
+                show-password
+                autocomplete="new-password"
+              />
+            </el-form-item>
+
+            <el-alert
+              v-if="registerError"
+              :title="registerError"
+              type="error"
+              show-icon
+              :closable="true"
+              @close="registerError = ''"
+              style="margin-bottom: 12px"
+            />
+
+            <el-form-item>
+              <el-button
+                type="primary"
+                :loading="registerLoading"
+                style="width: 100%"
+                @click="handleRegister"
+              >
+                {{ registerLoading ? '注册中...' : '注册并登录' }}
+              </el-button>
+            </el-form-item>
+          </el-form>
+
           <!-- 忘记密码入口（需求 12） -->
           <div class="login-extra">
             <el-link type="primary" :underline="false" @click="openResetFlow">忘记密码？</el-link>
+            <el-link
+              type="primary"
+              :underline="false"
+              style="margin-left: 16px"
+              @click="registerMode = !registerMode; registerError = ''"
+            >
+              {{ registerMode ? '已有账号？返回登录' : '没有账号？立即注册' }}
+            </el-link>
           </div>
 
           <!-- 演示账号 -->

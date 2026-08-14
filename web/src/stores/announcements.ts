@@ -25,11 +25,9 @@ export const useAnnouncementStore = defineStore('announcements', () => {
     try {
       const res = await announcementApi.list()
       announcements.value = res.data
-    } catch {
-      // P3 mock
-      if (!announcements.value.length) {
-        announcements.value = getMockAnnouncements()
-      }
+    } catch (e) {
+      announcements.value = []
+      throw e
     } finally {
       loading.value = false
     }
@@ -72,24 +70,3 @@ export const useAnnouncementStore = defineStore('announcements', () => {
     deleteAnnouncement, publishAnnouncement, revokeAnnouncement,
   }
 })
-
-// P3 mock
-function getMockAnnouncements(): Announcement[] {
-  return [
-    {
-      id: 1, title: '今日使用时长已调整', content: '各位小朋友，今天的屏幕时间已调整为 2 小时。请合理安排学习和娱乐时间。',
-      priority: 'normal', status: 'published', validUntil: '2026-08-12T00:00:00Z',
-      createdAt: '2026-08-11T08:00:00Z', publishedAt: '2026-08-11T08:00:00Z',
-    },
-    {
-      id: 2, title: '系统维护通知', content: '今晚 22:00-23:00 系统将进行维护更新，期间可能无法正常使用。',
-      priority: 'important', status: 'published', validUntil: '2026-08-12T23:00:00Z',
-      createdAt: '2026-08-10T20:00:00Z', publishedAt: '2026-08-10T20:00:00Z',
-    },
-    {
-      id: 3, title: '暑假学习计划', content: '暑假期间每日学习类 APP 不限时，鼓励大家多多学习！',
-      priority: 'urgent', status: 'draft', validUntil: '2026-09-01T00:00:00Z',
-      createdAt: '2026-08-09T12:00:00Z',
-    },
-  ]
-}

@@ -3,7 +3,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import { usePolicyStore, type Policy } from '@/stores/policies'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Promotion } from '@element-plus/icons-vue'
 
 const deviceStore = useDeviceStore()
@@ -69,6 +69,26 @@ async function savePolicy() {
     ElMessage.success('策略已保存并下发')
   } catch { ElMessage.error('保存失败') }
 }
+
+// [REQ] 重置当日使用限额：儿童端重新开始计时；重置前用量仍保留在报告中
+async function resetLimit() {
+  if (!selectedDeviceId.value) { ElMessage.warning('请先选择设备'); return }
+  try {
+    await ElMessageBox.confirm(
+      '确认重置该设备的当日使用限额？\n重置后从 0 重新开始计时，但重置前已使用的时长仍会计入使用报告。',
+      '重置当日限额',
+      { type: 'warning', confirmButtonText: '确认重置', cancelButtonText: '取消' }
+    )
+  } catch { return }
+  try {
+    const res = await policyStore.resetLimit(selectedDeviceId.value)
+    if (res?.pushed) {
+      ElMessage.success('当日限额已重置，儿童端已重新开始计时')
+    } else {
+      ElMessage.warning('设备当前离线，重置指令已挂起，儿童端重连后自动生效')
+    }
+  } catch { ElMessage.error('重置失败，请稍后重试') }
+}
 </script>
 
 <template>
@@ -88,19 +108,27 @@ async function savePolicy() {
         type="warning" show-icon :closable="false" style="margin-bottom:16px" />
 
       <div class="policy-grid">
-        <el-card shadow="hover"><template #header>每日使用限额</template>
+        <el-card shadow="hover">
+          <template #header>
+            <div class="card-header-row">
+              <span>每日使用限额</span>
+              <el-button type="warning" plain size="small" :loading="policyStore.resetting"
+                :disabled="!selectedDevice" @click="resetLimit">重置当日限额</el-button>
+            </div>
+          </template>
           <div class="slider-block">
             <el-slider v-model="dailyLimit" :min="30" :max="480" :step="10" show-input
               :marks="{ 30:'30min', 120:'2h', 240:'4h', 480:'8h' }" @change="isDirty = true" />
             <p class="hint">当前：每天 {{ dailyLimit }} 分钟 ({{ Math.floor(dailyLimit/60) }}h {{ dailyLimit%60 }}min)</p>
+            <p class="hint">重置后从 0 重新计时；重置前已使用的时长仍会计入使用报告</p>
           </div>
         </el-card>
 
         <el-card shadow="hover"><template #header>就寝时段</template>
           <div class="time-range">
-            <el-time-picker v-model="bedtimeStart" format="HH:mm" placeholder="开始" @change="isDirty = true" />
+            <el-time-picker v-model="bedtimeStart" format="HH:mm" value-format="HH:mm" placeholder="开始" @change="isDirty = true" />
             <span class="time-sep">至</span>
-            <el-time-picker v-model="bedtimeEnd" format="HH:mm" placeholder="结束" @change="isDirty = true" />
+            <el-time-picker v-model="bedtimeEnd" format="HH:mm" value-format="HH:mm" placeholder="结束" @change="isDirty = true" />
           </div>
           <p class="hint">就寝时段内设备将自动锁定</p>
         </el-card>
@@ -161,6 +189,7 @@ async function savePolicy() {
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
 .page-title { font-size: 22px; font-weight: 600; margin: 0; }
 .page-actions { display: flex; gap: 8px; align-items: center; }
+.card-header-row { display: flex; justify-content: space-between; align-items: center; }
 .policy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 16px; }
 .slider-block { padding: 0 8px; }
 .hint { font-size: 12px; color: var(--el-text-color-secondary); margin: 8px 0 0; }

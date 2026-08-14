@@ -27,6 +27,7 @@ export const usePolicyStore = defineStore('policies', () => {
   const policies = ref<Record<number, Policy>>({})
   const loading = ref(false)
   const saving = ref(false)
+  const resetting = ref(false)
   const error = ref<string | null>(null)
 
   // ---- actions ----
@@ -60,13 +61,28 @@ export const usePolicyStore = defineStore('policies', () => {
     }
   }
 
+  // [REQ] 重置当日限额：调用服务端接口并下发 limit_reset 到儿童端
+  async function resetLimit(deviceId: number) {
+    resetting.value = true
+    error.value = null
+    try {
+      const res = await policyApi.resetLimit(deviceId)
+      return res.data
+    } catch (e: any) {
+      error.value = e.response?.data?.error || '重置当日限额失败'
+      throw e
+    } finally {
+      resetting.value = false
+    }
+  }
+
   function getPolicy(deviceId: number): Policy | undefined {
     return policies.value[deviceId]
   }
 
   return {
-    policies, loading, saving, error,
-    fetchPolicy, savePolicy, getPolicy,
+    policies, loading, saving, resetting, error,
+    fetchPolicy, savePolicy, resetLimit, getPolicy,
   }
 })
 

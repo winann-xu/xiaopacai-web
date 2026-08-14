@@ -47,7 +47,17 @@ public class DevicesController : ControllerBase
     {
         var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
 
-        var devices = await _db.Devices
+        var query = _db.Devices.AsQueryable();
+
+        // [REQ] 账号隔离：家长只看自己绑定的设备，管理员看全部
+        var currentUserId = GetUserId()?.ToString();
+        var isAdmin = User.IsInRole("admin");
+        if (!isAdmin && currentUserId != null)
+        {
+            query = query.Where(d => d.OwnerUserId == currentUserId);
+        }
+
+        var devices = await query
             .Include(d => d.Policy)
             .OrderByDescending(d => d.CreatedAt)
             .ToListAsync();
@@ -115,7 +125,7 @@ public class DevicesController : ControllerBase
     }
 
     /// <summary>
-    /// DELETE /api/devices/{id} — 解绑设备（软删除：revoked + 停用）
+    /// DELETE /api/devices/{id} — 解绑设备（软解绑：unpaired，可重新扫码绑定）
     /// </summary>
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Unpair(int id)
@@ -124,8 +134,8 @@ public class DevicesController : ControllerBase
         if (device == null)
             return NotFound(new { error = "设备不存在" });
 
-        device.PairStatus = "revoked";
-        device.IsActive = false;
+        device.PairStatus = "unpaired";
+        device.IsActive = true;
         device.OnlineStatus = "offline";
         device.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();

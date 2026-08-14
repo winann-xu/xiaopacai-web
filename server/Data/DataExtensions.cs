@@ -34,8 +34,8 @@ public static class DataExtensions
         // 3. 种子数据（仅当 users 表为空时）
         if (!await db.Users.AnyAsync())
         {
-            await SeedDefaultAdmin(db, passwordHasher);
-            logger.LogInformation("[DB] 种子数据已插入（默认管理员）");
+            await SeedDefaultUsers(db, passwordHasher);
+            logger.LogInformation("[DB] 种子数据已插入（默认管理员 + 默认家长）");
         }
 
         // 4. 默认系统配置（仅当配置表为空时）
@@ -137,6 +137,10 @@ public static class DataExtensions
         await TryAddColumnAsync(db, "devices", "owner_user_id", "TEXT NULL", logger);
         // [TASK-OPT-12-P4-DEEPEN] 设备级访问令牌（诊断上报鉴权）
         await TryAddColumnAsync(db, "devices", "device_token", "TEXT NULL", logger);
+        // [REQ] 每日限额重置：离线时挂起待下发，重连握手补推
+        await TryAddColumnAsync(db, "devices", "PendingResetAt", "TEXT NULL", logger);
+        // [REQ] 配对码归属账号：扫码/中继绑定时写入设备 owner
+        await TryAddColumnAsync(db, "pairing_info", "OwnerUserId", "TEXT NULL", logger);
     }
 
     /// <summary>
@@ -164,17 +168,31 @@ public static class DataExtensions
         }
     }
 
-    private static async Task SeedDefaultAdmin(AppDbContext db, IPasswordHasher hasher)
+    private static async Task SeedDefaultUsers(AppDbContext db, IPasswordHasher hasher)
     {
-        var (hash, salt) = hasher.HashPassword("admin123");
+        var (adminHash, adminSalt) = hasher.HashPassword("admin123");
+        var (parentHash, parentSalt) = hasher.HashPassword("parent123");
 
         db.Users.Add(new User
         {
             Username = "admin",
-            PasswordHash = hash,
-            PasswordSalt = salt,
+            PasswordHash = adminHash,
+            PasswordSalt = adminSalt,
             DisplayName = "管理员",
             Role = "admin",
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        });
+
+        db.Users.Add(new User
+        {
+            Username = "parent",
+            PasswordHash = parentHash,
+            PasswordSalt = parentSalt,
+            DisplayName = "家长",
+            Role = "parent",
+            Email = "parent@xiaopacai.local",
             IsActive = true,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,

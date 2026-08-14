@@ -54,9 +54,11 @@ public class AuthController : ControllerBase
             return StatusCode(429, new { error = "登录失败次数过多，请 1 小时后再试" });
         }
 
-        // 查找用户
-        var user = await _db.Users
-            .FirstOrDefaultAsync(u => u.Username == request.Username && u.IsActive);
+        // 查找用户（支持用户名或邮箱登录）
+        var loginName = request.Username.Trim();
+        var user = await _db.Users.FirstOrDefaultAsync(u =>
+            u.IsActive && (u.Username == loginName ||
+                (loginName.Contains("@") && u.Email != null && u.Email.ToLower() == loginName.ToLower())));
 
         if (user == null)
         {
@@ -115,6 +117,76 @@ public class AuthController : ControllerBase
         };
 
         // 同时返回 profile 与 user 字段，兼容新旧前端调用
+        return Ok(new
+        {
+            accessToken,
+            refreshToken,
+            expiresAt = accessExpiry,
+            tokenType = "Bearer",
+            profile,
+            user = profile,
+        });
+    }
+
+    /// <summary>
+    /// POST /api/auth/register — 家长邮箱注册（个人唯一账号，无需管理员预置）
+    /// </summary>
+    [HttpPost("register")]
+    [AllowAnonymous]
+    public async Task<IActionResult> Register([FromBody] RegisterRequest request)
+    {
+        if (!ModelState.IsValid)
+            return BadRequest(ModelState);
+
+        var email = request.Email.Trim().ToLower();
+        if (string.IsNullOrWhiteSpace(email))
+            return BadRequest(new { error = "邮箱不能为空" });
+        if (request.Password.Length < 6)
+            return BadRequest(new { error = "密码至少 6 位" });
+
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"register:ip:{clientIp}", 5, 60))
+            return StatusCode(429, new { error = "注册过于频繁，请稍后再试" });
+
+        // 邮箱唯一：注册账号的 Username 即邮箱，Email 冗余存储
+        var exists = await _db.Users.AnyAsync(u =>
+            u.Username == email || (u.Email != null && u.Email.ToLower() == email));
+        if (exists)
+            return BadRequest(new { error = "该邮箱已注册" });
+
+        var (hash, salt) = _hasher.HashPassword(request.Password);
+        var user = new User
+        {
+            Username = email,
+            Email = email,
+            DisplayName = string.IsNullOrWhiteSpace(request.DisplayName) ? email : request.DisplayName.Trim(),
+            PasswordHash = hash,
+            PasswordSalt = salt,
+            Role = "parent",
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        _db.Users.Add(user);
+        await _db.SaveChangesAsync();
+
+        await AuditAsync("register", user.Id, null, null, null,
+            $"{{\"email\":\"{email}\"}}");
+        _logger.LogInformation("[Auth] 家长账号已注册: {Email}", email);
+
+        // 注册即登录：直接签发 Token
+        var (accessToken, refreshToken, accessExpiry, refreshExpiry) =
+            _jwt.GenerateTokens(user.Id, user.Username, user.Role);
+        await _jwt.StoreRefreshToken(user.Id, refreshToken, refreshExpiry);
+
+        var profile = new UserProfile
+        {
+            Id = user.Id,
+            Username = user.Username,
+            DisplayName = user.DisplayName,
+            Role = user.Role,
+            Email = user.Email,
+        };
         return Ok(new
         {
             accessToken,

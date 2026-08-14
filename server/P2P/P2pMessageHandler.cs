@@ -32,7 +32,7 @@ public class P2pMessageHandler
     /// 家长端中继连接（deviceId 以 "parent-" 开头且 relay=true）：跳过 devices 表操作，
     /// 仅注册 relay_sessions（role=parent），用于接收中继转发的子设备消息。
     /// </summary>
-    public async Task<(HandshakeResponse response, string? policyPushJson, int? dbDeviceId)>
+    public async Task<(HandshakeResponse response, string? policyPushJson, string? resetPushJson, int? dbDeviceId)>
         HandleHandshake(HandshakeRequest req, string? peerFingerprint, string remoteEndPoint)
     {
         using var scope = _scopeFactory.CreateScope();
@@ -59,7 +59,7 @@ public class P2pMessageHandler
                 Ok = true,
                 PairStatus = "paired",
                 SessionId = Guid.NewGuid().ToString("N")[..12],
-            }, null, null);  // 家长端不需要策略下发
+            }, null, null, null);  // 家长端不需要策略/重置下发
         }
 
         // 1. 查找设备（按 device_id）
@@ -78,7 +78,7 @@ public class P2pMessageHandler
                     Ok = false,
                     Error = "需要配对码",
                     PairStatus = "unpaired",
-                }, null, null);
+                }, null, null, null);
             }
 
             // 验证配对码
@@ -95,7 +95,7 @@ public class P2pMessageHandler
                     Ok = false,
                     Error = "配对码无效或已过期",
                     PairStatus = "unpaired",
-                }, null, null);
+                }, null, null, null);
             }
 
             // 创建新设备
@@ -120,6 +120,9 @@ public class P2pMessageHandler
             pairingInfo.PairStatus = "confirmed";
             pairingInfo.ConfirmedAt = DateTime.UtcNow;
             pairingInfo.DeviceId = device.Id;
+            // [REQ] 配对码归属账号 → 绑定设备 owner（扫码绑定/中继绑定）
+            if (!string.IsNullOrEmpty(pairingInfo.OwnerUserId))
+                device.OwnerUserId = pairingInfo.OwnerUserId;
 
             // 创建默认策略
             var policy = new Policy
@@ -155,19 +158,33 @@ public class P2pMessageHandler
                 Ok = true,
                 PairStatus = "paired",
                 SessionId = Guid.NewGuid().ToString("N")[..12],
-            }, BuildPolicyPushMessage(device.DeviceId, device.Policy, device.AppCategories), device.Id);
+            }, BuildPolicyPushMessage(device.DeviceId, device.Policy, device.AppCategories), null, device.Id);
         }
 
-        // 2. 已有设备 — 检查配对状态
-        if (device.PairStatus == "revoked")
+        // 2. 已解绑/已吊销设备 — 需凭新的待确认配对码重新绑定，否则拒绝
+        if (device.PairStatus == "revoked" || device.PairStatus == "unpaired")
         {
-            _logger.LogWarning("[P2P-Handshake] 设备已被吊销: {DeviceId}", req.DeviceId);
-            return (new HandshakeResponse
+            var rePairInfo = string.IsNullOrEmpty(req.PairCode) ? null : await db.PairingInfos
+                .Where(p => p.PairCode == req.PairCode && p.PairStatus == "pending")
+                .OrderByDescending(p => p.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (rePairInfo == null)
             {
-                Ok = false,
-                Error = "设备已被吊销",
-                PairStatus = "revoked",
-            }, null, device.Id);
+                var reason = device.PairStatus == "revoked" ? "设备已被吊销" : "设备已解绑，请重新扫码绑定";
+                _logger.LogWarning("[P2P-Handshake] {Reason}: {DeviceId}", reason, req.DeviceId);
+                return (new HandshakeResponse
+                {
+                    Ok = false,
+                    Error = reason,
+                    PairStatus = device.PairStatus,
+                }, null, null, device.Id);
+            }
+
+            // 重新绑定：解除吊销/解绑状态
+            device.PairStatus = "paired";
+            device.PairCode = req.PairCode;
+            device.IsActive = true;
         }
 
         // 3. 已配对设备 — 更新状态
@@ -175,13 +192,6 @@ public class P2pMessageHandler
         device.LastSeenAt = DateTime.UtcNow;
         device.IpAddress = remoteEndPoint;
         device.DeviceName = req.DeviceName ?? device.DeviceName;
-
-        if (device.PairStatus == "unpaired" && !string.IsNullOrEmpty(req.PairCode))
-        {
-            // 重新配对
-            device.PairStatus = "paired";
-            device.PairCode = req.PairCode;
-        }
 
         // [FIX] 已存在设备带配对码握手：将配对码关联到设备（含已配对设备重连），
         // 使 /api/relay/register（配对码路径）能正确绑定 devices.owner_user_id，中继路由才能工作
@@ -193,9 +203,17 @@ public class P2pMessageHandler
                 .FirstOrDefaultAsync();
             if (linkedPairing != null)
             {
+                // [REQ] 仅首次扫码绑定（pending → confirmed）时重绑归属账号；
+                // 后续重连复用同一已确认配对码，不再覆盖已绑定的 owner。
+                var isFirstBind = linkedPairing.PairStatus == "pending";
                 linkedPairing.DeviceId = device.Id;
-                linkedPairing.PairStatus = "confirmed";
-                linkedPairing.ConfirmedAt = DateTime.UtcNow;
+                if (isFirstBind)
+                {
+                    linkedPairing.PairStatus = "confirmed";
+                    linkedPairing.ConfirmedAt = DateTime.UtcNow;
+                    if (!string.IsNullOrEmpty(linkedPairing.OwnerUserId))
+                        device.OwnerUserId = linkedPairing.OwnerUserId;
+                }
             }
         }
 
@@ -225,6 +243,20 @@ public class P2pMessageHandler
         // 构建策略下发
         var policyMsg = BuildPolicyPushMessage(device.DeviceId, device.Policy, device.AppCategories);
 
+        // [REQ] 每日限额重置：离线期间家长点了重置 → 重连握手时补推，推完清空待发标记
+        string? resetPushJson = null;
+        if (device.PendingResetAt.HasValue)
+        {
+            // SQLite 读取后 Kind=Unspecified，显式按 UTC 解释，避免补推时间戳偏移 8 小时
+            var pendingUtc = DateTime.SpecifyKind(device.PendingResetAt.Value, DateTimeKind.Utc);
+            resetPushJson = BuildLimitResetMessage(
+                device.DeviceId,
+                new DateTimeOffset(pendingUtc).ToUnixTimeSeconds());
+            device.PendingResetAt = null;
+            await db.SaveChangesAsync();
+            _logger.LogInformation("[P2P-Handshake] 补推每日限额重置: {DeviceId}", device.DeviceId);
+        }
+
         _logger.LogInformation("[P2P-Handshake] 设备已连接: {DeviceId} ({DeviceName}), status={PairStatus}",
             req.DeviceId, req.DeviceName, device.PairStatus);
 
@@ -233,7 +265,7 @@ public class P2pMessageHandler
             Ok = true,
             PairStatus = device.PairStatus,
             SessionId = Guid.NewGuid().ToString("N")[..12],
-        }, policyMsg, device.Id);
+        }, policyMsg, resetPushJson, device.Id);
     }
 
     // ========== Usage Report ==========
@@ -451,6 +483,25 @@ public class P2pMessageHandler
     }
 
     /// <summary>
+    /// 构建 2.0 limit_reset 完整消息 JSON（家长在 Web 端点击“重置当日限额”后下发）
+    /// payload.resetAt：服务器重置时间（Unix 秒），儿童端据此记录当日偏移，重新开始计时
+    /// </summary>
+    public string BuildLimitResetMessage(string deviceId, long resetAtUnix)
+    {
+        var message = new Dictionary<string, object>
+        {
+            ["type"] = P2pMessageType.LimitReset,
+            ["payload"] = new Dictionary<string, object>
+            {
+                ["deviceId"] = deviceId,
+                ["resetAt"] = resetAtUnix,
+                ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            },
+        };
+        return JsonSerializer.Serialize(message);
+    }
+
+    /// <summary>
     /// 将 Web 端 Policy 模型转换为 2.0 PolicyConfig JSON 字符串数组（5 类策略）
     /// </summary>
     public List<string> BuildPolicyConfigItems(string deviceId, Policy? policy)
@@ -572,6 +623,56 @@ public class P2pMessageHandler
             {
                 ["announcements"] = announcements,
                 ["action"] = action,
+                ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            },
+        };
+        return JsonSerializer.Serialize(message);
+    }
+
+    /// <summary>
+    /// [FIX] 构建补推公告消息：儿童端握手连接时下发最近 3 条已发布/已撤回公告。
+    /// 解决“儿童端离线期间发布的公告永远收不到”（实时推送只在在线时生效）。
+    /// </summary>
+    public async Task<string?> BuildAnnouncementSyncJson(string deviceId)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var device = await db.Devices.FirstOrDefaultAsync(d => d.DeviceId == deviceId);
+        if (device == null) return null;
+
+        var announcements = await db.Announcements
+            .Where(a => (a.Status == "published" || a.Status == "revoked") &&
+                        (a.TargetDeviceId == null || a.TargetDeviceId == device.Id))
+            .OrderByDescending(a => a.UpdatedAt)
+            .Take(3)
+            .ToListAsync();
+
+        if (announcements.Count == 0) return null;
+
+        var list = announcements.Select(a => new Dictionary<string, object>
+        {
+            ["id"] = a.Id,
+            ["title"] = a.Title,
+            ["content"] = a.Content,
+            ["priority"] = a.Priority switch
+            {
+                "urgent" => 2,
+                "important" => 1,
+                _ => 0,
+            },
+            ["created_at"] = new DateTimeOffset(a.CreatedAt).ToUnixTimeSeconds(),
+            ["expires_at"] = a.ValidUntil.HasValue
+                ? new DateTimeOffset(a.ValidUntil.Value).ToUnixTimeSeconds()
+                : 0L,
+        }).ToList();
+
+        var message = new Dictionary<string, object>
+        {
+            ["type"] = P2pMessageType.AnnouncementPush,
+            ["payload"] = new Dictionary<string, object>
+            {
+                ["announcements"] = list,
+                ["action"] = "sync",
                 ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             },
         };
