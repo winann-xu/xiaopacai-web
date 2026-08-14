@@ -729,6 +729,35 @@ public class P2pHandshakeFlowTests : IDisposable
 
         Assert.False(blocked.Ok);
         Assert.Contains("尝试次数过多", blocked.Error);
+        // [TASK-PRELAUNCH-FIX-RATELIMIT] 限速拒绝必须携带 error_code，
+        // 儿童端据此进入指数退避而非 1s 重试（122 信自锁闭环根因）
+        Assert.Equal("ip_rate_limited", blocked.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Handshake_BlockedIp_RepeatedAttempts_StayBlockedWithCode()
+    {
+        // [TASK-PRELAUNCH-FIX-RATELIMIT] 封禁期内的重复尝试：返回稳定 error_code 且
+        // 不再计失败次数（窗口不续期），冷却后自动放行——闭环自愈而非无限锁死
+        var handler = CreateHandler();
+
+        for (var i = 0; i < 10; i++)
+        {
+            var (resp, _, _, _) = await handler.HandleHandshake(
+                new HandshakeRequest { DeviceId = $"brute-dev-{i}", PairCode = "888888" },
+                peerFingerprint: $"fp-brute-{i}", remoteEndPoint: "6.6.6.6:1234");
+            Assert.False(resp.Ok);
+        }
+
+        // 封禁期内连续 12 次重复尝试（模拟儿童端 1s 重试风暴）
+        for (var i = 0; i < 12; i++)
+        {
+            var (blocked, _, _, _) = await handler.HandleHandshake(
+                new HandshakeRequest { DeviceId = $"brute-dev-r{i}", PairCode = "888888" },
+                peerFingerprint: $"fp-brute-r{i}", remoteEndPoint: "6.6.6.6:1234");
+            Assert.False(blocked.Ok);
+            Assert.Equal("ip_rate_limited", blocked.ErrorCode);
+        }
     }
 
     // ==================== Usage Report ====================

@@ -109,6 +109,8 @@ public class HandshakeResponse
     /// [TASK-PRELAUNCH-FIX-SCAN] 确定性错误码（ok=false 时）：
     /// unpaired | revoked | device_owned_by_other | fingerprint_mismatch | invalid_pairing_code 等；
     /// 儿童端据此区分"确定性拒绝（停止重试回配对界面）"与"临时性失败（可重试）"。
+    /// [TASK-PRELAUNCH-FIX-RATELIMIT] ip_rate_limited：IP 级限速临时拒绝（可重试，
+    /// 但儿童端必须指数退避，禁止 1s 重试续期）。
     /// </summary>
     [JsonPropertyName("error_code")]
     public string? ErrorCode { get; set; }

@@ -56,10 +56,16 @@ public class P2pMessageHandler
                 IpAddress = handshakeIp,
             });
             await db.SaveChangesAsync();
+            // [TASK-PRELAUNCH-FIX-RATELIMIT] 必须携带 error_code=ip_rate_limited：
+            // 此前缺省导致 error_code=""，儿童端按临时失败 1s 重试，5 分钟窗口
+            // 过期后 10 次/60s 重新打满 → 无限自锁闭环（122 信根因）。
+            // 该分支本身不 RecordFailure（封禁期内不计次，窗口不续期），
+            // 审计照记（R9.1），冷却后自动放行自愈。
             return (new HandshakeResponse
             {
                 Ok = false,
                 Error = "尝试次数过多，请稍后再试",
+                ErrorCode = "ip_rate_limited",
                 PairStatus = "unpaired",
             }, null, null, null);
         }
