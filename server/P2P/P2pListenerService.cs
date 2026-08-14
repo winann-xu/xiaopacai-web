@@ -327,7 +327,16 @@ public class P2pListenerService : IHostedService
                         {
                             var deviceId = GetPayloadString(usagePayload, "deviceId") ?? string.Empty;
                             var recordsJson = GetPayloadString(usagePayload, "records") ?? "[]";
-                            var ack = await _messageHandler.HandleUsageReportLegacy(deviceId, recordsJson);
+                            // [TASK-PRELAUNCH-P4] 读取儿童端上报的重置偏移（缺省 0 = 未重置）
+                            var offsetReported = usagePayload.TryGetProperty(
+                                "dailyResetOffsetMinutes", out var offsetEl)
+                                && offsetEl.ValueKind == JsonValueKind.Number;
+                            var offsetVal = 0L;
+                            if (offsetReported) offsetEl.TryGetInt64(out offsetVal);
+                            var ack = await _messageHandler.HandleUsageReportLegacy(
+                                deviceId, recordsJson,
+                                offsetReported ? (int)Math.Min(int.MaxValue, offsetVal) : 0,
+                                offsetReported);
                             await WriteFrameAsync(sslStream, _messageHandler.BuildSyncAckJson(ack.Synced));
 
                             // [TASK-OPT-12-P4-DEEPEN] 中继转发：儿童端使用上报实时转发给绑定家长端

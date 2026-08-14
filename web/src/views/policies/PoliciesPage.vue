@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 小趴菜 Web 3.0 — 策略配置
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import { usePolicyStore, type Policy } from '@/stores/policies'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -49,7 +49,12 @@ onMounted(async () => {
   if (deviceStore.devices.length && !selectedDeviceId.value) {
     selectedDeviceId.value = deviceStore.devices[0].id
   }
+  // [TASK-PRELAUNCH-P4] 30s 轮询：策略页“已用/剩余”与设备页/仪表盘同步（需求 7 验收 ≤30s）
+  refreshTimer = setInterval(() => { deviceStore.fetchDevices() }, 30_000)
 })
+onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
+// [TASK-PRELAUNCH-P4] 实时刷新定时器句柄
+let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 function collectPolicy(): Policy {
   return {
@@ -86,6 +91,9 @@ async function resetLimit() {
   } catch { return }
   try {
     const res = await policyStore.resetLimit(selectedDeviceId.value)
+    // [TASK-PRELAUNCH-P4] 重置后立即刷新设备数据（设备页/仪表盘同源同步，需求 7 验收）
+    deviceStore.applyResetLocally(selectedDeviceId.value, res?.todayRemainingMinutes ?? 180)
+    await deviceStore.fetchDevices()
     if (res?.pushed) {
       ElMessage.success('当日限额已重置，儿童端已重新开始计时')
     } else {
@@ -110,6 +118,17 @@ async function resetLimit() {
     <template v-if="selectedDevice">
       <el-alert v-if="selectedDevice.status !== 'online'" :title="`设备「${selectedDevice.name}」当前离线，策略将在设备上线后自动下发`"
         type="warning" show-icon :closable="false" style="margin-bottom:16px" />
+
+      <!-- [TASK-PRELAUNCH-P4] 今日已用/剩余（调整后口径，与设备页/仪表盘同源；30s 自动刷新） -->
+      <el-alert type="info" :closable="false" style="margin-bottom:16px">
+        <template #title>
+          今日已用 {{ selectedDevice.todayUsageMinutes }} / {{ selectedDevice.todayLimitMinutes }} 分钟，
+          剩余 {{ selectedDevice.todayRemainingMinutes ?? 0 }} 分钟
+          <span v-if="selectedDevice.lastResetOffsetMinutes" class="reset-tag">
+            （已重置，原始累计 {{ selectedDevice.rawTodayUsageMinutes ?? 0 }} 分钟计入报告）
+          </span>
+        </template>
+      </el-alert>
 
       <div class="policy-grid">
         <el-card shadow="hover">
@@ -190,6 +209,7 @@ async function resetLimit() {
 
 <style scoped>
 .policies-page { max-width: 1200px; }
+.reset-tag { font-size: 12px; opacity: 0.85; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
 .page-title { font-size: 22px; font-weight: 600; margin: 0; }
 .page-actions { display: flex; gap: 8px; align-items: center; }

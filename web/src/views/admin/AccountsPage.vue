@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 小趴菜 Web 3.0 — 管理端：账号管理
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Edit, Delete, Refresh } from '@element-plus/icons-vue'
 import { adminAccountApi } from '@/api'
@@ -9,13 +9,24 @@ interface Account {
   id: number; username: string; displayName: string; role: 'admin' | 'parent'; email: string; createdAt: string; lastLoginAt?: string
 }
 
-// Mock 数据
-const accounts = ref<Account[]>([
-  { id: 1, username: 'admin', displayName: '管理员', role: 'admin', email: 'admin@xiaopacai.local', createdAt: '2026-08-01T00:00:00Z', lastLoginAt: new Date().toISOString() },
-  { id: 2, username: 'parent', displayName: '家长', role: 'parent', email: 'parent@xiaopacai.local', createdAt: '2026-08-01T00:00:00Z', lastLoginAt: new Date().toISOString() },
-  { id: 3, username: 'parent2', displayName: '妈妈', role: 'parent', email: 'mom@xiaopacai.local', createdAt: '2026-08-05T12:00:00Z' },
-])
+// [TASK-PRELAUNCH-P4] 移除 Mock：账号列表走真实 API（GET /admin/accounts），失败显示错误态 + 重试
+const accounts = ref<Account[]>([])
 const loading = ref(false)
+const error = ref<string | null>(null)
+
+async function loadAccounts() {
+  loading.value = true
+  error.value = null
+  try {
+    const res = await adminAccountApi.list()
+    accounts.value = res.data
+  } catch (e: any) {
+    error.value = e.response?.data?.message || e.response?.data?.error || '获取账号列表失败'
+  } finally {
+    loading.value = false
+  }
+}
+onMounted(loadAccounts)
 
 const showEditor = ref(false)
 const editingId = ref<number | null>(null)
@@ -38,24 +49,25 @@ async function saveAccount() {
   try {
     if (editingId.value) {
       await adminAccountApi.update(editingId.value, editForm)
-      const idx = accounts.value.findIndex(a => a.id === editingId.value)
-      if (idx >= 0) Object.assign(accounts.value[idx], editForm)
       ElMessage.success('账号已更新')
     } else {
       if (!editForm.password) { ElMessage.warning('请输入密码'); return }
       await adminAccountApi.create(editForm)
-      accounts.value.unshift({ id: Date.now(), ...editForm, createdAt: new Date().toISOString() })
       ElMessage.success('账号已创建')
     }
     showEditor.value = false
-  } catch { ElMessage.error('操作失败') }
+    // [TASK-PRELAUNCH-P4] 增改后重新拉取真实列表（不再本地拼假数据）
+    await loadAccounts()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.message || e.response?.data?.error || '操作失败')
+  }
 }
 
 async function handleDelete(acc: Account) {
   try {
     await ElMessageBox.confirm(`确定删除账号「${acc.username}」？`, '确认删除', { type: 'warning' })
     await adminAccountApi.delete(acc.id)
-    accounts.value = accounts.value.filter(a => a.id !== acc.id)
+    await loadAccounts()
     ElMessage.success('已删除')
   } catch { /* */ }
 }
@@ -75,6 +87,14 @@ async function handleResetPassword(acc: Account) {
       <h2 class="page-title">账号管理</h2>
       <el-button type="primary" :icon="Plus" @click="openCreate">新建账号</el-button>
     </div>
+
+    <!-- [TASK-PRELAUNCH-P4] 错误态 + 重试（移除 Mock 数据） -->
+    <el-alert v-if="error" type="error" :closable="false" style="margin-bottom: 12px">
+      <template #title>
+        {{ error }}
+        <el-button size="small" type="primary" text @click="loadAccounts">重试</el-button>
+      </template>
+    </el-alert>
 
     <el-table :data="accounts" v-loading="loading" stripe>
       <el-table-column prop="username" label="用户名" width="140" />

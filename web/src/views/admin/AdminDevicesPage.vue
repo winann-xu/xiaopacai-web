@@ -38,8 +38,12 @@ async function handleDeauthorize(deviceId: number) {
         </template>
       </el-table-column>
       <el-table-column prop="ipAddress" label="IP" width="140" />
-      <el-table-column label="今日使用" width="150">
-        <template #default="{ row }">{{ row.todayUsageMinutes }} / {{ row.todayLimitMinutes }} min</template>
+      <!-- [TASK-PRELAUNCH-P4] 调整后口径 + 已重置标注（与设备页同源） -->
+      <el-table-column label="今日使用" width="180">
+        <template #default="{ row }">
+          {{ row.todayUsageMinutes }} / {{ row.todayLimitMinutes }} min
+          <el-tag v-if="row.lastResetOffsetMinutes" size="small" type="warning" effect="plain">已重置</el-tag>
+        </template>
       </el-table-column>
       <el-table-column label="配对时间" width="180">
         <template #default="{ row }">{{ new Date(row.pairedAt).toLocaleString('zh-CN') }}</template>

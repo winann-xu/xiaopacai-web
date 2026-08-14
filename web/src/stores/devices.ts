@@ -13,8 +13,14 @@ export interface Device {
   lastSeen: string       // ISO datetime
   certFingerprint: string
   pairedAt: string
+  // [TASK-PRELAUNCH-P4] 时间额度口径：todayUsageMinutes=调整后已用，rawTodayUsageMinutes=原始累计
   todayUsageMinutes: number
+  rawTodayUsageMinutes?: number
+  todayRemainingMinutes?: number
   todayLimitMinutes: number
+  lastResetOffsetMinutes?: number
+  lastResetDate?: string | null
+  lastReportAt?: string | null
 }
 
 export const useDeviceStore = defineStore('devices', () => {
@@ -22,6 +28,8 @@ export const useDeviceStore = defineStore('devices', () => {
   const devices = ref<Device[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
+  // [TASK-PRELAUNCH-P4] 最后成功刷新时间（页面展示“最后刷新 HH:mm:ss”）
+  const lastRefreshAt = ref<string | null>(null)
 
   // ---- getters ----
   const onlineCount = computed(() => devices.value.filter(d => d.status === 'online').length)
@@ -35,12 +43,10 @@ export const useDeviceStore = defineStore('devices', () => {
     try {
       const res = await deviceApi.list()
       devices.value = res.data
+      lastRefreshAt.value = new Date().toISOString()
     } catch (e: any) {
-      error.value = e.response?.data?.message || '获取设备列表失败'
-      // P3 阶段：API 失败时使用 mock 数据
-      if (!devices.value.length) {
-        devices.value = getMockDevices()
-      }
+      // [TASK-PRELAUNCH-P4] 移除 Mock 兜底：API 失败显示错误态 + 重试，绝不渲染假设备（需求 7 第 3 条）
+      error.value = e.response?.data?.message || e.response?.data?.error || '获取设备列表失败'
     } finally {
       loading.value = false
     }
@@ -56,36 +62,19 @@ export const useDeviceStore = defineStore('devices', () => {
     if (device) device.status = status
   }
 
+  // [TASK-PRELAUNCH-P4] 重置限额成功后本地即时归零（不等下次轮询）；原始累计保留（报告口径不受影响）
+  function applyResetLocally(deviceId: number, remainingMinutes: number) {
+    const device = devices.value.find(d => d.id === deviceId)
+    if (device) {
+      device.lastResetOffsetMinutes = device.rawTodayUsageMinutes ?? 0
+      device.todayUsageMinutes = 0
+      device.todayRemainingMinutes = remainingMinutes
+    }
+  }
+
   return {
-    devices, loading, error,
+    devices, loading, error, lastRefreshAt,
     onlineCount, totalCount, offlineDevices,
-    fetchDevices, unpairDevice, updateDeviceStatus,
+    fetchDevices, unpairDevice, updateDeviceStatus, applyResetLocally,
   }
 })
-
-// P3 阶段 mock 数据（P4 替换为真实 API）
-function getMockDevices(): Device[] {
-  return [
-    {
-      id: 1, name: '小明的手机', deviceId: 'AND-001',
-      ipAddress: '192.168.1.101', osVersion: 'Android 13',
-      status: 'online', lastSeen: new Date().toISOString(),
-      certFingerprint: 'A1:B2:C3:D4:E5:F6:11:22:33:44:55:66:77:88:99:00',
-      pairedAt: '2026-08-01T10:00:00Z', todayUsageMinutes: 87, todayLimitMinutes: 180,
-    },
-    {
-      id: 2, name: '小红的平板', deviceId: 'AND-002',
-      ipAddress: '192.168.1.102', osVersion: 'Android 12',
-      status: 'offline', lastSeen: '2026-08-10T18:30:00Z',
-      certFingerprint: 'B2:C3:D4:E5:F6:11:22:33:44:55:66:77:88:99:00:AA',
-      pairedAt: '2026-08-02T14:00:00Z', todayUsageMinutes: 0, todayLimitMinutes: 120,
-    },
-    {
-      id: 3, name: '测试设备', deviceId: 'AND-TEST',
-      ipAddress: '192.168.1.200', osVersion: 'Android 14',
-      status: 'reconnecting', lastSeen: '2026-08-11T07:00:00Z',
-      certFingerprint: 'C3:D4:E5:F6:11:22:33:44:55:66:77:88:99:00:AA:BB',
-      pairedAt: '2026-08-03T09:00:00Z', todayUsageMinutes: 45, todayLimitMinutes: 240,
-    },
-  ]
-}

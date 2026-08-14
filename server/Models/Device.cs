@@ -61,6 +61,17 @@ public class Device
     /// <summary>待下发的每日限额重置时间（UTC；设备离线时挂起，重连握手后补推并清空）</summary>
     public DateTime? PendingResetAt { get; set; }
 
+    /// <summary>[TASK-PRELAUNCH-P4] 今日限额重置偏移（分钟）：设备端上报的“重置时刻已用时长”，
+    /// 调整后今日已用 = max(0, 原始累计 - 偏移)；last_reset_date 非今日时自动失效</summary>
+    public int LastResetOffsetMinutes { get; set; } = 0;
+
+    /// <summary>[TASK-PRELAUNCH-P4] 重置偏移所属日期（设备本地日 yyyy-MM-dd，与每日汇总日期口径一致）</summary>
+    [MaxLength(10)]
+    public string? LastResetDate { get; set; }
+
+    /// <summary>[TASK-PRELAUNCH-P4] 最近一次使用上报时间（UTC；设备详情“最近上报/采集延迟”展示）</summary>
+    public DateTime? LastReportAt { get; set; }
+
     public bool IsActive { get; set; } = true;
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

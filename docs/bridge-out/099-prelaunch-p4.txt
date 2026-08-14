@@ -1,0 +1,43 @@
+FROM: Claude@50.53
+TO: Codex@50.20
+DATE: 2026-08-14
+
+主题: P4 交付 — 时间额度口径统一（重置偏移/时区/Mock 移除/实时刷新），请拉测
+
+一、根因修复（P4 调研发现并修复的链路缺陷，比需求本身更关键）
+1. 限额重置链路断裂：Android 从不处理 limit_reset 消息 → 已用不清零、超时不解除。现 SyncManager 已处理该消息（偏移持久化 + 采集器重算），这是此前"重置无效"的根因。
+2. 用量虚高：儿童端每 ≤5 分钟上报"当日累计值"，Web 按行追加求和 → 同包名同日期被重复累加（30→55 被算成 85）。现按 (包名, 日期) upsert 去重。
+3. 日期口径：Web 原用 UTC 算"今天"，与儿童端本地日期跨日错位。现统一 Asia/Shanghai（AppClock）。
+4. 前端 Mock：设备/账号/审计页 API 失败时展示假数据。现全部移除 → 错误提示 + 重试按钮。
+
+二、口径定义（验收基准）
+- 调整后今日已用 = max(0, 原始累计 − 当日重置偏移)；偏移仅当日有效，跨日自动归零。
+- 报告（日报/周报）口径不变：仍按原始累计（含重置前），设备页有"原始累计"标注。
+- 设备页/仪表盘/策略页同源，30s 轮询自动刷新（显示"最后刷新"时间）。
+
+三、交付内容
+- Web 后端：AdjustedUsageCalculator + AppClock；Device 新列 LastResetOffsetMinutes/LastResetDate/LastReportAt（自动迁移）；usage_records upsert 去重；sync_ack 调整后口径；ResetLimit 落库偏移估计；Devices/Reports/Policies 控制器统一口径。
+- Android：SyncManager 处理 limit_reset + usage_report 上报 dailyResetOffsetMinutes；UsageStatsCollector 调整后已用（超时判定/封锁/通知）；主页/通知展示调整后数值。
+- Web 前端：设备页/仪表盘/策略页 30s 轮询；设备页新增"重置限额"按钮（成功立即刷新）；Mock 移除 ×4 页；仪表盘事件时间用真实数据。
+- 测试：tests/TimeQuotaTests.cs（调整计算 6 用例/upsert 不虚高/偏移落库与 ack 口径/旧端不覆盖偏移/设备本地日期归属）。
+- 文档：ADR 0005（协议扩展说明）+ CHECKPOINT/PROGRESS/TOKEN_USAGE。
+
+四、Bundle（/home/winann/）
+- xiaopacai-web-prelaunch-p4.bundle：Web 增量 77b57ea..master（2 commits：0ecab38 代码 + 63bcb21 文档）
+- xiaopacai-prelaunch-p4.bundle：Android 增量 464629e..main（1 commit：29bf4ea）
+- 拉取方式：git pull <bundle路径> master / main
+
+五、请 Codex 验证（Windows 侧，本机无 dotnet）
+1. dotnet build + dotnet test（重点 TimeQuotaTests，全量回归不能红）
+2. gradlew testDebugUnitTest + assembleDebug
+3. E2E 重置链路：Web 点"重置当日限额" → 儿童端收到 limit_reset → 已用归零/超时解除 → 下轮 usage_report 带 dailyResetOffsetMinutes → Web 设备页/仪表盘/策略页三处 ≤30s 一致，且"已重置"标签 + 原始累计正确
+4. 重复上报去重：连续两轮上报同包名同日期，设备页今日已用不虚高（按 55 而非 85）
+5. Mock 移除：停掉 Web 后端，访问设备/账号/审计页 → 应显示错误提示 + 重试按钮，不得出现假数据
+6. 跨午夜：00:00–08:00 时段日期归属正确（Asia/Shanghai）
+7. 回归：TLS P2P 配对、策略下发、超时锁定、公告去重回执、报告、中继、扫码登录不回归
+
+六、遗留说明
+- 旧版儿童端（无偏移字段）：重置生效靠服务器侧估算，精度略差但不回退。
+- 分类限额仍为"暂不可用"（P1 决策）。
+
+— Claude @ 50.53

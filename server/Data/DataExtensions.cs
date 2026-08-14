@@ -169,6 +169,10 @@ public static class DataExtensions
         // [TASK-PRELAUNCH-P3] 公告去重字段（发布代数/内容哈希）
         await TryAddColumnAsync(db, "announcements", "Version", "INTEGER NOT NULL DEFAULT 0", logger);
         await TryAddColumnAsync(db, "announcements", "ContentHash", "TEXT NOT NULL DEFAULT ''", logger);
+        // [TASK-PRELAUNCH-P4] 时间额度口径：重置偏移/偏移日期/最近上报时间
+        await TryAddColumnAsync(db, "devices", "LastResetOffsetMinutes", "INTEGER NOT NULL DEFAULT 0", logger);
+        await TryAddColumnAsync(db, "devices", "LastResetDate", "TEXT NULL", logger);
+        await TryAddColumnAsync(db, "devices", "LastReportAt", "TEXT NULL", logger);
     }
 
     /// <summary>

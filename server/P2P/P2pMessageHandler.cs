@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.Services;
 
 namespace XiaopacaiWeb.P2P;
 
@@ -274,8 +275,15 @@ public class P2pMessageHandler
 
     /// <summary>
     /// 处理儿童端使用上报 — 写入 usage_records + 更新 daily_summary
+    /// [TASK-PRELAUNCH-P4] 口径修正：
+    /// 1. “今日”按记录携带的设备本地日期聚合（不再用 UTC 日期，避免 00:00–08:00 跨日错位）
+    /// 2. usage_records 按 (设备, 包名, 日期) upsert —— 儿童端每周期上报的是当日累计值，
+    ///    追加写入会把累计值重复累加导致虚高；改为覆盖更新
+    /// 3. 接收儿童端上报的重置偏移（dailyResetOffsetMinutes），落库设备行
+    /// 4. sync_ack 的已用/剩余改用调整后口径（与设备页一致）
     /// </summary>
-    public async Task<SyncAckMessage> HandleUsageReport(UsageReportRequest req)
+    public async Task<SyncAckMessage> HandleUsageReport(
+        UsageReportRequest req, int dailyResetOffsetMinutes = 0, bool offsetReported = false)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -287,12 +295,10 @@ public class P2pMessageHandler
             return new SyncAckMessage { BatchId = req.BatchId, Synced = 0 };
         }
 
-        var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
-        var synced = 0;
-
+        // 解析记录（时间无效的跳过），并确定本次批次日期（设备本地日）
+        var parsed = new List<(UsageRecordItem Item, DateTime StartTime, DateTime? EndTime, string DateStr)>();
         foreach (var record in req.Records)
         {
-            // 解析时间
             if (!DateTime.TryParse(record.StartTime, out var startTime))
                 continue;
 
@@ -300,46 +306,85 @@ public class P2pMessageHandler
             if (!string.IsNullOrEmpty(record.EndTime) && DateTime.TryParse(record.EndTime, out var et))
                 endTime = et;
 
-            // 写入使用记录
-            var usageRecord = new UsageRecord
+            parsed.Add((record, startTime, endTime, startTime.ToString("yyyy-MM-dd")));
+        }
+
+        var today = parsed.Count > 0
+            ? parsed[0].DateStr
+            : AppClock.TodayShanghai();
+
+        // [TASK-PRELAUNCH-P4] upsert 键：(包名, 日期) —— 覆盖更新当日累计，避免重复累加
+        var existingRecords = await db.UsageRecords
+            .Where(r => r.DeviceId == device.Id)
+            .ToListAsync();
+        var existingByKey = existingRecords
+            .GroupBy(r => $"{r.AppPackage}|{r.StartTime:yyyy-MM-dd}")
+            .ToDictionary(g => g.Key, g => g.First());
+
+        var synced = 0;
+        foreach (var (record, startTime, endTime, dateStr) in parsed)
+        {
+            var key = $"{record.AppPackage}|{dateStr}";
+            if (existingByKey.TryGetValue(key, out var existing))
             {
-                DeviceId = device.Id,
-                AppPackage = record.AppPackage,
-                AppName = record.AppName,
-                Category = NormalizeCategory(record.Category),
-                StartTime = startTime,
-                EndTime = endTime,
-                DurationSeconds = record.DurationSeconds,
-                IsBlocked = record.IsBlocked,
-                CreatedAt = DateTime.UtcNow,
-            };
-            db.UsageRecords.Add(usageRecord);
+                existing.AppName = record.AppName;
+                existing.Category = NormalizeCategory(record.Category);
+                existing.StartTime = startTime;
+                existing.EndTime = endTime;
+                existing.DurationSeconds = record.DurationSeconds;
+                existing.IsBlocked = record.IsBlocked;
+            }
+            else
+            {
+                db.UsageRecords.Add(new UsageRecord
+                {
+                    DeviceId = device.Id,
+                    AppPackage = record.AppPackage,
+                    AppName = record.AppName,
+                    Category = NormalizeCategory(record.Category),
+                    StartTime = startTime,
+                    EndTime = endTime,
+                    DurationSeconds = record.DurationSeconds,
+                    IsBlocked = record.IsBlocked,
+                    CreatedAt = DateTime.UtcNow,
+                });
+            }
             synced++;
         }
 
+        // [TASK-PRELAUNCH-P4] 设备上报了重置偏移 → 落库（当日有效，覆盖服务器端估计值）
+        if (offsetReported)
+        {
+            device.LastResetOffsetMinutes = Math.Max(0, dailyResetOffsetMinutes);
+            device.LastResetDate = today;
+        }
+        device.LastReportAt = DateTime.UtcNow;
+        device.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
-        // 更新每日汇总
+        // 更新每日汇总（按批次设备本地日期）
         await UpdateDailySummary(db, device.Id, today);
 
-        // 计算今日使用情况
+        // 计算今日使用情况（调整后口径）
         var summary = await db.DailySummaries
             .FirstOrDefaultAsync(s => s.DeviceId == device.Id && s.SummaryDate == today);
 
         var policy = await db.Policies.FirstOrDefaultAsync(p => p.DeviceId == device.Id);
         var dailyLimit = policy?.DailyLimitMinutes ?? 120;
-        var todayMinutes = summary?.TotalMinutes ?? 0;
-        var remaining = Math.Max(0, dailyLimit - todayMinutes);
-        var overtimeLocked = summary != null && summary.TotalMinutes >= dailyLimit;
+        var rawMinutes = summary?.TotalMinutes ?? 0;
+        var adjustedMinutes = AdjustedUsageCalculator.ComputeAdjusted(
+            rawMinutes, device.LastResetOffsetMinutes, device.LastResetDate, today);
+        var remaining = Math.Max(0, dailyLimit - adjustedMinutes);
+        var overtimeLocked = summary != null && adjustedMinutes >= dailyLimit;
 
-        _logger.LogDebug("[P2P-Usage] 设备 {DeviceId} 上报 {Count} 条记录, 今日累计 {Min}min",
-            req.DeviceId, synced, todayMinutes);
+        _logger.LogDebug("[P2P-Usage] 设备 {DeviceId} 上报 {Count} 条记录, 今日原始 {Raw}min, 调整后 {Adj}min",
+            req.DeviceId, synced, rawMinutes, adjustedMinutes);
 
         return new SyncAckMessage
         {
             BatchId = req.BatchId,
             Synced = synced,
-            TodayTotalMinutes = todayMinutes,
+            TodayTotalMinutes = adjustedMinutes,
             TodayRemainingMinutes = remaining,
             OvertimeLocked = overtimeLocked,
         };
@@ -715,14 +760,15 @@ public class P2pMessageHandler
     /// <summary>
     /// 处理 2.0 儿童端 usage_report（records 为 JSON 字符串，元素含 packageName/appName/date/totalMinutes/category）
     /// </summary>
-    public async Task<SyncAckMessage> HandleUsageReportLegacy(string deviceId, string recordsJson)
+    public async Task<SyncAckMessage> HandleUsageReportLegacy(
+        string deviceId, string recordsJson, int dailyResetOffsetMinutes = 0, bool offsetReported = false)
     {
         var request = new UsageReportRequest
         {
             DeviceId = deviceId,
             Records = ParseLegacyRecords(recordsJson),
         };
-        return await HandleUsageReport(request);
+        return await HandleUsageReport(request, dailyResetOffsetMinutes, offsetReported);
     }
 
     private static List<UsageRecordItem> ParseLegacyRecords(string recordsJson)
