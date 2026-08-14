@@ -21,14 +21,21 @@ public class TicketStore
     public const string StatusConfirmed = "confirmed";
     public const string StatusExpired = "expired";
 
+    /// <summary>[SEC-P1] 内存 Ticket 总量上限：防匿名批量生成撑爆内存（超限时拒绝创建）</summary>
+    public const int MaxPendingTickets = 2000;
+
     // ticket → 条目
     private readonly ConcurrentDictionary<string, TicketEntry> _tickets = new();
 
     /// <summary>
-    /// 生成扫码登录 Ticket（状态 pending）
+    /// 生成扫码登录 Ticket（状态 pending）。
+    /// [SEC-P1] 未过期/未消费的 Ticket 超上限时返回 null（调用方应答 429）
     /// </summary>
-    public TicketEntry CreateLoginTicket(string? clientId)
+    public TicketEntry? CreateLoginTicket(string? clientId)
     {
+        if (CountLive() >= MaxPendingTickets)
+            return null;
+
         var entry = new TicketEntry
         {
             Ticket = Guid.NewGuid().ToString("N"),
@@ -43,10 +50,14 @@ public class TicketStore
     }
 
     /// <summary>
-    /// 生成重置密码 Ticket（状态 pending，绑定目标账号）
+    /// 生成重置密码 Ticket（状态 pending，绑定目标账号）。
+    /// [SEC-P1] 未过期/未消费的 Ticket 超上限时返回 null（调用方应答 429）
     /// </summary>
-    public TicketEntry CreateResetTicket(string username)
+    public TicketEntry? CreateResetTicket(string username)
     {
+        if (CountLive() >= MaxPendingTickets)
+            return null;
+
         var entry = new TicketEntry
         {
             Ticket = Guid.NewGuid().ToString("N"),
@@ -58,6 +69,16 @@ public class TicketStore
         };
         _tickets[entry.Ticket] = entry;
         return entry;
+    }
+
+    /// <summary>
+    /// [SEC-P1] 存活 Ticket 计数（未过期且未消费）
+    /// </summary>
+    private int CountLive()
+    {
+        var now = DateTime.UtcNow;
+        return _tickets.Count(kv =>
+            !kv.Value.Consumed && kv.Value.ExpiresAt >= now);
     }
 
     /// <summary>

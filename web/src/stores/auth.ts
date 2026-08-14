@@ -25,8 +25,9 @@ export const useAuthStore = defineStore('auth', () => {
   const isParent = computed(() => user.value?.role === 'parent')
 
   // ---- actions ----
-  /** 登录：API 成功后服务端已写入 httpOnly Cookie，这里只取档案 */
-  async function login(username: string, password: string): Promise<void> {
+  /** 登录：API 成功后服务端已写入 httpOnly Cookie，这里只取档案。
+   *  [SEC-P1] 返回 mustChangePassword 标志（种子账号/管理员重置口令后强制改密） */
+  async function login(username: string, password: string): Promise<boolean> {
     loading.value = true
     try {
       const res = await authApi.login(username, password)
@@ -34,6 +35,7 @@ export const useAuthStore = defineStore('auth', () => {
       const u = (res.data?.profile ?? res.data?.user ?? null) as UserProfile | null
       user.value = u
       localStorage.setItem('user_role', u?.role || 'parent')
+      return res.data?.mustChangePassword === true
     } finally {
       loading.value = false
     }

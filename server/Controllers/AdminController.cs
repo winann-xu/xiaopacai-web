@@ -133,10 +133,34 @@ public class AdminController : ControllerBase
         if (user == null)
             return NotFound(new { error = "账号不存在" });
 
+        // [SEC-P1] 级联清理（防 Restrict FK 失败 / 遗留孤儿数据）：
+        // 1) 公告 CreatedBy 外键 Restrict → 转移给当前管理员（公告历史保留，审计可追溯）
+        // 2) 设备 owner_user_id 无外键 → 置空（设备待新家长重新认领，重绑有归属校验）
+        // 3) RefreshTokens / AuditLogs 由 FK Cascade / SetNull 自动处理
+        var adminId = GetUserId()!.Value;
+        var userAnnouncements = await _db.Announcements
+            .Where(a => a.CreatedBy == id)
+            .ToListAsync();
+        foreach (var a in userAnnouncements)
+        {
+            a.CreatedBy = adminId;
+            a.UpdatedAt = DateTime.UtcNow;
+        }
+
+        var ownedDevices = await _db.Devices
+            .Where(d => d.OwnerUserId == id.ToString())
+            .ToListAsync();
+        foreach (var d in ownedDevices)
+        {
+            d.OwnerUserId = null;
+            d.UpdatedAt = DateTime.UtcNow;
+        }
+
         _db.Users.Remove(user);
         await _db.SaveChangesAsync();
 
-        await AuditAsync("admin.account.delete", "User", id, $"{{\"username\":\"{user.Username}\"}}");
+        await AuditAsync("admin.account.delete", "User", id,
+            $"{{\"username\":\"{user.Username}\",\"announcementsTransferred\":{userAnnouncements.Count},\"devicesReleased\":{ownedDevices.Count}}}");
         return Ok(new { message = "账号已删除" });
     }
 
@@ -156,6 +180,8 @@ public class AdminController : ControllerBase
         var (hash, salt) = _hasher.HashPassword(newPassword);
         user.PasswordHash = hash;
         user.PasswordSalt = salt;
+        // [SEC-P1] 管理员重置的口令视为临时口令，强制用户下次登录后修改（红线 R4.2）
+        user.MustChangePassword = true;
         user.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 

@@ -99,6 +99,8 @@ builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 
 // ---- 扫码登录/重置 Ticket 内存存储（OPT12 需求 10/12，Singleton） ----
 builder.Services.AddSingleton<TicketStore>();
+// [SEC-P1] 过期 Ticket 定时清理（防内存无限增长）
+builder.Services.AddHostedService<TicketCleanupService>();
 
 // ---- SQLCipher 服务（Singleton：密钥管理 + 连接字符串提供） ----
 var sqlCipherService = SqlCipherService.CreateFromConfig(builder.Configuration);

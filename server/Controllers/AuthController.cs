@@ -124,12 +124,14 @@ public class AuthController : ControllerBase
         SetAuthCookies(accessToken, refreshToken, accessExpiry, refreshExpiry);
 
         // 同时返回 profile 与 user 字段，兼容新旧前端调用
+        // [SEC-P1] mustChangePassword：前端据此强制跳转改密页（默认口令/管理员重置后）
         return Ok(new
         {
             accessToken,
             refreshToken,
             expiresAt = accessExpiry,
             tokenType = "Bearer",
+            mustChangePassword = user.MustChangePassword,
             profile,
             user = profile,
         });
@@ -309,6 +311,8 @@ public class AuthController : ControllerBase
         var (newHash, newSalt) = _hasher.HashPassword(request.NewPassword);
         user.PasswordHash = newHash;
         user.PasswordSalt = newSalt;
+        // [SEC-P1] 改密成功清除强制改密标记（红线 R4.2）
+        user.MustChangePassword = false;
         user.UpdatedAt = DateTime.UtcNow;
 
         // 吊销所有 Refresh Token（强制所有设备重新登录）
@@ -362,8 +366,17 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> CreateLoginTicket([FromBody] LoginTicketRequest? request)
     {
+        // [SEC-P1] 匿名端点限速：防批量生成撑爆 TicketStore
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"login-ticket:ip:{clientIp}", 10, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
+
         var entry = _tickets.CreateLoginTicket(request?.ClientId);
-        _logger.LogInformation("[Auth] 扫码登录 Ticket 已生成: {Ticket}", entry.Ticket);
+        if (entry == null)
+            return StatusCode(429, new { error = "系统繁忙，请稍后重试" });
+
+        // [SEC-P1] 日志打码：不落完整 Ticket
+        _logger.LogInformation("[Auth] 扫码登录 Ticket 已生成: {Ticket}", MaskTicket(entry.Ticket));
 
         // [TASK-OPT-12-P4-DEEPEN] 审计日志：生成登录 Ticket（ticket 打码防日志泄露）
         await AuditAsync("login_ticket_generate", null, null, null, null,
@@ -380,6 +393,11 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> PollLoginTicket(string ticket)
     {
+        // [SEC-P1] 匿名轮询限速（正常轮询 ~2s/次，60/分钟足够宽裕）
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"login-ticket-poll:ip:{clientIp}", 60, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请稍后再试" });
+
         var entry = _tickets.Get(ticket);
         if (entry == null || entry.Kind != "login")
             return Ok(new LoginTicketResponse
@@ -480,7 +498,7 @@ public class AuthController : ControllerBase
         await AuditAsync("login_ticket_confirm", userId, null, null, null,
             $"{{\"ticket\":\"{MaskTicket(ticket)}\"}}");
 
-        _logger.LogInformation("[Auth] 扫码登录 Ticket 已确认: {Ticket} by userId={U}", ticket, userId);
+        _logger.LogInformation("[Auth] 扫码登录 Ticket 已确认: {Ticket} by userId={U}", MaskTicket(ticket), userId);
         return Ok(new { status = TicketStore.StatusConfirmed, message = "已确认，网页端即将自动登录" });
     }
 
@@ -497,6 +515,11 @@ public class AuthController : ControllerBase
         if (!ModelState.IsValid)
             return BadRequest(ModelState);
 
+        // [SEC-P1] 匿名端点限速：防批量生成/账号枚举（账号不存在也返回相同 Ticket 流程）
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"reset-ticket:ip:{clientIp}", 5, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
+
         // 校验账号是否存在（仅记录日志，不向调用方泄露）
         var exists = await _db.Users.AnyAsync(u => u.Username == request.Username && u.IsActive);
         if (!exists)
@@ -505,7 +528,11 @@ public class AuthController : ControllerBase
         }
 
         var entry = _tickets.CreateResetTicket(request.Username);
-        _logger.LogInformation("[Auth] 重置 Ticket 已生成: {Ticket} (target={U})", entry.Ticket, request.Username);
+        if (entry == null)
+            return StatusCode(429, new { error = "系统繁忙，请稍后重试" });
+
+        // [SEC-P1] 日志打码：不落完整 Ticket
+        _logger.LogInformation("[Auth] 重置 Ticket 已生成: {Ticket} (target={U})", MaskTicket(entry.Ticket), request.Username);
 
         // [TASK-OPT-12-P4-DEEPEN] 审计日志：生成重置 Ticket
         await AuditAsync("reset_ticket_generate", null, null, null, null,
@@ -522,6 +549,11 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public IActionResult PollResetTicket(string ticket)
     {
+        // [SEC-P1] 匿名轮询限速
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"reset-ticket-poll:ip:{clientIp}", 60, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请稍后再试" });
+
         var entry = _tickets.Get(ticket);
         if (entry == null || entry.Kind != "reset")
             return Ok(new ResetTicketResponse
@@ -589,7 +621,7 @@ public class AuthController : ControllerBase
         await AuditAsync("reset_ticket_confirm", userId, null, null, null,
             $"{{\"ticket\":\"{MaskTicket(ticket)}\"}}");
 
-        _logger.LogInformation("[Auth] 重置 Ticket 已确认: {Ticket} by userId={U}", ticket, userId);
+        _logger.LogInformation("[Auth] 重置 Ticket 已确认: {Ticket} by userId={U}", MaskTicket(ticket), userId);
         return Ok(new { status = TicketStore.StatusConfirmed, message = "身份已确认，可设置新密码" });
     }
 
@@ -645,6 +677,8 @@ public class AuthController : ControllerBase
         var (newHash, newSalt) = _hasher.HashPassword(request.NewPassword);
         user.PasswordHash = newHash;
         user.PasswordSalt = newSalt;
+        // [SEC-P1] 用户自设新密码，清除强制改密标记
+        user.MustChangePassword = false;
         user.UpdatedAt = DateTime.UtcNow;
 
         await _jwt.RevokeAllUserTokens(user.Id);

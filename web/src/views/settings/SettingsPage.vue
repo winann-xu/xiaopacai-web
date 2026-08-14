@@ -5,12 +5,17 @@
 //   - Web 服务配置：DB 配置当前不参与启动绑定 → 整卡隐藏（管理端系统设置页另注）
 //   - 数据管理：家长仅备份；恢复/清除仅管理员
 import { ref, reactive } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { settingsApi, authApi } from '@/api'
 import { UploadFilled } from '@element-plus/icons-vue'
 
+const route = useRoute()
 const auth = useAuthStore()
+
+// [SEC-P1] 强制改密提示（登录接口返回 mustChangePassword 时跳转 ?mustChange=1）
+const mustChange = ref(route.query.mustChange === '1')
 
 const passwordForm = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
 const changingPassword = ref(false)
@@ -56,6 +61,15 @@ async function handleClearData() {
 <template>
   <div class="settings-page">
     <h2 class="page-title">设置</h2>
+    <!-- [SEC-P1] 强制改密横幅：默认口令/管理员重置口令后首次登录必须修改（红线 R4.2） -->
+    <el-alert
+      v-if="mustChange"
+      type="warning"
+      :closable="false"
+      show-icon
+      title="首次登录安全要求：请立即修改密码后再使用其他功能"
+      style="margin-bottom: 16px"
+    />
     <div class="settings-grid">
       <el-card shadow="hover"><template #header>账号与安全</template>
         <el-descriptions :column="1" border>

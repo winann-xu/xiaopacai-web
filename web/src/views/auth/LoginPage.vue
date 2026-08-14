@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { authApi, ticketApi } from '@/api'
 import { ElMessage } from 'element-plus'
 import {
-  UserFilled, Lock, Key,
+  UserFilled, Lock,
   Loading, CircleCheck, RefreshRight, ArrowLeft,
 } from '@element-plus/icons-vue'
 import { toDataURL as qrToDataURL } from 'qrcode'
@@ -75,7 +75,13 @@ async function handleLogin() {
   loading.value = true
   loginError.value = ''
   try {
-    await auth.login(loginForm.username, loginForm.password)
+    // [SEC-P1] 强制改密：种子账号/管理员重置口令后首次登录必须先改密（红线 R4.2）
+    const mustChange = await auth.login(loginForm.username, loginForm.password)
+    if (mustChange) {
+      ElMessage.warning('首次登录请先修改密码')
+      router.push({ path: '/settings', query: { mustChange: '1' } })
+      return
+    }
     // 保存角色到 localStorage（路由守卫用）
     localStorage.setItem('user_role', auth.user?.role || 'parent')
     ElMessage.success('登录成功')
@@ -87,18 +93,6 @@ async function handleLogin() {
     ElMessage.error(msg)
   } finally {
     loading.value = false
-  }
-}
-
-// 快速填入演示账号
-function fillDemo(role: 'admin' | 'parent') {
-  registerMode.value = false
-  if (role === 'admin') {
-    loginForm.username = 'admin'
-    loginForm.password = 'admin123'
-  } else {
-    loginForm.username = 'parent'
-    loginForm.password = 'parent123'
   }
 }
 
@@ -503,18 +497,6 @@ onBeforeUnmount(() => {
             </el-link>
           </div>
 
-          <!-- 演示账号 -->
-          <div class="demo-accounts">
-            <p class="demo-hint">演示账号：</p>
-            <div class="demo-buttons">
-              <el-button size="small" text type="primary" @click="fillDemo('parent')">
-                <el-icon><UserFilled /></el-icon> 家长 (parent / parent123)
-              </el-button>
-              <el-button size="small" text type="warning" @click="fillDemo('admin')">
-                <el-icon><Key /></el-icon> 管理员 (admin / admin123)
-              </el-button>
-            </div>
-          </div>
         </el-tab-pane>
 
         <!-- ===== 扫码登录（需求 10） ===== -->

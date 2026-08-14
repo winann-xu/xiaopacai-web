@@ -75,7 +75,9 @@ public class JwtService : IJwtService
         _db.RefreshTokens.Add(new RefreshToken
         {
             UserId = userId,
-            Token = refreshToken,
+            // [SEC-P1] 不落明文 Token（红线 R4.3）：验证仅凭 TokenHash，
+            // 库文件泄露时无法直接使用 refresh token 提权
+            Token = string.Empty,
             TokenHash = tokenHash,
             ExpiresAt = expiresAt,
             CreatedAt = DateTime.UtcNow,
@@ -103,12 +105,12 @@ public class JwtService : IJwtService
         var (accessToken, newRefreshToken, accessExpiry, refreshExpiry) =
             GenerateTokens(stored.UserId, stored.User.Username, stored.User.Role);
 
-        // 存储新 refresh token
+        // 存储新 refresh token（[SEC-P1] 不落明文，仅存哈希）
         var newTokenHash = HashToken(newRefreshToken);
         _db.RefreshTokens.Add(new RefreshToken
         {
             UserId = stored.UserId,
-            Token = newRefreshToken,
+            Token = string.Empty,
             TokenHash = newTokenHash,
             ExpiresAt = refreshExpiry,
             CreatedAt = DateTime.UtcNow,
