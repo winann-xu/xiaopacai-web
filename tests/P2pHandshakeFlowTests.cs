@@ -745,7 +745,7 @@ public class P2pHandshakeFlowTests : IDisposable
         {
             var (resp, _, _, _) = await handler.HandleHandshake(
                 new HandshakeRequest { DeviceId = $"brute-dev-{i}", PairCode = "888888" },
-                peerFingerprint: $"fp-brute-{i}", remoteEndPoint: "6.6.6.6:1234");
+                peerFingerprint: $"fp-brute-{i}", remoteEndPoint: "6.6.6.7:1234");
             Assert.False(resp.Ok);
         }
 
@@ -754,7 +754,7 @@ public class P2pHandshakeFlowTests : IDisposable
         {
             var (blocked, _, _, _) = await handler.HandleHandshake(
                 new HandshakeRequest { DeviceId = $"brute-dev-r{i}", PairCode = "888888" },
-                peerFingerprint: $"fp-brute-r{i}", remoteEndPoint: "6.6.6.6:1234");
+                peerFingerprint: $"fp-brute-r{i}", remoteEndPoint: "6.6.6.7:1234");
             Assert.False(blocked.Ok);
             Assert.Equal("ip_rate_limited", blocked.ErrorCode);
         }
