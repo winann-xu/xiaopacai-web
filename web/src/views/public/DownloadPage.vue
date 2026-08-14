@@ -26,22 +26,20 @@
           </el-button>
         </el-card>
 
-        <el-card class="dl-card" shadow="hover">
+        <el-card class="dl-card dl-card-disabled" shadow="hover">
           <div class="dl-icon">💻</div>
           <h3>Windows 桌面端</h3>
-          <p class="dl-desc">家长端桌面客户端<br />Windows 10/11 x64</p>
-          <p class="dl-meta">ZIP · 约 77.4 MB</p>
-          <el-button type="primary" size="large" class="dl-btn" @click="download('/downloads/XiaopacaiParent-1.0.0-win-x64.zip')">
-            下载 Windows
-          </el-button>
+          <p class="dl-desc">家长端桌面客户端<br />即将上线，敬请期待</p>
+          <p class="dl-meta">期待上线</p>
+          <el-button size="large" class="dl-btn" disabled>期待上线</el-button>
         </el-card>
 
-        <el-card class="dl-card" shadow="hover">
+        <el-card class="dl-card dl-card-disabled" shadow="hover">
           <div class="dl-icon">🍎</div>
           <h3>iOS 客户端</h3>
-          <p class="dl-desc">iPhone / iPad<br />敬请期待</p>
-          <p class="dl-meta">即将上线</p>
-          <el-button size="large" class="dl-btn" disabled>敬请期待</el-button>
+          <p class="dl-desc">iPhone / iPad<br />即将上线，敬请期待</p>
+          <p class="dl-meta">期待上线</p>
+          <el-button size="large" class="dl-btn" disabled>期待上线</el-button>
         </el-card>
       </div>
 
@@ -134,6 +132,15 @@ function download(url: string) {
   border-radius: 12px;
 }
 
+/* 未上线卡片：整体降饱和，明确"期待上线"状态 */
+.dl-card-disabled {
+  opacity: 0.72;
+}
+
+.dl-card-disabled .dl-icon {
+  filter: grayscale(0.6);
+}
+
 .dl-icon {
   font-size: 44px;
   margin-bottom: 10px;
@@ -166,5 +173,33 @@ function download(url: string) {
   margin-top: 40px;
   font-size: 12px;
   color: var(--el-text-color-placeholder);
+}
+
+/* 移动端适配：单列卡片、缩小标题与边距、按钮触控区 ≥44px */
+@media (max-width: 768px) {
+  .dl-header {
+    padding: 12px 16px;
+  }
+
+  .dl-title {
+    font-size: 16px;
+  }
+
+  .dl-main {
+    padding: 28px 16px;
+  }
+
+  .dl-heading {
+    font-size: 22px;
+  }
+
+  .dl-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .dl-btn {
+    min-height: 44px;
+  }
 }
 </style>

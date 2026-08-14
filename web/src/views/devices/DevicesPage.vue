@@ -139,4 +139,14 @@ function statusText(s: string) { return s === 'online' ? '在线' : s === 'recon
 .device-meta, .device-ip { font-size: 12px; color: var(--el-text-color-secondary); margin: 0 0 2px; }
 .device-usage { font-size: 12px; color: var(--el-text-color-secondary); margin: 4px 0 0; }
 .card-actions { display: flex; justify-content: flex-end; gap: 4px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--el-border-color-lighter); }
+
+/* [TASK-PRELAUNCH-P1] 移动端：页头堆叠、搜索全宽、单列卡片、按钮触控区 */
+@media (max-width: 768px) {
+  .page-header { flex-direction: column; align-items: stretch; }
+  .page-actions { flex-direction: column; }
+  .page-actions .el-input { width: 100% !important; }
+  .page-actions .el-button { min-height: 44px; }
+  .device-grid { grid-template-columns: 1fr; }
+  .card-actions .el-button { min-height: 44px; }
+}
 </style>

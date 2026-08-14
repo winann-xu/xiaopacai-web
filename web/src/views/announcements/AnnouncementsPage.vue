@@ -100,14 +100,14 @@ function sText(s: string) { return s==='published'?'已发布':s==='draft'?'草�
         <el-form-item label="标题" required><el-input v-model="editForm.title" placeholder="公告标题" maxlength="100" show-word-limit /></el-form-item>
         <el-form-item label="内容" required><el-input v-model="editForm.content" type="textarea" :rows="5" placeholder="公告内容" maxlength="500" show-word-limit /></el-form-item>
         <el-row :gutter="16">
-          <el-col :span="12">
+          <el-col :xs="24" :span="12">
             <el-form-item label="优先级">
               <el-select v-model="editForm.priority" style="width:100%">
                 <el-option label="普通" value="normal"/><el-option label="重要" value="important"/><el-option label="紧急" value="urgent"/>
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :span="12">
             <el-form-item label="有效期至">
               <el-date-picker v-model="editForm.validUntil" type="datetime" placeholder="选择时间" style="width:100%" />
             </el-form-item>
@@ -138,4 +138,14 @@ function sText(s: string) { return s==='published'?'已发布':s==='draft'?'草�
 .ann-meta { font-size: 12px; color: var(--el-text-color-placeholder); }
 .ann-content { font-size: 14px; color: var(--el-text-color-regular); line-height: 1.6; white-space: pre-wrap; }
 .ann-actions { display: flex; gap: 4px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--el-border-color-lighter); }
+
+/* [TASK-PRELAUNCH-P1] 移动端：页头堆叠、元信息换行、操作按钮触控区 */
+@media (max-width: 768px) {
+  .page-header { flex-direction: column; align-items: stretch; }
+  .page-actions { display: flex; flex-wrap: wrap; }
+  .page-actions .el-button { min-height: 44px; }
+  .ann-title-row { flex-wrap: wrap; }
+  .ann-meta { display: flex; flex-direction: column; gap: 2px; }
+  .ann-actions .el-button { min-height: 44px; flex: 1; }
+}
 </style>

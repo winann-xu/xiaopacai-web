@@ -1,19 +1,22 @@
 <script setup lang="ts">
-// 小趴菜 Web 3.0 — 主布局（侧边栏 + 顶栏 + 内容区）
+// 小趴菜 Web 3.0 — 主布局（桌面：侧边栏+顶栏；移动：底部 Tab 导航+更多抽屉）
+// [TASK-PRELAUNCH-P1] 需求 1：<768px 切换底部导航，功能不缺失
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
+import { useIsMobile } from '@/composables/useIsMobile'
 import {
   Odometer, Monitor, Setting, Notification, DataAnalysis, Tools,
   UserFilled, DocumentChecked, SetUp, FolderOpened, FirstAidKit, Connection,
-  Expand, Fold, Moon, Sunny, SwitchButton, Download,
+  Expand, Fold, Moon, Sunny, SwitchButton, MoreFilled, Download,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const ui = useUiStore()
+const isMobile = useIsMobile()
 
 // 菜单项
 interface MenuItem {
@@ -23,6 +26,7 @@ interface MenuItem {
   role?: string
 }
 
+// 移动端底部 Tab 只放 6 个主菜单，下载中心与后台放"更多"抽屉
 const userMenuItems: MenuItem[] = [
   { path: '/dashboard', title: '仪表盘', icon: Odometer },
   { path: '/devices', title: '设备管理', icon: Monitor },
@@ -30,7 +34,6 @@ const userMenuItems: MenuItem[] = [
   { path: '/announcements', title: '公告管理', icon: Notification },
   { path: '/reports', title: '使用报告', icon: DataAnalysis },
   { path: '/settings', title: '设置', icon: Tools },
-  { path: '/download', title: '下载中心', icon: Download },
 ]
 
 const adminMenuItems: MenuItem[] = [
@@ -48,7 +51,11 @@ const isAdmin = computed(() => auth.isAdmin)
 // 默认展开管理菜单
 const adminMenuOpen = ref(true)
 
+// 移动端"更多"抽屉：下载中心 + 管理后台（仅 admin）
+const moreDrawerVisible = ref(false)
+
 function navigateTo(path: string) {
+  moreDrawerVisible.value = false
   router.push(path)
 }
 
@@ -68,7 +75,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <el-container class="main-layout">
+  <!-- ===== 桌面端布局 ===== -->
+  <el-container v-if="!isMobile" class="main-layout">
     <!-- 侧边栏 -->
     <el-aside :width="ui.sidebarCollapsed ? '64px' : '220px'" class="layout-aside">
       <div class="aside-header">
@@ -97,6 +105,12 @@ onMounted(async () => {
         >
           <el-icon><component :is="item.icon" /></el-icon>
           <template #title>{{ item.title }}</template>
+        </el-menu-item>
+
+        <!-- 下载中心 -->
+        <el-menu-item index="/download" @click="navigateTo('/download')">
+          <el-icon><Download /></el-icon>
+          <template #title>下载中心</template>
         </el-menu-item>
 
         <!-- 管理菜单（仅 admin） -->
@@ -173,6 +187,82 @@ onMounted(async () => {
         <router-view />
       </el-main>
     </el-container>
+  </el-container>
+
+  <!-- ===== 移动端布局：底部 Tab 导航 ===== -->
+  <el-container v-else class="main-layout mobile-layout">
+    <!-- 精简顶栏（隐藏面包屑，保留用户菜单与深色开关） -->
+    <el-header class="layout-header mobile-header" height="48px">
+      <div class="header-left">
+        <span class="mobile-logo">🛡️ 小趴菜</span>
+      </div>
+      <div class="header-right">
+        <el-switch
+          v-model="ui.darkMode"
+          :active-icon="Moon"
+          :inactive-icon="Sunny"
+          inline-prompt
+          @change="ui.toggleDarkMode()"
+        />
+        <el-dropdown trigger="click">
+          <span class="user-avatar">
+            <el-avatar :size="28" icon="UserFilled" />
+          </span>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item>
+                <span>角色：{{ isAdmin ? '管理员' : '家长' }}</span>
+              </el-dropdown-item>
+              <el-dropdown-item divided @click="handleLogout">
+                <el-icon><SwitchButton /></el-icon> 退出登录
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
+    </el-header>
+
+    <!-- 内容区（底部留出 Tab 栏高度） -->
+    <el-main class="layout-content mobile-content">
+      <router-view />
+    </el-main>
+
+    <!-- 底部 Tab 导航 -->
+    <nav class="mobile-tabbar">
+      <button
+        v-for="item in userMenuItems"
+        :key="item.path"
+        class="tabbar-item"
+        :class="{ active: route.path.startsWith(item.path) }"
+        @click="navigateTo(item.path)"
+      >
+        <el-icon :size="20"><component :is="item.icon" /></el-icon>
+        <span class="tabbar-label">{{ item.title.replace('管理', '') }}</span>
+      </button>
+      <button
+        class="tabbar-item"
+        :class="{ active: route.path === '/download' || route.path.startsWith('/admin') }"
+        @click="moreDrawerVisible = true"
+      >
+        <el-icon :size="20"><MoreFilled /></el-icon>
+        <span class="tabbar-label">更多</span>
+      </button>
+    </nav>
+
+    <!-- 更多抽屉：下载中心 + 管理后台（仅 admin） -->
+    <el-drawer v-model="moreDrawerVisible" title="更多功能" direction="btt" size="60%">
+      <div class="more-list">
+        <div class="more-item" @click="navigateTo('/download')">
+          <el-icon :size="20"><Download /></el-icon><span>下载中心</span>
+        </div>
+        <template v-if="isAdmin">
+          <el-divider style="margin: 6px 0">管理后台</el-divider>
+          <div v-for="item in adminMenuItems" :key="item.path" class="more-item" @click="navigateTo(item.path)">
+            <el-icon :size="20"><component :is="item.icon" /></el-icon><span>{{ item.title }}</span>
+          </div>
+        </template>
+      </div>
+    </el-drawer>
   </el-container>
 </template>
 
@@ -273,5 +363,83 @@ onMounted(async () => {
   overflow-y: auto;
   padding: 20px;
   background: var(--el-bg-color-page);
+}
+
+/* ===== 移动端 ===== */
+.mobile-header {
+  padding: 0 12px;
+}
+
+.mobile-logo {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--el-color-primary);
+}
+
+.mobile-content {
+  padding: 12px;
+  padding-bottom: calc(64px + env(safe-area-inset-bottom));
+}
+
+.mobile-tabbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: calc(56px + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  display: flex;
+  justify-content: space-around;
+  align-items: stretch;
+  background: var(--el-bg-color);
+  border-top: 1px solid var(--el-border-color-light);
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.04);
+  z-index: 1000;
+}
+
+.tabbar-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--el-text-color-secondary);
+  min-height: 44px;
+  font-family: inherit;
+}
+
+.tabbar-item.active {
+  color: var(--el-color-primary);
+}
+
+.tabbar-label {
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.more-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.more-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 4px;
+  font-size: 14px;
+  color: var(--el-text-color-regular);
+  cursor: pointer;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  min-height: 44px;
+}
+
+.more-item:active {
+  color: var(--el-color-primary);
 }
 </style>

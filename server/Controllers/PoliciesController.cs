@@ -71,11 +71,12 @@ public class PoliciesController : ControllerBase
         policy.WhitelistApps = JsonSerializer.Serialize(request.Whitelist ?? new List<string>());
         policy.BlacklistApps = JsonSerializer.Serialize(request.Blacklist ?? new List<string>());
 
-        // 分类限额映射（默认 -1 = 不限）
-        policy.CategoryGameLimit = GetCategoryLimit(request.CategoryLimits, "game");
-        policy.CategorySocialLimit = GetCategoryLimit(request.CategoryLimits, "social");
-        policy.CategoryVideoLimit = GetCategoryLimit(request.CategoryLimits, "video");
-        policy.CategoryLearningLimit = GetCategoryLimit(request.CategoryLimits, "study", "learning");
+        // [TASK-PRELAUNCH-P1] 分类限额暂不可用：忽略前端提交，强制 -1（不限），不下发分类限额策略项
+        // （Android 端分类累计闭环尚未完成，避免家长误以为已生效）
+        policy.CategoryGameLimit = -1;
+        policy.CategorySocialLimit = -1;
+        policy.CategoryVideoLimit = -1;
+        policy.CategoryLearningLimit = -1;
         policy.IsActive = true;
         policy.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
@@ -115,17 +116,6 @@ public class PoliciesController : ControllerBase
         // [TASK-OPT-12-P4-DEEPEN] 推送时携带设备应用分类（app_categories）
         var json = _messageHandler.BuildPolicyPushMessage(device.DeviceId, policy, device.AppCategories);
         return await _p2p.SendToDevice(device.DeviceId, json);
-    }
-
-    private static int GetCategoryLimit(List<CategoryLimitItem>? limits, string category, string? altCategory = null)
-    {
-        var item = limits?.FirstOrDefault(l =>
-            string.Equals(l.Category, category, StringComparison.OrdinalIgnoreCase) ||
-            (altCategory != null && string.Equals(l.Category, altCategory, StringComparison.OrdinalIgnoreCase)));
-
-        if (item == null || !item.Enabled)
-            return -1;
-        return Math.Max(0, item.Minutes);
     }
 
     private static object ToDto(Policy policy)
