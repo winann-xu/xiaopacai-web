@@ -94,9 +94,10 @@ public class P2pHandshakeFlowTests : IDisposable
     {
         var handler = CreateHandler();
 
-        var (response, policy, dbDeviceId) = await handler.HandleHandshake(
+        var (response, policy, _, dbDeviceId) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "new-device-1", DeviceName = "新手机" },
-            peerFingerprint: null, remoteEndPoint: "192.168.1.10:1234");
+            peerFingerprint: "aabbccddeeff0011aabbccddeeff0011aabbccddeeff0011aabbccddeeff0011",
+            remoteEndPoint: "192.168.1.10:1234");
 
         Assert.False(response.Ok);
         Assert.Equal("unpaired", response.PairStatus);
@@ -108,13 +109,29 @@ public class P2pHandshakeFlowTests : IDisposable
         Assert.Equal(0, await CreateDb().Devices.CountAsync());
     }
 
+    // ==================== [SEC-K1] mTLS 客户端证书强制 ====================
+
+    [Fact]
+    public async Task Handshake_MissingClientCertificate_Rejected()
+    {
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "no-cert-dev", PairCode = "123456" },
+            peerFingerprint: null, remoteEndPoint: "1.2.3.4:9999");
+
+        Assert.False(response.Ok);
+        Assert.Contains("客户端证书", response.Error);
+        Assert.Equal(0, await CreateDb().Devices.CountAsync());
+    }
+
     [Fact]
     public async Task Handshake_NewDeviceWithValidPairCode_RegistersAndPairs()
     {
         await SeedPairingCode("123456");
         var handler = CreateHandler();
 
-        var (response, policy, dbDeviceId) = await handler.HandleHandshake(
+        var (response, policy, _, dbDeviceId) = await handler.HandleHandshake(
             new HandshakeRequest
             {
                 DeviceId = "android-device-abc",
@@ -124,7 +141,7 @@ public class P2pHandshakeFlowTests : IDisposable
                 PairCode = "123456",
                 CertFingerprint = "a1b2c3d4e5f67890",
             },
-            peerFingerprint: null, remoteEndPoint: "192.168.1.50:9999");
+            peerFingerprint: "a1b2c3d4e5f67890", remoteEndPoint: "192.168.1.50:9999");
 
         // 握手成功
         Assert.True(response.Ok);
@@ -164,9 +181,9 @@ public class P2pHandshakeFlowTests : IDisposable
         await SeedPairingCode("123456"); // 数据库里有别的码
         var handler = CreateHandler();
 
-        var (response, _, _) = await handler.HandleHandshake(
+        var (response, _, _, _) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "dev-x", PairCode = "999999" },
-            peerFingerprint: null, remoteEndPoint: "ip");
+            peerFingerprint: "fp-invalid-pair-code", remoteEndPoint: "ip");
 
         Assert.False(response.Ok);
         Assert.Contains("无效或已过期", response.Error);
@@ -179,9 +196,9 @@ public class P2pHandshakeFlowTests : IDisposable
         await SeedPairingCode("123456", expiresAt: DateTime.UtcNow.AddMinutes(-1));
         var handler = CreateHandler();
 
-        var (response, _, _) = await handler.HandleHandshake(
+        var (response, _, _, _) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "dev-y", PairCode = "123456" },
-            peerFingerprint: null, remoteEndPoint: "ip");
+            peerFingerprint: "fp-expired-pair-code", remoteEndPoint: "ip");
 
         Assert.False(response.Ok);
         Assert.Contains("无效或已过期", response.Error);
@@ -217,9 +234,9 @@ public class P2pHandshakeFlowTests : IDisposable
 
         var handler = CreateHandler();
 
-        var (response, policy, dbDeviceId) = await handler.HandleHandshake(
+        var (response, policy, _, dbDeviceId) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "existing-dev", DeviceName = "新名称" },
-            peerFingerprint: null, remoteEndPoint: "10.0.0.8:7777");
+            peerFingerprint: "fp-existing-dev", remoteEndPoint: "10.0.0.8:7777");
 
         Assert.True(response.Ok);
         Assert.Equal("paired", response.PairStatus);
@@ -230,7 +247,8 @@ public class P2pHandshakeFlowTests : IDisposable
         var customPolicy = ExtractDailyLimit(policy!);
         Assert.Equal(180, customPolicy.LimitMinutes);
         Assert.Equal("warn", customPolicy.RestrictMode);
-        Assert.Equal(45, ExtractCategoryLimit(policy!, "game"));
+        // [TASK-PRELAUNCH-P1] 分类限额暂不可用：握手策略不再下发 category_limit（-1 = 不限）
+        Assert.Equal(-1, ExtractCategoryLimit(policy!, "game"));
 
         // 状态更新（用全新上下文断言，避免读到跟踪的旧状态）
         var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "existing-dev");
@@ -256,9 +274,9 @@ public class P2pHandshakeFlowTests : IDisposable
 
         var handler = CreateHandler();
 
-        var (response, _, dbDeviceId) = await handler.HandleHandshake(
+        var (response, _, _, dbDeviceId) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "revoked-dev", PairCode = "123456" },
-            peerFingerprint: null, remoteEndPoint: "ip");
+            peerFingerprint: "fp-revoked-dev", remoteEndPoint: "ip");
 
         Assert.False(response.Ok);
         Assert.Equal("revoked", response.PairStatus);
@@ -269,6 +287,7 @@ public class P2pHandshakeFlowTests : IDisposable
     [Fact]
     public async Task Handshake_UnpairedExistingDevice_WithPairCode_RepairsPairing()
     {
+        await SeedPairingCode("888888"); // 修复既有测试缺陷：需先存在待确认配对码，才能完成重新配对
         var db = CreateDb();
         db.Devices.Add(new Device
         {
@@ -282,15 +301,236 @@ public class P2pHandshakeFlowTests : IDisposable
 
         var handler = CreateHandler();
 
-        var (response, _, _) = await handler.HandleHandshake(
+        var (response, _, _, _) = await handler.HandleHandshake(
             new HandshakeRequest { DeviceId = "unpaired-dev", PairCode = "888888" },
-            peerFingerprint: null, remoteEndPoint: "ip");
+            peerFingerprint: "fp-repaired-dev", remoteEndPoint: "ip");
 
         Assert.True(response.Ok);
         Assert.Equal("paired", response.PairStatus);
 
         var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "unpaired-dev");
         Assert.Equal("paired", updated.PairStatus);
+    }
+
+    // ==================== [SEC-K1] 证书指纹固定 ====================
+
+    [Fact]
+    public async Task Handshake_PairedDeviceFingerprintMismatch_RejectedAndNotOverwritten()
+    {
+        var db = CreateDb();
+        db.Devices.Add(new Device
+        {
+            DeviceId = "pinned-dev",
+            DeviceName = "指纹设备",
+            Platform = "android",
+            PairStatus = "paired",
+            OnlineStatus = "offline",
+            CertFingerprint = "fp-original",
+        });
+        await db.SaveChangesAsync();
+
+        var handler = CreateHandler();
+
+        // 攻击者以不同客户端证书冒充已配对设备 → 必须拒绝
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "pinned-dev" },
+            peerFingerprint: "fp-attacker", remoteEndPoint: "6.6.6.6:1234");
+
+        Assert.False(response.Ok);
+        Assert.Contains("证书指纹不匹配", response.Error);
+
+        // 指纹不得被覆盖（此前缺陷：静默用攻击者证书替换存储指纹）
+        var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "pinned-dev");
+        Assert.Equal("fp-original", updated.CertFingerprint);
+        // 拒绝发生在状态更新之前：设备仍离线
+        Assert.Equal("offline", updated.OnlineStatus);
+    }
+
+    [Fact]
+    public async Task Handshake_PairedDeviceMatchingFingerprint_Accepted()
+    {
+        var db = CreateDb();
+        db.Devices.Add(new Device
+        {
+            DeviceId = "match-dev",
+            DeviceName = "匹配设备",
+            Platform = "android",
+            PairStatus = "paired",
+            OnlineStatus = "offline",
+            CertFingerprint = "FP-AAA",
+        });
+        await db.SaveChangesAsync();
+
+        var handler = CreateHandler();
+
+        // 大小写不敏感比对：真实证书指纹重新编码不应导致误拒
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "match-dev" },
+            peerFingerprint: "fp-aaa", remoteEndPoint: "7.7.7.7:1234");
+
+        Assert.True(response.Ok);
+        var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "match-dev");
+        Assert.Equal("online", updated.OnlineStatus);
+    }
+
+    [Fact]
+    public async Task Handshake_PairedDeviceNoStoredFingerprint_ToFuAdopts()
+    {
+        var db = CreateDb();
+        db.Devices.Add(new Device
+        {
+            DeviceId = "tofu-dev",
+            DeviceName = "历史设备",
+            Platform = "android",
+            PairStatus = "paired",
+            OnlineStatus = "offline",
+            CertFingerprint = null, // 历史设备无指纹记录
+        });
+        await db.SaveChangesAsync();
+
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "tofu-dev" },
+            peerFingerprint: "fp-tofu-new", remoteEndPoint: "8.8.8.8:1234");
+
+        Assert.True(response.Ok);
+        var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "tofu-dev");
+        Assert.Equal("fp-tofu-new", updated.CertFingerprint);
+    }
+
+    [Fact]
+    public async Task Handshake_RevokedDeviceWithValidPairCode_RotatesFingerprint()
+    {
+        // 信任轮换：凭新配对码重新绑定后，新客户端证书指纹被采纳（旧指纹作废）
+        await SeedPairingCode("666666");
+        var db = CreateDb();
+        db.Devices.Add(new Device
+        {
+            DeviceId = "rotate-dev",
+            DeviceName = "轮换设备",
+            Platform = "android",
+            PairStatus = "revoked",
+            OnlineStatus = "offline",
+            CertFingerprint = "fp-old",
+        });
+        await db.SaveChangesAsync();
+
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "rotate-dev", PairCode = "666666" },
+            peerFingerprint: "fp-rotated", remoteEndPoint: "9.9.9.9:1234");
+
+        Assert.True(response.Ok);
+        var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "rotate-dev");
+        Assert.Equal("paired", updated.PairStatus);
+        Assert.Equal("fp-rotated", updated.CertFingerprint);
+    }
+
+    // ==================== [SEC-K2] 家长端中继会话令牌 + 指纹绑定 ====================
+
+    private async Task SeedParentSession(string deviceId, string? token, string? fingerprint)
+    {
+        var db = CreateDb();
+        db.RelaySessions.Add(new RelaySession
+        {
+            DeviceId = deviceId,
+            Role = "parent",
+            Status = "disconnected",
+            ConnectedAt = DateTime.UtcNow,
+            SessionToken = token,
+            Fingerprint = fingerprint,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task ParentRelay_MissingSessionToken_Rejected()
+    {
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "parent-notoken1", Relay = true },
+            peerFingerprint: "fp-parent-1", remoteEndPoint: "10.0.0.1:1000");
+
+        Assert.False(response.Ok);
+        Assert.Contains("会话令牌", response.Error);
+    }
+
+    [Fact]
+    public async Task ParentRelay_InvalidSessionToken_Rejected()
+    {
+        await SeedParentSession("parent-badtoken", "real-token-1234", "fp-parent-2");
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "parent-badtoken", Relay = true, SessionToken = "fake-token-5678" },
+            peerFingerprint: "fp-parent-2", remoteEndPoint: "10.0.0.2:1000");
+
+        Assert.False(response.Ok);
+        Assert.Contains("未授权", response.Error);
+    }
+
+    [Fact]
+    public async Task ParentRelay_ValidTokenButWrongFingerprint_Rejected()
+    {
+        // 令牌正确但 TLS 客户端证书与注册时绑定的不一致 → 拒绝（防令牌被盗后冒充）
+        await SeedParentSession("parent-fpmismatch", "tok-abc", "fp-registered");
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "parent-fpmismatch", Relay = true, SessionToken = "tok-abc" },
+            peerFingerprint: "fp-attacker", remoteEndPoint: "10.0.0.3:1000");
+
+        Assert.False(response.Ok);
+        Assert.Contains("未授权", response.Error);
+    }
+
+    [Fact]
+    public async Task ParentRelay_ValidTokenAndFingerprint_Accepted()
+    {
+        await SeedParentSession("parent-ok1234", "tok-xyz", "fp-parent-ok");
+        var handler = CreateHandler();
+
+        var (response, policy, _, dbDeviceId) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "parent-ok1234", Relay = true, SessionToken = "tok-xyz" },
+            peerFingerprint: "fp-parent-ok", remoteEndPoint: "10.0.0.4:1000");
+
+        Assert.True(response.Ok);
+        Assert.Equal("paired", response.PairStatus);
+        Assert.Null(policy);      // 家长端不下发策略
+        Assert.Null(dbDeviceId);  // 家长端不创建 Device
+
+        // 复用已注册会话（更新状态而非新建行）
+        var db = CreateDb();
+        var sessions = await db.RelaySessions.Where(s => s.DeviceId == "parent-ok1234").ToListAsync();
+        Assert.Single(sessions);
+        Assert.Equal("connected", sessions[0].Status);
+    }
+
+    // ==================== [SEC-K3] 握手失败限速 ====================
+
+    [Fact]
+    public async Task Handshake_PairCodeBruteForce_BlockedAfterLimit()
+    {
+        var handler = CreateHandler();
+
+        // 同一 IP 连续 10 次配对失败 → 第 11 次被 IP 级限速拦截
+        for (var i = 0; i < 10; i++)
+        {
+            var (resp, _, _, _) = await handler.HandleHandshake(
+                new HandshakeRequest { DeviceId = $"brute-dev-{i}", PairCode = "777777" },
+                peerFingerprint: $"fp-brute-{i}", remoteEndPoint: "5.5.5.5:1234");
+            Assert.False(resp.Ok);
+        }
+
+        var (blocked, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "brute-dev-final", PairCode = "777777" },
+            peerFingerprint: "fp-brute-final", remoteEndPoint: "5.5.5.5:1234");
+
+        Assert.False(blocked.Ok);
+        Assert.Contains("尝试次数过多", blocked.Error);
     }
 
     // ==================== Usage Report ====================
