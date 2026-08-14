@@ -333,10 +333,19 @@ public class P2pListenerService : IHostedService
                                 && offsetEl.ValueKind == JsonValueKind.Number;
                             var offsetVal = 0L;
                             if (offsetReported) offsetEl.TryGetInt64(out offsetVal);
+                            // [FIX-100] 读取儿童端上报的调整后今日已用（最准确口径；缺省 null = 未上报）
+                            var adjustedReported = usagePayload.TryGetProperty(
+                                "todayAdjustedMinutes", out var adjustedEl)
+                                && adjustedEl.ValueKind == JsonValueKind.Number;
+                            int? adjustedVal = null;
+                            if (adjustedReported && adjustedEl.TryGetInt64(out var adjustedRaw))
+                                adjustedVal = (int)Math.Min(int.MaxValue, adjustedRaw);
                             var ack = await _messageHandler.HandleUsageReportLegacy(
                                 deviceId, recordsJson,
                                 offsetReported ? (int)Math.Min(int.MaxValue, offsetVal) : 0,
-                                offsetReported);
+                                offsetReported,
+                                adjustedVal,
+                                adjustedReported);
                             await WriteFrameAsync(sslStream, _messageHandler.BuildSyncAckJson(ack.Synced));
 
                             // [TASK-OPT-12-P4-DEEPEN] 中继转发：儿童端使用上报实时转发给绑定家长端

@@ -173,6 +173,48 @@ public static class DataExtensions
         await TryAddColumnAsync(db, "devices", "LastResetOffsetMinutes", "INTEGER NOT NULL DEFAULT 0", logger);
         await TryAddColumnAsync(db, "devices", "LastResetDate", "TEXT NULL", logger);
         await TryAddColumnAsync(db, "devices", "LastReportAt", "TEXT NULL", logger);
+        // [FIX-100] 儿童端上报的调整后今日已用（优先展示口径）
+        await TryAddColumnAsync(db, "devices", "TodayAdjustedMinutes", "INTEGER NULL", logger);
+
+        // [FIX-100] usage_records 去重迁移：P4 前历史重复行导致 raw SUM 虚高。
+        // 按 (DeviceId, AppPackage, 日期) 保留 Id 最大（最新）一条，删除其余，再建唯一索引防复发。
+        await DedupUsageRecordsAsync(db, logger);
+    }
+
+    /// <summary>
+    /// [FIX-100] usage_records 按 (DeviceId, AppPackage, StartTime 日期) 去重：
+    /// 保留每组 Id 最大（最新）一行，删除历史重复行；随后创建唯一索引防止再次出现重复。
+    /// StartTime 以 TEXT 存储（yyyy-MM-dd HH:mm:ss…），取前 10 位即日期。
+    /// </summary>
+    private static async Task DedupUsageRecordsAsync(AppDbContext db, ILogger logger)
+    {
+        try
+        {
+            var deleted = await db.Database.ExecuteSqlRawAsync(
+                """
+                DELETE FROM "usage_records"
+                WHERE "Id" NOT IN (
+                    SELECT MAX("Id")
+                    FROM "usage_records"
+                    GROUP BY "DeviceId", "AppPackage", substr("StartTime", 1, 10)
+                )
+                """);
+            if (deleted > 0)
+                logger.LogWarning("[DB][FIX-100] usage_records 清理历史重复行 {Deleted} 条", deleted);
+
+            // 唯一索引（表达式索引，SQLite 支持）：同设备同包名同日期仅一行
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS "idx_usage_records_device_package_date"
+                ON "usage_records" ("DeviceId", "AppPackage", substr("StartTime", 1, 10))
+                """);
+            logger.LogInformation("[DB][FIX-100] usage_records 唯一索引已就绪（DeviceId, AppPackage, 日期）");
+        }
+        catch (Exception ex)
+        {
+            // 失败不阻断启动：重复防护仍由应用层 upsert 保证
+            logger.LogWarning(ex, "[DB][FIX-100] usage_records 去重/索引处理失败（不阻断启动）");
+        }
     }
 
     /// <summary>

@@ -1,7 +1,7 @@
 # ADR 0005 — 时间额度口径统一：重置偏移/时区/协议字段（PRELAUNCH-P4）
 
 - 日期：2026-08-14
-- 状态：已实施（待 Codex 拉测）
+- 状态：已实施（P4 初版已拉测；FIX-100 增补见文末，待 Codex 复验）
 - 关联需求：《小趴菜_上线前调整优化》需求 7（设备页数据准确性：重置偏移/时区/Mock 移除/实时刷新）、需求 9（仪表盘/策略页同源同步）
 
 ## 背景
@@ -55,3 +55,33 @@
 - 报告（日报/周报）口径不变：仍按原始累计（含重置前），与设备页"原始累计"标注一致。
 - 旧版儿童端（无偏移字段）行为等同旧版：偏移不校正，但重置链路本身已修复（服务器侧估算）。
 - 验证链保持：策略下发/超时锁定/报告/公告去重/TLS P2P 均未改动。
+
+## 增补（FIX-100，Codex 缺陷 100/101 修复，2026-08-14）
+
+Codex 拉测发现两处问题，修复如下：
+
+### 1. usage_records 历史重复行 → raw SUM 虚高（缺陷 100）
+
+- 根因：P4 前无 (device_id, app_package, 日期) 唯一约束，历史重复行残留；P4 初版 upsert 只更新组内第一行、不删除同键其余行。
+- 修复：启动迁移 `DedupUsageRecordsAsync` — 按 (DeviceId, AppPackage, substr(StartTime,1,10)) 保留 Id 最大一行、删除其余；再建唯一表达式索引 `idx_usage_records_device_package_date`（SQLCipher 兼容，失败不阻断启动）。应用层 upsert 同步加固：批内同键去重（取最后一条）+ 本批已插入键登记，防止同批双插入触发唯一冲突。
+
+### 2. 展示/ack 优先儿童端上报的调整后已用（缺陷 100 建议 2）
+
+- 协议再增字段（仍是只增不改，向后兼容）：
+
+```json
+{ "type": "usage_report",
+  "payload": { "deviceId": "AND-001", "records": "[...]",
+               "dailyResetOffsetMinutes": 60,
+               "todayAdjustedMinutes": 25, "timestamp": 1760000000 } }
+```
+
+- `todayAdjustedMinutes`：儿童端自算的调整后今日已用（UsageStatsCollector 实时累计口径，与主页/超时判定同源；采集器未就绪时以 UsageStatsHelper 实时累计 − 偏移兜底）。
+- Web 落库 `devices.TodayAdjustedMinutes`（INTEGER NULL）；设备列表/详情/ack 的"今日已用"优先采用该值，仅当 `LastReportAt` 属于今日（Asia/Shanghai）时有效，隔夜陈旧值回退服务端计算（`ResolveTodayUsedMinutes` 纯函数）。
+- `ResetLimit` 时服务器将 `TodayAdjustedMinutes` 置 0（立即显示归零），儿童端下次上报自算值覆盖。
+- usage_records 仅用于报告（原始累计）与回退口径；raw 经去重迁移后恢复准确。
+
+### 3. 缺陷 101（Codex 已修，合入）
+
+- Android `handleLimitReset` 原走 SQLCipher DAO 查询偶发 `SQLiteMisuseException`；改为 `UsageStatsHelper.getTodayTotalMinutes(context)` 实时累计（Codex commit 2084c34 已合入主仓库）。
+

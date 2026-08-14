@@ -283,7 +283,8 @@ public class P2pMessageHandler
     /// 4. sync_ack 的已用/剩余改用调整后口径（与设备页一致）
     /// </summary>
     public async Task<SyncAckMessage> HandleUsageReport(
-        UsageReportRequest req, int dailyResetOffsetMinutes = 0, bool offsetReported = false)
+        UsageReportRequest req, int dailyResetOffsetMinutes = 0, bool offsetReported = false,
+        int? todayAdjustedMinutes = null, bool adjustedReported = false)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -313,6 +314,13 @@ public class P2pMessageHandler
             ? parsed[0].DateStr
             : AppClock.TodayShanghai();
 
+        // [FIX-100] 批内去重：同键(包名,日期)只处理最后一条（儿童端发的是当日累计快照，重复键取最新值），
+        // 避免同批两条同键导致唯一索引冲突/双插入
+        parsed = parsed
+            .GroupBy(p => $"{p.Item.AppPackage}|{p.DateStr}")
+            .Select(g => g.Last())
+            .ToList();
+
         // [TASK-PRELAUNCH-P4] upsert 键：(包名, 日期) —— 覆盖更新当日累计，避免重复累加
         var existingRecords = await db.UsageRecords
             .Where(r => r.DeviceId == device.Id)
@@ -336,7 +344,7 @@ public class P2pMessageHandler
             }
             else
             {
-                db.UsageRecords.Add(new UsageRecord
+                var newRecord = new UsageRecord
                 {
                     DeviceId = device.Id,
                     AppPackage = record.AppPackage,
@@ -347,7 +355,10 @@ public class P2pMessageHandler
                     DurationSeconds = record.DurationSeconds,
                     IsBlocked = record.IsBlocked,
                     CreatedAt = DateTime.UtcNow,
-                });
+                };
+                db.UsageRecords.Add(newRecord);
+                // [FIX-100] 登记本批已插入的键：若后续同键再出现则走更新分支，防止唯一索引冲突
+                existingByKey[key] = newRecord;
             }
             synced++;
         }
@@ -357,6 +368,11 @@ public class P2pMessageHandler
         {
             device.LastResetOffsetMinutes = Math.Max(0, dailyResetOffsetMinutes);
             device.LastResetDate = today;
+        }
+        // [FIX-100] 儿童端上报调整后今日已用（最准确口径）→ 落库，展示/ack 优先采用
+        if (adjustedReported && todayAdjustedMinutes.HasValue)
+        {
+            device.TodayAdjustedMinutes = Math.Max(0, todayAdjustedMinutes.Value);
         }
         device.LastReportAt = DateTime.UtcNow;
         device.UpdatedAt = DateTime.UtcNow;
@@ -372,7 +388,9 @@ public class P2pMessageHandler
         var policy = await db.Policies.FirstOrDefaultAsync(p => p.DeviceId == device.Id);
         var dailyLimit = policy?.DailyLimitMinutes ?? 120;
         var rawMinutes = summary?.TotalMinutes ?? 0;
-        var adjustedMinutes = AdjustedUsageCalculator.ComputeAdjusted(
+        // [FIX-100] 优先儿童端上报的调整后已用（当日有效），回退服务端计算（原始累计 − 偏移）
+        var adjustedMinutes = AdjustedUsageCalculator.ResolveTodayUsedMinutes(
+            device.TodayAdjustedMinutes, device.LastReportAt, DateTime.UtcNow,
             rawMinutes, device.LastResetOffsetMinutes, device.LastResetDate, today);
         var remaining = Math.Max(0, dailyLimit - adjustedMinutes);
         var overtimeLocked = summary != null && adjustedMinutes >= dailyLimit;
@@ -759,16 +777,19 @@ public class P2pMessageHandler
 
     /// <summary>
     /// 处理 2.0 儿童端 usage_report（records 为 JSON 字符串，元素含 packageName/appName/date/totalMinutes/category）
+    /// [FIX-100] 可携带 todayAdjustedMinutes：儿童端实时累计的调整后今日已用（最准确口径）
     /// </summary>
     public async Task<SyncAckMessage> HandleUsageReportLegacy(
-        string deviceId, string recordsJson, int dailyResetOffsetMinutes = 0, bool offsetReported = false)
+        string deviceId, string recordsJson, int dailyResetOffsetMinutes = 0, bool offsetReported = false,
+        int? todayAdjustedMinutes = null, bool adjustedReported = false)
     {
         var request = new UsageReportRequest
         {
             DeviceId = deviceId,
             Records = ParseLegacyRecords(recordsJson),
         };
-        return await HandleUsageReport(request, dailyResetOffsetMinutes, offsetReported);
+        return await HandleUsageReport(
+            request, dailyResetOffsetMinutes, offsetReported, todayAdjustedMinutes, adjustedReported);
     }
 
     private static List<UsageRecordItem> ParseLegacyRecords(string recordsJson)

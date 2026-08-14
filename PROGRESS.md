@@ -229,3 +229,12 @@
 - Android：SyncManager 处理 limit_reset（修复此前重置链路断裂根因）+ usage_report 上报偏移；UsageStatsCollector 调整后已用（超时判定/封锁/通知）；主页/通知同步调整后口径
 - 前端：设备/账号/审计页移除 Mock→错误态+重试；设备页/仪表盘/策略页 30s 轮询+最后刷新时间；设备页新增重置限额按钮（成功立即刷新）；仪表盘事件时间用真实数据时间
 - 测试：tests/TimeQuotaTests.cs（调整计算 6 用例 / upsert 不虚高 / 偏移落库与 ack 口径 / 旧端不覆盖偏移 / 设备本地日期归属）
+
+### P4-FIX 缺陷 100/101 修复（已交付，待 Codex 复验）
+- 缺陷 100：usage_records 历史重复行导致 raw SUM 虚高（实测 9464 vs 儿童端 0）
+  - 启动迁移按 (DeviceId, AppPackage, 日期) 保留最新一行删其余 + 唯一表达式索引（SQLCipher 兼容，失败不阻断）
+  - 应用层 upsert 加固：批内同键去重 + 本批已插入键登记（防唯一冲突双插入）
+  - 协议再增字段 usage_report.todayAdjustedMinutes（儿童端自算调整后已用）；Web 落库 devices.TodayAdjustedMinutes，
+    设备列表/详情/ack 优先采用（仅当日有效，隔夜陈旧回退服务端计算 ResolveTodayUsedMinutes）；ResetLimit 置 0
+- 缺陷 101：limit_reset 偏移改 UsageStatsHelper 实时累计（Codex commit 2084c34 已合入 Android main）
+- ADR 0005 增补 + 测试新增 5 例（口径解析 3 + 儿童端值优先落库/ack + 同批同键单行）

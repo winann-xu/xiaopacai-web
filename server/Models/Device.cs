@@ -72,6 +72,11 @@ public class Device
     /// <summary>[TASK-PRELAUNCH-P4] 最近一次使用上报时间（UTC；设备详情“最近上报/采集延迟”展示）</summary>
     public DateTime? LastReportAt { get; set; }
 
+    /// <summary>[FIX-100] 儿童端上报的调整后今日已用（分钟，usage_report.todayAdjustedMinutes）；
+    /// null = 未上报。展示/ack 优先采用该值（儿童端实时累计最准确），
+    /// 仅当 LastReportAt 属于今日（Asia/Shanghai）时有效，否则回退服务端计算</summary>
+    public int? TodayAdjustedMinutes { get; set; }
+
     public bool IsActive { get; set; } = true;
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

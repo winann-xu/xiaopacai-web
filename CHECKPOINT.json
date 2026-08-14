@@ -156,7 +156,7 @@
   "last_updated": "2026-08-14",
   "note": "深夜深度验收：局域网1:1/一拖二/Windows互联/Web中继全链路（双儿童在线、中继转发1499字节到家长端、诊断、分类API）通过；隐私边界审计完成。Codex 修复：900b8da（SQLite 翻译）、ebc48fe（静态文件）、4e9f574（已有设备重连关联配对码，修复 owner 绑定导致中继路由失效）。dotnet 178/178。遗留：Web P2P 未处理 diagnostics_report；relay/register 重复会话行（建议 upsert）。",
   "prelaunch": {
-    "current_phase": "P4",
+    "current_phase": "P4-fix",
     "basis": "提示词包《小趴菜_上线前调整优化》V1.0-PRELAUNCH（2026-08-14，用户确认）",
     "P1": {
       "name": "移动端响应式 + 下载中心期待上线 + 设置页裁剪 + 分类限额暂不可用",
@@ -290,6 +290,19 @@
         "npm run build": "通过（0 错误）",
         "dotnet build/test": "待 Codex 在 Windows 侧执行（本机无 dotnet）",
         "android gradlew testDebugUnitTest": "待 Codex 执行"
+      },
+      "fix_round": {
+        "round": 1,
+        "defects": [
+          "100",
+          "101"
+        ],
+        "date": "2026-08-14",
+        "summary": "缺陷 100：usage_records 历史重复行导致 raw SUM 虚高（去重迁移+唯一索引+批内去重）；展示/ack 优先儿童端上报 todayAdjustedMinutes（协议增字段，当日有效，隔夜回退服务端计算）。缺陷 101（Codex 已修）：limit_reset 偏移改 UsageStatsHelper 实时累计，合入 commit 2084c34。",
+        "verification": {
+          "dotnet build/test": "待 Codex",
+          "npm run build": "本轮无前端变更（不重跑）"
+        }
       }
     }
   }
