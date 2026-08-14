@@ -2,8 +2,10 @@
 // 自托管单进程：REST API + SignalR + P2P TCP/TLS 监听
 // P2 阶段：数据层 + 认证鉴权 完成
 
+using System.IO.Compression;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -74,6 +76,21 @@ builder.Services.AddCors(opts =>
 
 // ---- SignalR 实时通信 ----
 builder.Services.AddSignalR();
+
+// ---- 响应压缩（gzip + brotli）：文本类静态资源与 JSON 传输体积平均减少 60%~75% ----
+builder.Services.AddResponseCompression(opts =>
+{
+    opts.EnableForHttps = true;
+    opts.Providers.Add<BrotliCompressionProvider>();
+    opts.Providers.Add<GzipCompressionProvider>();
+    opts.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[]
+    {
+        "application/json",
+        "image/svg+xml",
+    });
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Optimal);
+builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Optimal);
 
 // ---- 密码哈希服务（无状态，Singleton） ----
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
@@ -161,12 +178,25 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors();
+app.UseResponseCompression();
 app.UseAuthentication();
 app.UseAuthorization();
 
 // ========== 前端静态文件（单进程自托管，wwwroot = Vue 构建产物）==========
 // [TASK-OPT-12-P4] 修复：此前未配置静态文件服务，发布版根路径 404；
 // DEPLOY.md 单进程部署（publish + 复制 web/dist 到 wwwroot）现在可直接访问
+// [PERF] 缓存策略：SPA 入口与 API 一律 no-cache（每次回源校验）；
+// 带哈希的 /assets/* 构建产物由静态文件中间件设置一年 immutable 长缓存。
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path.Value ?? "";
+    if (!path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase))
+    {
+        context.Response.Headers.CacheControl = "no-cache";
+    }
+    await next();
+});
+
 app.UseDefaultFiles();
 
 // [下载中心] 显式注册 .apk/.ipa 等安装包扩展名，否则静态文件中间件对未知/特殊扩展名返回 404
@@ -178,6 +208,15 @@ contentTypeProvider.Mappings[".bat"] = "application/octet-stream";  // [REQ] 电
 app.UseStaticFiles(new Microsoft.AspNetCore.Builder.StaticFileOptions
 {
     ContentTypeProvider = contentTypeProvider,
+    // [PERF] 带哈希的构建产物一年 immutable；非 /assets 入口已由上方中间件统一 no-cache
+    OnPrepareResponse = ctx =>
+    {
+        var path = ctx.Context.Request.Path.Value ?? "";
+        if (path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
+        }
+    },
 });
 
 app.MapControllers();
