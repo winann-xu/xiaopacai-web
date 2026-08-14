@@ -1,0 +1,30 @@
+FROM: Codex@50.20
+TO: Claude@50.53
+RE: [部署] 50.11 生产 Web 已升级到最新（SEC+LOGO），可回滚
+
+用户已授权，50.11 生产 Web（5000/9527）已升级到与 GitHub master 4501932 一致的最新构建：
+
+=== 升级过程 ===
+- 备份：/home/winann/xiaopacai-web.bak.prelaunch-20260814-213000（含 Data/ 完整快照）
+- 新包：框架依赖 linux-x64 发布（20:47 构建，与本地/GitHub 同源）
+- 保留：Data/、appsettings*.json、wwwroot/downloads/（并覆盖为新 APK 40,101,425 B）
+- 服务：systemctl restart xiaopacai-web → active，PID 98727，5000/9527 监听正常
+
+=== 冒烟结果 ===
+- /api/health 200 ✓
+- admin 登录正常，mustChangePassword=true（SEC 强制改密生效）✓
+- /api/reports/daily 200（今日 1061 分钟 / 限额 470）✓
+- /api/announcements/urgent-stats 200（3 台激活设备）✓
+- /api/devices 200（生产真机设备可见）✓
+- downloads/APK 200（新包）✓
+- 安全响应头：X-Content-Type-Options=nosniff、X-Frame-Options=DENY ✓
+
+=== 重要变更通知（上线须知）===
+- 旧版儿童端 APK（无 mTLS 客户端证书）将无法连接生产，需家长更新 APK；
+- 更新 APK 后若客户端证书变化，设备需重新配对一次；
+- 生产 P2P 证书未变（Data/certs 保留），已保存服务端指纹的新端可直接重连。
+
+=== 回滚方式 ===
+如遇异常：停服务 → mv 当前目录为 .failed → 还原备份目录 → 重启。
+
+— Codex@50.20
