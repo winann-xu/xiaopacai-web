@@ -42,9 +42,12 @@ watch(selectedDeviceId, async (id) => {
   isDirty.value = false
 })
 
-onMounted(() => {
-  deviceStore.fetchDevices()
-  if (deviceStore.devices.length) selectedDeviceId.value = deviceStore.devices[0].id
+onMounted(async () => {
+  // [TASK-PRELAUNCH-P1-FIX] 等待设备列表加载完成后再自动选中第一台（此前 fetch 未 await，列表为空不选中）
+  await deviceStore.fetchDevices()
+  if (deviceStore.devices.length && !selectedDeviceId.value) {
+    selectedDeviceId.value = deviceStore.devices[0].id
+  }
 })
 
 function collectPolicy(): Policy {

@@ -29,6 +29,7 @@ public class SettingsController : ControllerBase
     public async Task<IActionResult> Get()
     {
         var configs = await _db.SystemConfigs.AsNoTracking().ToDictionaryAsync(c => c.Key, c => c.Value);
+        var isAdmin = User.IsInRole("admin");
         return Ok(new
         {
             notification = new
@@ -38,13 +39,14 @@ public class SettingsController : ControllerBase
                 timeoutAlert = ParseBool(configs, "notification_timeout_alert", true),
                 announcementPush = ParseBool(configs, "notification_announcement_push", false),
             },
-            server = new
+            // [TASK-PRELAUNCH-P1-FIX] server 字段仅管理员可见（parent 不返回服务配置信息）
+            server = isAdmin ? new
             {
                 webPort = ParseInt(configs, "web_port", 5000),
                 p2pPort = ParseInt(configs, "p2p_port", 9527),
                 bindAddress = configs.GetValueOrDefault("bind_address", "127.0.0.1"),
                 relayHost = configs.GetValueOrDefault("relay_host", ""),
-            },
+            } : null,
             dataRetentionDays = ParseInt(configs, "data_retention_days", 90),
             backupDir = configs.GetValueOrDefault("backup_dir", "backups"),
         });
@@ -63,8 +65,12 @@ public class SettingsController : ControllerBase
             await SetConfig("notification_timeout_alert", request.Notification.TimeoutAlert?.ToString() ?? "true");
             await SetConfig("notification_announcement_push", request.Notification.AnnouncementPush?.ToString() ?? "false");
         }
+        // [TASK-PRELAUNCH-P1-FIX] 服务配置仅管理员可保存（UI 已隐藏，接口同样拦截）
         if (request.Server != null)
         {
+            if (!User.IsInRole("admin"))
+                return Forbid();
+
             if (request.Server.WebPort > 0) await SetConfig("web_port", request.Server.WebPort.ToString());
             if (request.Server.P2pPort > 0) await SetConfig("p2p_port", request.Server.P2pPort.ToString());
             if (!string.IsNullOrEmpty(request.Server.BindAddress)) await SetConfig("bind_address", request.Server.BindAddress);
@@ -112,6 +118,10 @@ public class SettingsController : ControllerBase
     [HttpPost("restore")]
     public async Task<IActionResult> Restore(IFormFile file)
     {
+        // [TASK-PRELAUNCH-P1-FIX] 恢复数据仅管理员（家长 UI 已隐藏，接口同样拦截）
+        if (!User.IsInRole("admin"))
+            return Forbid();
+
         if (file == null || file.Length == 0)
             return BadRequest(new { error = "请选择备份文件" });
         if (file.Length > 10 * 1024 * 1024)
@@ -190,6 +200,10 @@ public class SettingsController : ControllerBase
     [HttpPost("clear-data")]
     public async Task<IActionResult> ClearData()
     {
+        // [TASK-PRELAUNCH-P1-FIX] 清除数据仅管理员（家长 UI 已隐藏，接口同样拦截）
+        if (!User.IsInRole("admin"))
+            return Forbid();
+
         var usage = await _db.UsageRecords.CountAsync();
         var summaries = await _db.DailySummaries.CountAsync();
 

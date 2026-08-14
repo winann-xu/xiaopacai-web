@@ -491,10 +491,11 @@ onBeforeUnmount(() => {
 
           <!-- 忘记密码入口（需求 12） -->
           <div class="login-extra">
-            <el-link type="primary" :underline="false" @click="openResetFlow">忘记密码？</el-link>
+            <!-- [TASK-PRELAUNCH-P1-FIX] 移除已废弃的 el-link underline 属性，用 CSS 控制下划线 -->
+            <el-link type="primary" class="no-underline-link" @click="openResetFlow">忘记密码？</el-link>
             <el-link
               type="primary"
-              :underline="false"
+              class="no-underline-link"
               style="margin-left: 16px"
               @click="registerMode = !registerMode; registerError = ''"
             >
@@ -675,6 +676,11 @@ onBeforeUnmount(() => {
 .login-extra {
   text-align: center;
   margin: -4px 0 8px;
+}
+
+/* [TASK-PRELAUNCH-P1-FIX] 替代 el-link 废弃的 underline 属性 */
+.no-underline-link :deep(.el-link__inner) {
+  text-decoration: none;
 }
 
 .demo-accounts {

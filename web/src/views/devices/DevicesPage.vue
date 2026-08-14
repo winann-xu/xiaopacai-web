@@ -153,6 +153,8 @@ function statusText(s: string) { return s === 'online' ? '在线' : s === 'recon
 .device-meta, .device-ip { font-size: 12px; color: var(--el-text-color-secondary); margin: 0 0 2px; }
 .device-usage { font-size: 12px; color: var(--el-text-color-secondary); margin: 4px 0 0; }
 .card-actions { display: flex; justify-content: flex-end; gap: 4px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--el-border-color-lighter); }
+
+/* 扫码绑定二维码（基线） */
 .bind-qr-body { display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .bind-hint { font-size: 13px; color: var(--el-text-color-secondary); text-align: center; margin: 0; }
 .bind-qr-img { padding: 12px; border: 1px dashed var(--el-border-color); border-radius: 8px; }
