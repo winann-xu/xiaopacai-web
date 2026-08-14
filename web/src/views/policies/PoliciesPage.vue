@@ -125,9 +125,9 @@ async function resetLimit() {
 
         <el-card shadow="hover"><template #header>就寝时段</template>
           <div class="time-range">
-            <el-time-picker v-model="bedtimeStart" format="HH:mm" placeholder="开始" @change="isDirty = true" />
+            <el-time-picker v-model="bedtimeStart" format="HH:mm" value-format="HH:mm" placeholder="开始" @change="isDirty = true" />
             <span class="time-sep">至</span>
-            <el-time-picker v-model="bedtimeEnd" format="HH:mm" placeholder="结束" @change="isDirty = true" />
+            <el-time-picker v-model="bedtimeEnd" format="HH:mm" value-format="HH:mm" placeholder="结束" @change="isDirty = true" />
           </div>
           <p class="hint">就寝时段内设备将自动锁定</p>
         </el-card>
