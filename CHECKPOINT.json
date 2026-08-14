@@ -1,6 +1,6 @@
 {
   "project": "xiaopacai-web",
-  "version": "3.0.0-prelaunch-p1-fix",
+  "version": "3.0.0-prelaunch-p3-fix",
   "current_phase": "PRELAUNCH-P1",
   "opt12": {
     "current_phase": "P1",
@@ -254,6 +254,14 @@
         "dotnet build/test": "待 Codex 在 Windows 侧执行（本机无 dotnet）",
         "android gradlew testDebugUnitTest": "待 Codex 执行（含 DB V4 迁移验证）",
         "note": "协议为增量字段/新消息类型，旧端忽略未知字段不受影响；家长端对 announcement_displayed 走默认分支忽略"
+      },
+      "fix_round": {
+        "defects": [
+          "096 AnnouncementOverlayActivity.acknowledgeAndReport 主线程直发 announcement_ack → NetworkOnMainThreadException（'发送失败: announcement_ack'）。修复：后台线程 sendAckWithRetry 3 次退避重试（1s/3s），失败放弃由重推去重兜底；离线缓存待发列入 P4",
+          "096 同类风险预防：SyncManager.sendAnnouncementDisplayed 发送移入 scope(Dispatchers.IO) 协程"
+        ],
+        "verification": "待 Codex 复验（dotnet build/test + gradlew testDebugUnitTest + 真机/模拟器回执链路）",
+        "delivered": "xiaopacai-prelaunch-p3-fix.bundle（Android commit 464629e）+ 097 信"
       }
     }
   }
