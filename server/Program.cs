@@ -187,6 +187,17 @@ await app.Services.InitializeDatabaseAsync();
 
 // ========== 中间件管道 ==========
 
+// [SEC-K6] HTTPS 强化：HSTS（仅 HTTPS 请求下发，localhost 自动豁免）；
+// HttpsRedirection 在未配置 https_port 时为无操作，部署配 https_port 后自动生效
+app.UseHsts();
+app.UseHttpsRedirection();
+
+// [SEC-K6] 安全响应头（X-Content-Type-Options / X-Frame-Options / CSP 等）
+app.UseMiddleware<SecurityHeadersMiddleware>();
+
+// [SEC-K8] 下载中心白名单 + 敏感文件拒绝 + 路径穿越防护（先于静态文件中间件）
+app.UseMiddleware<DownloadCenterGuardMiddleware>();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();

@@ -52,10 +52,13 @@ public class DevicesController : ControllerBase
         var query = _db.Devices.AsQueryable();
 
         // [REQ] 账号隔离：家长只看自己绑定的设备，管理员看全部
+        // [SEC-K2] 家长无用户标识时返回空（杜绝 OwnerUserId IS NULL 的孤儿设备泄露）
         var currentUserId = GetUserId()?.ToString();
         var isAdmin = User.IsInRole("admin");
-        if (!isAdmin && currentUserId != null)
+        if (!isAdmin)
         {
+            if (currentUserId == null)
+                return Ok(Array.Empty<object>());
             query = query.Where(d => d.OwnerUserId == currentUserId);
         }
 
@@ -110,12 +113,15 @@ public class DevicesController : ControllerBase
     [HttpGet("{id:int}")]
     public async Task<IActionResult> Get(int id)
     {
-        var device = await _db.Devices
-            .Include(d => d.Policy)
-            .FirstOrDefaultAsync(d => d.Id == id);
-
-        if (device == null)
+        // [SEC-K2] 设备归属校验：家长仅可访问自己绑定的设备，越权一律 403
+        var (access, device) = await DeviceAccess.CheckAsync(_db, id, User);
+        if (access == DeviceAccessResult.NotFound)
             return NotFound(new { error = "设备不存在" });
+        if (access == DeviceAccessResult.Forbidden)
+            return StatusCode(403, new { error = "无权访问该设备" });
+
+        // CheckAsync 已跟踪实体，补载策略导航
+        await _db.Entry(device!).Reference(d => d.Policy).LoadAsync();
 
         var today = AppClock.TodayShanghai();
         var summary = await _db.DailySummaries
@@ -157,11 +163,14 @@ public class DevicesController : ControllerBase
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Unpair(int id)
     {
-        var device = await _db.Devices.FindAsync(id);
-        if (device == null)
+        // [SEC-K2] 设备归属校验：家长仅可解绑自己绑定的设备，越权一律 403
+        var (access, device) = await DeviceAccess.CheckAsync(_db, id, User);
+        if (access == DeviceAccessResult.NotFound)
             return NotFound(new { error = "设备不存在" });
+        if (access == DeviceAccessResult.Forbidden)
+            return StatusCode(403, new { error = "无权访问该设备" });
 
-        device.PairStatus = "unpaired";
+        device!.PairStatus = "unpaired";
         device.IsActive = true;
         device.OnlineStatus = "offline";
         device.UpdatedAt = DateTime.UtcNow;
@@ -230,12 +239,20 @@ public class DevicesController : ControllerBase
             return BadRequest(new { error = "配对码无效或已过期" });
 
         // 绑定或创建设备
+        // [SEC-K2] 设备归属：已绑定他人的设备禁止认领（越权 403）；新设备归属当前家长
+        var currentUserId = GetUserId()?.ToString();
         Device device;
         if (pairingInfo.DeviceId is > 0)
         {
             device = await _db.Devices.FindAsync(pairingInfo.DeviceId);
             if (device == null)
                 return NotFound(new { error = "绑定的设备不存在" });
+            if (!string.IsNullOrEmpty(device.OwnerUserId)
+                && device.OwnerUserId != currentUserId
+                && !User.IsInRole("admin"))
+            {
+                return StatusCode(403, new { error = "无权认领该设备" });
+            }
         }
         else
         {
@@ -249,6 +266,7 @@ public class DevicesController : ControllerBase
                 PairStatus = "paired",
                 OnlineStatus = "offline",
                 IsActive = true,
+                OwnerUserId = currentUserId,
             };
             _db.Devices.Add(device);
             await _db.SaveChangesAsync();
@@ -315,11 +333,14 @@ public class DevicesController : ControllerBase
     [HttpGet("{id:int}/app-categories")]
     public async Task<IActionResult> GetAppCategories(int id)
     {
-        var device = await _db.Devices.FindAsync(id);
-        if (device == null)
+        // [SEC-K2] 设备归属校验：越权一律 403
+        var (access, device) = await DeviceAccess.CheckAsync(_db, id, User);
+        if (access == DeviceAccessResult.NotFound)
             return NotFound(new { error = "设备不存在" });
+        if (access == DeviceAccessResult.Forbidden)
+            return StatusCode(403, new { error = "无权访问该设备" });
 
-        var categories = DeserializeCategories(device.AppCategories);
+        var categories = DeserializeCategories(device!.AppCategories);
         return Ok(new { deviceId = device.DeviceId, categories });
     }
 
@@ -329,9 +350,12 @@ public class DevicesController : ControllerBase
     [HttpPut("{id:int}/app-categories")]
     public async Task<IActionResult> PutAppCategories(int id, [FromBody] AppCategoriesRequest request)
     {
-        var device = await _db.Devices.FindAsync(id);
-        if (device == null)
+        // [SEC-K2] 设备归属校验：越权一律 403
+        var (access, device) = await DeviceAccess.CheckAsync(_db, id, User);
+        if (access == DeviceAccessResult.NotFound)
             return NotFound(new { error = "设备不存在" });
+        if (access == DeviceAccessResult.Forbidden)
+            return StatusCode(403, new { error = "无权访问该设备" });
 
         var valid = new HashSet<string> { "game", "social", "video", "learning", "other" };
         var invalid = request.Categories
@@ -350,7 +374,7 @@ public class DevicesController : ControllerBase
             })
             .ToList();
 
-        device.AppCategories = System.Text.Json.JsonSerializer.Serialize(normalized);
+        device!.AppCategories = System.Text.Json.JsonSerializer.Serialize(normalized);
         device.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 
@@ -383,12 +407,15 @@ public class DevicesController : ControllerBase
     [HttpPost("{id:int}/token")]
     public async Task<IActionResult> GenerateDeviceToken(int id)
     {
-        var device = await _db.Devices.FindAsync(id);
-        if (device == null)
+        // [SEC-K2] 设备令牌可访问诊断/上报数据，必须校验设备归属，越权一律 403
+        var (access, device) = await DeviceAccess.CheckAsync(_db, id, User);
+        if (access == DeviceAccessResult.NotFound)
             return NotFound(new { error = "设备不存在" });
+        if (access == DeviceAccessResult.Forbidden)
+            return StatusCode(403, new { error = "无权访问该设备" });
 
         // 生成随机设备令牌（重新生成即轮换旧令牌）
-        device.DeviceToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+        device!.DeviceToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
         device.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 

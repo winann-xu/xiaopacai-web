@@ -718,7 +718,10 @@ public class P2pMessageHandler
         }));
 
         // 就寝时段
-        if (!string.IsNullOrEmpty(policy.BedtimeStart) && !string.IsNullOrEmpty(policy.BedtimeEnd))
+        // [SEC-K7] 仅推送合法 HH:mm：历史脏数据（ISO 时间戳）按未设置跳过，避免儿童端解析异常
+        var sleepStart = NormalizeTime(policy.BedtimeStart);
+        var sleepEnd = NormalizeTime(policy.BedtimeEnd);
+        if (sleepStart != null && sleepEnd != null)
         {
             items.Add(JsonSerializer.Serialize(new Dictionary<string, object>
             {
@@ -726,8 +729,8 @@ public class P2pMessageHandler
                 ["deviceId"] = deviceId,
                 ["isActive"] = true,
                 ["version"] = version,
-                ["sleepStart"] = policy.BedtimeStart,
-                ["sleepEnd"] = policy.BedtimeEnd,
+                ["sleepStart"] = sleepStart,
+                ["sleepEnd"] = sleepEnd,
                 ["label"] = "就寝时段",
             }));
         }
@@ -1222,6 +1225,13 @@ public class P2pMessageHandler
         if (string.IsNullOrEmpty(c)) return "other";
         return c == "study" ? "learning" : c;
     }
+
+    /// <summary>
+    /// [SEC-K7] 时间归一化：仅合法 HH:mm 原样返回，其余（历史 ISO 时间戳等）视为 null
+    /// </summary>
+    private static string? NormalizeTime(string? value)
+        => string.IsNullOrEmpty(value) ? null
+           : TimeOnly.TryParseExact(value, "HH:mm", out _) ? value : null;
 
     /// <summary>
     /// 反序列化 JSON 字符串列表

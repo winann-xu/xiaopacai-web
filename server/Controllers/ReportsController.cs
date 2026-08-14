@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.Security;
 using XiaopacaiWeb.Services;
 
 namespace XiaopacaiWeb.Controllers;
@@ -27,13 +28,17 @@ public class ReportsController : ControllerBase
 
     /// <summary>
     /// GET /api/reports/daily?deviceId=&amp;date= — 日报
+    /// [SEC-K2] 设备归属：家长指定设备须本人所有（越权 403），未指定仅统计本人设备
     /// </summary>
     [HttpGet("daily")]
     public async Task<IActionResult> Daily(int? deviceId, string? date)
     {
+        var (scopeError, scope) = await ResolveScope(deviceId);
+        if (scopeError != null) return scopeError;
+
         var day = DateTime.TryParse(date, out var parsed) ? parsed.Date : AppClock.TodayShanghaiDate();
 
-        var (records, _) = await QueryRecords(deviceId, day.AddDays(-1), day.AddDays(2));
+        var (records, _) = await QueryRecords(scope, day.AddDays(-1), day.AddDays(2));
         var dayRecords = records.Where(r => r.StartTime.ToString("yyyy-MM-dd") == day.ToString("yyyy-MM-dd")).ToList();
         var prevDayRecords = records.Where(r => r.StartTime.ToString("yyyy-MM-dd") == day.AddDays(-1).ToString("yyyy-MM-dd")).ToList();
 
@@ -41,11 +46,12 @@ public class ReportsController : ControllerBase
         var (prevTotal, _) = ReportAggregator.Totals(prevDayRecords);
 
         // 限额：所选设备策略合计（报告展示"剩余额度"参考值）
-        var limitMinutes = await GetLimitMinutes(deviceId);
+        var limitMinutes = await GetLimitMinutes(scope);
         var remainingMinutes = limitMinutes > 0 ? Math.Max(0, limitMinutes - totals.TotalMinutes) : (int?)null;
 
-        // 设备明细（保留，与设备页同源 raw 口径）
+        // 设备明细（保留，与设备页同源 raw 口径；[SEC-K2] 仅可见范围内的设备名）
         var devices = await _db.Devices.AsNoTracking()
+            .Where(d => scope == null || scope.Contains(d.Id))
             .Select(d => new { d.Id, d.DeviceName })
             .ToListAsync();
         var byDevice = dayRecords
@@ -81,17 +87,21 @@ public class ReportsController : ControllerBase
 
     /// <summary>
     /// GET /api/reports/weekly?deviceId=&amp;weekStart= — 周报（7 天，含环比上周）
+    /// [SEC-K2] 设备归属：越权 403，未指定设备仅统计本人设备
     /// </summary>
     [HttpGet("weekly")]
     public async Task<IActionResult> Weekly(int? deviceId, string? weekStart)
     {
+        var (scopeError, scope) = await ResolveScope(deviceId);
+        if (scopeError != null) return scopeError;
+
         DateTime start;
         if (!string.IsNullOrEmpty(weekStart) && DateTime.TryParse(weekStart, out var parsed))
             start = parsed.Date;
         else
             start = AppClock.TodayShanghaiDate().AddDays(-6);  // [TASK-PRELAUNCH-P4] 时区口径统一 Asia/Shanghai
 
-        var (records, _) = await QueryRecords(deviceId, start.AddDays(-7), start.AddDays(14));
+        var (records, _) = await QueryRecords(scope, start.AddDays(-7), start.AddDays(14));
 
         var days = Enumerable.Range(0, 7).Select(i => start.AddDays(i)).ToList();
         var prevDays = Enumerable.Range(0, 7).Select(i => start.AddDays(i - 7)).ToList();
@@ -119,7 +129,7 @@ public class ReportsController : ControllerBase
         var (weekTotal, weekBlocks) = ReportAggregator.Totals(weekRecords);
         var (prevWeekTotal, _) = ReportAggregator.Totals(prevWeekRecords);
 
-        var limitMinutes = await GetLimitMinutes(deviceId);
+        var limitMinutes = await GetLimitMinutes(scope);
 
         return Ok(new
         {
@@ -140,11 +150,15 @@ public class ReportsController : ControllerBase
 
     /// <summary>
     /// GET /api/reports/export?format=txt|json|csv&amp;deviceId=&amp;from=&amp;to= — 导出真实数据
+    /// [SEC-K2] 设备归属：越权 403，未指定设备仅导出本人设备数据
     /// </summary>
     [HttpGet("export")]
     public async Task<IActionResult> Export(string format = "json", int? deviceId = null,
         string? from = null, string? to = null)
     {
+        var (scopeError, scope) = await ResolveScope(deviceId);
+        if (scopeError != null) return scopeError;
+
         var startDate = DateTime.TryParse(from, out var f) ? f.Date : AppClock.TodayShanghaiDate().AddDays(-29);
         var endDate = DateTime.TryParse(to, out var t) ? t.Date : AppClock.TodayShanghaiDate();
 
@@ -153,8 +167,10 @@ public class ReportsController : ControllerBase
         if ((endDate - startDate).TotalDays > 366)
             return BadRequest(new { error = "导出范围不能超过一年" });
 
-        var (records, _) = await QueryRecords(deviceId, startDate, endDate.AddDays(2));
+        var (records, _) = await QueryRecords(scope, startDate, endDate.AddDays(2));
+        // [SEC-K2] 导出设备名仅限可见范围（家长仅本人设备）
         var devices = await _db.Devices.AsNoTracking()
+            .Where(d => scope == null || scope.Contains(d.Id))
             .ToDictionaryAsync(d => d.Id, d => d.DeviceName);
 
         // 逐日聚合
@@ -187,30 +203,62 @@ public class ReportsController : ControllerBase
     // ========== helpers ==========
 
     /// <summary>
-    /// 拉取指定设备（或全部）在时间窗内的 usage_records（设备名一并返回）
+    /// [SEC-K2] 解析设备访问范围（越权一律 403，见 PROMPT_SECURITY_TEST.md K2）：
+    /// - 管理员：scope=null（全量）
+    /// - 家长指定 deviceId：校验归属（不存在 404 / 非本人 403）
+    /// - 家长未指定：仅本人绑定设备（OwnerUserId 匹配）
+    /// </summary>
+    private async Task<(IActionResult? Error, List<int>? Scope)> ResolveScope(int? deviceId)
+    {
+        var isAdmin = User.IsInRole("admin");
+        if (isAdmin)
+            return (null, null);
+
+        if (deviceId is > 0)
+        {
+            var (access, _) = await DeviceAccess.CheckAsync(_db, deviceId.Value, User);
+            if (access == DeviceAccessResult.NotFound)
+                return (NotFound(new { error = "设备不存在" }), null);
+            if (access == DeviceAccessResult.Forbidden)
+                return (StatusCode(403, new { error = "无权访问该设备" }), null);
+            return (null, new List<int> { deviceId.Value });
+        }
+
+        // 家长未指定设备：仅统计本人设备（与设备列表账号隔离口径一致）
+        var uid = DeviceAccess.GetUserId(User);
+        var owned = await _db.Devices
+            .Where(d => d.OwnerUserId == uid)
+            .Select(d => d.Id)
+            .ToListAsync();
+        return (null, owned);
+    }
+
+    /// <summary>
+    /// 拉取时间窗内的 usage_records（scope=null 全量，否则仅限 scope 内设备）
     /// </summary>
     private async Task<(List<UsageRecord> Records, Dictionary<int, string> Devices)> QueryRecords(
-        int? deviceId, DateTime fromUtc, DateTime toUtc)
+        List<int>? scope, DateTime fromUtc, DateTime toUtc)
     {
         var query = _db.UsageRecords.AsNoTracking()
             .Where(r => r.StartTime >= fromUtc && r.StartTime < toUtc);
-        if (deviceId is > 0)
-            query = query.Where(r => r.DeviceId == deviceId);
+        if (scope != null)
+            query = query.Where(r => scope.Contains(r.DeviceId));
 
         var records = await query.ToListAsync();
         var devices = await _db.Devices.AsNoTracking()
+            .Where(d => scope == null || scope.Contains(d.Id))
             .ToDictionaryAsync(d => d.Id, d => d.DeviceName);
         return (records, devices);
     }
 
     /// <summary>
-    /// 报告参考限额：单设备取其策略值，全部设备取策略合计
+    /// 报告参考限额：单设备取其策略值，全部设备取策略合计（[SEC-K2] 家长仅限本人设备）
     /// </summary>
-    private async Task<int> GetLimitMinutes(int? deviceId)
+    private async Task<int> GetLimitMinutes(List<int>? scope)
     {
         var policiesQuery = _db.Policies.AsNoTracking();
-        if (deviceId is > 0)
-            policiesQuery = policiesQuery.Where(p => p.DeviceId == deviceId);
+        if (scope != null)
+            policiesQuery = policiesQuery.Where(p => scope.Contains(p.DeviceId));
         var limits = await policiesQuery.Select(p => (int?)p.DailyLimitMinutes).ToListAsync();
         return limits.Where(l => l.HasValue).Sum(l => l!.Value);
     }
