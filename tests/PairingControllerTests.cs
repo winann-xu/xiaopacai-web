@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -30,7 +31,23 @@ public class PairingControllerTests
 
     private static PairingController CreateController(AppDbContext db)
     {
-        return new PairingController(db, NullLogger<PairingController>.Instance);
+        // [SEC-P1] PairingController 新增 P2pCertificateService 依赖：测试提供最小配置实例
+        var certService = new XiaopacaiWeb.P2P.P2pCertificateService(
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build(),
+            NullLogger<XiaopacaiWeb.P2P.P2pCertificateService>.Instance);
+        var controller = new PairingController(db, NullLogger<PairingController>.Instance, certService);
+        // [SEC-R2.1] 默认以管理员身份调用（DeviceAccess 校验归属）
+        var principal = new System.Security.Claims.ClaimsPrincipal(
+            new System.Security.Claims.ClaimsIdentity(new[]
+            {
+                new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, "admin"),
+                new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, "1"),
+            }, "test"));
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = principal },
+        };
+        return controller;
     }
 
     /// <summary>
@@ -99,6 +116,16 @@ public class PairingControllerTests
     public async Task GeneratePairCode_WithDeviceId_StoresDeviceReference()
     {
         var db = CreateInMemoryDbContext();
+        // [SEC-R2.1] 生成指向已有设备的配对码前必须存在该设备
+        db.Devices.Add(new Device
+        {
+            Id = 7,
+            DeviceId = "dev-7",
+            DeviceName = "测试设备",
+            Platform = "android",
+            PairStatus = "unpaired",
+        });
+        await db.SaveChangesAsync();
         var controller = CreateController(db);
 
         await controller.GeneratePairCode(new GeneratePairCodeRequest { DeviceId = 7 });
@@ -135,7 +162,8 @@ public class PairingControllerTests
             DeviceName = "小明手机",
             Platform = "android",
             IpAddress = "192.168.1.100",
-            CertFingerprint = "abc123def456...",
+            // [SEC] 指纹格式校验：仅接受 64 位十六进制 SHA-256
+            CertFingerprint = "a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890",
         });
 
         // 响应
@@ -149,7 +177,7 @@ public class PairingControllerTests
         Assert.Equal("android-device-001", device.DeviceId);
         Assert.Equal("paired", device.PairStatus);
         Assert.Equal("192.168.1.100", device.IpAddress);
-        Assert.Equal("abc123def456...", device.CertFingerprint);
+        Assert.Equal("a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890", device.CertFingerprint);
         Assert.Equal("123456", device.PairCode);
 
         // 默认策略已创建（每日 120 分钟 + 整机停用）
@@ -162,7 +190,7 @@ public class PairingControllerTests
         var info = await db.PairingInfos.SingleAsync();
         Assert.Equal("confirmed", info.PairStatus);
         Assert.Equal(device.Id, info.DeviceId);
-        Assert.Equal("abc123def456...", info.TlsFingerprint);
+        Assert.Equal("a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890", info.TlsFingerprint);
         Assert.NotNull(info.ConfirmedAt);
     }
 
@@ -246,7 +274,7 @@ public class PairingControllerTests
         var result = await controller.VerifyPairCode(new VerifyPairCodeRequest
         {
             PairCode = "333444",
-            CertFingerprint = "fingerprint-xyz",
+            CertFingerprint = "a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890",
         });
 
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -258,7 +286,7 @@ public class PairingControllerTests
         // 原设备绑定成功
         var updated = await db.Devices.FindAsync(device.Id);
         Assert.Equal("paired", updated!.PairStatus);
-        Assert.Equal("fingerprint-xyz", updated.CertFingerprint);
+        Assert.Equal("a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890", updated.CertFingerprint);
 
         // 配对信息确认
         var info = await db.PairingInfos.SingleAsync();

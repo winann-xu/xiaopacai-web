@@ -15,6 +15,8 @@ using XiaopacaiWeb.Data;
 using XiaopacaiWeb.Middleware;
 using XiaopacaiWeb.P2P;
 using XiaopacaiWeb.Services;
+// [SEC-K4] 消除 System.Net.IPNetwork 与 HttpOverrides.IPNetwork 的命名歧义
+using IPNetwork = Microsoft.AspNetCore.HttpOverrides.IPNetwork;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -286,7 +288,8 @@ app.MapControllers();
 // 改为 JSON 404，避免调用方把"接口不存在"误判为"接口存在但异常"
 app.MapWhen(ctx => !ctx.Request.Path.StartsWithSegments("/api"), b =>
 {
-    b.MapFallbackToFile("index.html");
+    b.UseRouting();
+    b.UseEndpoints(endpoints => endpoints.MapFallbackToFile("index.html"));
 });
 app.Map("/api/{**path}", () => Results.Json(new { error = "接口不存在" }, statusCode: 404));
 

@@ -55,6 +55,7 @@ public class DeviceAccessTests
     {
         var services = new ServiceCollection();
         services.AddSingleton(db);
+        services.AddLogging();
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
         services.AddSingleton<P2pCertificateService>();
         services.AddSingleton<P2pMessageHandler>();
