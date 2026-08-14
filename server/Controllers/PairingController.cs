@@ -40,6 +40,17 @@ public class PairingController : ControllerBase
 
         var deviceId = request?.DeviceId ?? 0;
 
+        // [SEC] 指定已有设备时校验归属（红线 R2.1）：防生成指向他人设备的配对码
+        // 后在 verify 环节篡改该设备的证书指纹锚点/劫持身份
+        if (deviceId > 0)
+        {
+            var (access, _) = await DeviceAccess.CheckAsync(_db, deviceId, User);
+            if (access == DeviceAccessResult.NotFound)
+                return NotFound(new { error = "设备不存在" });
+            if (access == DeviceAccessResult.Forbidden)
+                return StatusCode(403, new { error = "无权访问该设备" });
+        }
+
         var pairingInfo = new PairingInfo
         {
             DeviceId = deviceId > 0 ? deviceId : null, // NULL 表示尚未分配设备（避免 FK 约束失败）
@@ -144,10 +155,28 @@ public class PairingController : ControllerBase
             return BadRequest(new { error = "配对码已过期" });
         }
 
+        // [SEC] 指纹格式校验：仅接受 64 位小写十六进制 SHA-256 指纹，防非法值污染设备指纹锚点
+        if (!string.IsNullOrEmpty(request.CertFingerprint) &&
+            !System.Text.RegularExpressions.Regex.IsMatch(request.CertFingerprint, "^[0-9a-f]{64}$"))
+            return BadRequest(new { error = "证书指纹格式无效" });
+
+        // [SEC] 配对码归属校验：防跨账号猜测 6 位配对码劫持绑定流程
+        var currentUserId = GetUserId()?.ToString();
+        if (!string.IsNullOrEmpty(pairingInfo.OwnerUserId) && !User.IsInRole("admin") &&
+            pairingInfo.OwnerUserId != currentUserId)
+            return StatusCode(403, new { error = "无权验证该配对码" });
+
         // 创建或更新设备
         Device device;
         if (pairingInfo.DeviceId is > 0)
         {
+            // [SEC] 已有设备时校验归属（红线 R2.1）：防他人在 verify 环节覆盖本设备的证书指纹
+            var (access, _) = await DeviceAccess.CheckAsync(_db, pairingInfo.DeviceId.Value, User);
+            if (access == DeviceAccessResult.NotFound)
+                return NotFound(new { error = "设备不存在" });
+            if (access == DeviceAccessResult.Forbidden)
+                return StatusCode(403, new { error = "无权访问该设备" });
+
             device = await _db.Devices.FindAsync(pairingInfo.DeviceId);
             if (device == null)
                 return NotFound(new { error = "设备不存在" });
@@ -225,13 +254,23 @@ public class PairingController : ControllerBase
             .Where(p => p.PairCode == request.PairCode && p.PairStatus == "pending")
             .ToListAsync();
 
-        foreach (var pi in pairingInfos)
+        // [SEC] 仅配对码归属者或管理员可取消（红线 R2.1），防跨账号作废他人配对码
+        var currentUserId = GetUserId()?.ToString();
+        var isAdmin = User.IsInRole("admin");
+        var owned = pairingInfos
+            .Where(p => isAdmin || p.OwnerUserId == currentUserId)
+            .ToList();
+
+        foreach (var pi in owned)
         {
             pi.PairStatus = "expired";
         }
 
-        if (pairingInfos.Count > 0)
+        if (owned.Count > 0)
             await _db.SaveChangesAsync();
+
+        if (pairingInfos.Count > 0 && owned.Count == 0)
+            return StatusCode(403, new { error = "无权取消该配对码" });
 
         return Ok(new { message = "配对码已取消" });
     }

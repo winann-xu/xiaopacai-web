@@ -59,6 +59,11 @@ public class RelayController : ControllerBase
             return BadRequest(new { error = "客户端证书指纹缺失或格式错误（需 64 位十六进制）" });
         }
 
+        // [SEC-P1] 本 REST 端点仅服务家长端注册；儿童端中继会话由 P2P 握手路径维护，
+        // 开放 role=child 会让任意登录账号冒用他设备 DeviceId 轮换其 sessionToken/指纹劫持会话
+        if (request.Role != "parent")
+            return BadRequest(new { error = "不支持的角色" });
+
         var userId = GetUserId();
         var now = DateTime.UtcNow;
 
@@ -70,7 +75,16 @@ public class RelayController : ControllerBase
                 .OrderByDescending(p => p.CreatedAt)
                 .FirstOrDefaultAsync();
 
-            if (pairingInfo?.DeviceId is > 0)
+            // [SEC-P1] 仅"归属本人（或归属为空）且 pending 未过期"的配对码可用于绑定，
+            // 防跨账号冒用他人配对码抢绑新设备（红线 R2.1）。
+            // 绑定失败不阻断注册主流程，避免家长端携带旧码重连时注册被拒
+            var codeUsable = pairingInfo != null &&
+                pairingInfo.PairStatus == "pending" &&
+                pairingInfo.ExpiresAt >= now &&
+                (string.IsNullOrEmpty(pairingInfo.OwnerUserId) ||
+                 pairingInfo.OwnerUserId == userId.ToString() || User.IsInRole("admin"));
+
+            if (codeUsable && pairingInfo!.DeviceId is > 0)
             {
                 var device = await _db.Devices.FindAsync(pairingInfo.DeviceId.Value);
                 if (device != null && string.IsNullOrEmpty(device.OwnerUserId))
@@ -91,6 +105,13 @@ public class RelayController : ControllerBase
 
         // [SEC-K2] 签发会话令牌：家长端后续 P2P 握手凭据（每次注册轮换，防止冒充家长端接收儿童数据，红线 R2.3）
         var sessionToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+
+        // [SEC-P1] 会话合并归属校验：已存在的 parent 会话若归属其他账号，禁止接管
+        // （防冒用他人 DeviceId 轮换其 sessionToken/指纹劫持中继身份，红线 R2.1）
+        if (existingSession != null && existingSession.Role == "parent" &&
+            existingSession.UserId != null && existingSession.UserId != userId &&
+            !User.IsInRole("admin"))
+            return StatusCode(403, new { error = "该中继会话已被其他账号占用" });
 
         if (existingSession != null)
         {
