@@ -1,6 +1,6 @@
 {
   "project": "xiaopacai-web",
-  "version": "3.0.0-prelaunch-p1",
+  "version": "3.0.0-prelaunch-p1-fix",
   "current_phase": "PRELAUNCH-P1",
   "opt12": {
     "current_phase": "P1",
@@ -181,6 +181,16 @@
         "npm run build": "通过（0 错误）",
         "dotnet build/test": "待 Codex 在 Windows 侧执行（本机无 dotnet）",
         "gui_walkthrough": "待 Codex：1920/1366/768/375/390 四档宽度截图走查"
+      },
+      "fix_round": {
+        "baseline_merged": "Codex 基线 11 提交已合并（commit 1aeccd1），冲突仅 DevicesPage.vue CSS 已双保留",
+        "fixes": [
+          "088-1 设置 API 鉴权：GET server 仅 admin / PUT server 仅 admin / restore、clear-data 非 admin 403",
+          "088-2 策略页自动选中第一台设备（await fetchDevices）",
+          "088-3 el-link underline 废弃属性移除"
+        ],
+        "verification": "npm run build 0 错误；dotnet build/test 待 Codex 复验",
+        "delivered": "xiaopacai-web-prelaunch-p1-fix.bundle + 089 信"
       }
     }
   }
