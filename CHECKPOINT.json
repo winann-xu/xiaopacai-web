@@ -219,6 +219,13 @@
         "npm run build": "通过（0 错误）",
         "dotnet build/test": "待 Codex 在 Windows 侧执行（本机无 dotnet）",
         "known_scope_notes": "devices store 的 API 失败 mock 兜底与账号页 mock 属 P3/P4 遗留（代码注释已标注），不在 P2 报告范围，待后续阶段处理"
+      },
+      "fix_round": {
+        "defects": [
+          "092 报告页初次进入不加载：onMounted 未调 loadReport 且 watch 无 immediate → onMounted await fetchDevices 后立即 loadReport（commit 见仓库）"
+        ],
+        "verification": "npm run build 0 错误；dotnet build/test 已由 Codex 复验 193/193 全绿",
+        "delivered": "xiaopacai-web-prelaunch-p2-fix.bundle + 093 信"
       }
     }
   }
