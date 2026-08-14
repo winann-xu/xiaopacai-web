@@ -171,7 +171,8 @@ public class PoliciesController : ControllerBase
                 new { category = "game", label = "游戏", minutes = policy.CategoryGameLimit, enabled = policy.CategoryGameLimit >= 0 },
                 new { category = "social", label = "社交", minutes = policy.CategorySocialLimit, enabled = policy.CategorySocialLimit >= 0 },
                 new { category = "video", label = "视频", minutes = policy.CategoryVideoLimit, enabled = policy.CategoryVideoLimit >= 0 },
-                new { category = "study", label = "学习", minutes = policy.CategoryLearningLimit, enabled = policy.CategoryLearningLimit >= 0 },
+                // [TASK-PRELAUNCH-P2] 分类口径统一 learning（兼容旧 study）
+                new { category = "learning", label = "学习", minutes = policy.CategoryLearningLimit, enabled = policy.CategoryLearningLimit >= 0 },
             },
             whitelist = DeserializeList(policy.WhitelistApps),
             blacklist = DeserializeList(policy.BlacklistApps),

@@ -192,3 +192,25 @@
 ### 测试数据
 - 测试项目：tests/xiaopacai-web.Tests.csproj（xunit + Moq + EF Core InMemory）
 - 总测试数：178 项（含新增），全部通过
+
+## 上线前调整优化（PRELAUNCH）✅ P1 完成 · ✅ P2 完成（2026-08-14）
+
+提示词包《小趴菜_上线前调整优化》V1.0-PRELAUNCH，用户确认执行。
+
+### P1 移动端响应式 + 下载中心 + 设置裁剪 + 分类限额（已完成，Codex 已验收）
+- 移动端：MainLayout <768px 底部 Tab + 更多抽屉、全局 el-dialog/按钮触控区、各页卡片化
+- 下载中心：Windows/iOS 期待上线；设置页按角色裁剪；分类限额暂不可用（前端置灰 + 后端强制 -1 不下发）
+- 验收修复：设置 API 鉴权、策略页设备自动选中、el-link 废弃属性
+
+### P2 使用报告重构（已完成，待 Codex 拉测）
+- 后端：ReportAggregator 纯函数聚合器（动态分类，study→learning、细分类保留）；
+  ReportsController 日报/周报/导出全部走 usage_records 真实数据；daily_summary other 桶口径自洽
+- 前端：ReportsPage 移除 Mock 接真实 API；日报=大数字卡/剩余额度/一句话点评/分类环形/Top5/时段/拦截时间线；
+  周报=趋势折线/每日明细/环比/儿童阅读版；导出服务端真实数据
+- 测试：tests/ReportAggregatorTests.cs 新增
+- 遗留说明：devices store 的 API 失败 mock 兜底与账号页 mock 属 P3/P4 范围，代码注释已标注
+
+### P3~P5 待办
+- P3：公告去重/终端记录/回执持久化
+- P4：时间限额口径（重置偏移/时区/实时刷新）
+- P5：公网测试（Codex 主导）

@@ -4,7 +4,8 @@ import { ref } from 'vue'
 import { policyApi } from '@/api'
 
 export interface CategoryLimit {
-  category: 'game' | 'social' | 'video' | 'study'
+  // [TASK-PRELAUNCH-P2] 分类口径统一 learning（兼容旧 study）
+  category: 'game' | 'social' | 'video' | 'learning'
   label: string
   minutes: number
   enabled: boolean
@@ -37,11 +38,10 @@ export const usePolicyStore = defineStore('policies', () => {
     try {
       const res = await policyApi.get(deviceId)
       policies.value[deviceId] = res.data
-    } catch {
-      // P3 阶段 mock
-      if (!policies.value[deviceId]) {
-        policies.value[deviceId] = getMockPolicy(deviceId)
-      }
+    } catch (e: any) {
+      // [TASK-PRELAUNCH-P2] 移除 Mock 兜底：API 失败显示错误态，绝不渲染假策略
+      error.value = e.response?.data?.message || '策略加载失败'
+      throw e
     } finally {
       loading.value = false
     }
@@ -85,22 +85,3 @@ export const usePolicyStore = defineStore('policies', () => {
     fetchPolicy, savePolicy, resetLimit, getPolicy,
   }
 })
-
-// P3 mock 策略
-function getMockPolicy(deviceId: number): Policy {
-  return {
-    deviceId,
-    dailyLimitMinutes: 180,
-    bedtimeStart: '21:00',
-    bedtimeEnd: '07:00',
-    categoryLimits: [
-      { category: 'game', label: '游戏', minutes: 0, enabled: true },
-      { category: 'social', label: '社交', minutes: 60, enabled: true },
-      { category: 'video', label: '视频', minutes: 90, enabled: true },
-      { category: 'study', label: '学习', minutes: 0, enabled: false },
-    ],
-    whitelist: ['com.example.calculator', 'com.example.dictionary'],
-    blacklist: ['com.example.game1', 'com.example.game2'],
-    timeoutAction: 'full_lock',
-  }
-}
