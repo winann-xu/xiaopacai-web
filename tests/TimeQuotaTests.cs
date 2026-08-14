@@ -172,6 +172,96 @@ public class TimeQuotaTests
         Assert.Equal(20, ack.TodayTotalMinutes);
     }
 
+    // ==================== [FIX-100] 口径解析与去重防护 ====================
+
+    [Fact]
+    public void ResolveTodayUsedMinutes_ChildValueReportedToday_IsPreferred()
+    {
+        // 2026-08-14T01:00Z → 上海 08-14 09:00（同日）
+        var used = AdjustedUsageCalculator.ResolveTodayUsedMinutes(
+            childReportedAdjusted: 30,
+            lastReportAtUtc: new DateTime(2026, 8, 14, 1, 0, 0, DateTimeKind.Utc),
+            nowUtc: new DateTime(2026, 8, 14, 2, 0, 0, DateTimeKind.Utc),
+            rawTotalMinutes: 90, resetOffsetMinutes: 0, resetDate: null,
+            today: "2026-08-14");
+        Assert.Equal(30, used);   // 采用儿童端值，而非服务端 90
+    }
+
+    [Fact]
+    public void ResolveTodayUsedMinutes_StaleChildValue_FallsBackToComputed()
+    {
+        // 最近上报 08-13T10:00Z → 上海 08-13 18:00，今天已是 08-14 → 隔夜陈旧值不可信
+        var used = AdjustedUsageCalculator.ResolveTodayUsedMinutes(
+            childReportedAdjusted: 30,
+            lastReportAtUtc: new DateTime(2026, 8, 13, 10, 0, 0, DateTimeKind.Utc),
+            nowUtc: new DateTime(2026, 8, 14, 2, 0, 0, DateTimeKind.Utc),
+            rawTotalMinutes: 100, resetOffsetMinutes: 40, resetDate: "2026-08-14",
+            today: "2026-08-14");
+        Assert.Equal(60, used);   // 回退：100 − 40
+    }
+
+    [Fact]
+    public void ResolveTodayUsedMinutes_NoChildValue_FallsBackToComputed()
+    {
+        var used = AdjustedUsageCalculator.ResolveTodayUsedMinutes(
+            childReportedAdjusted: null, lastReportAtUtc: null,
+            nowUtc: new DateTime(2026, 8, 14, 2, 0, 0, DateTimeKind.Utc),
+            rawTotalMinutes: 100, resetOffsetMinutes: 40, resetDate: "2026-08-14",
+            today: "2026-08-14");
+        Assert.Equal(60, used);
+    }
+
+    /// <summary>
+    /// [FIX-100] 上报携带 todayAdjustedMinutes → 设备行落库；ack 已用采用儿童端值（而非服务端原始累计）
+    /// </summary>
+    [Fact]
+    public async Task HandleUsageReportLegacy_WithChildAdjusted_UpdatesDeviceAndAck()
+    {
+        using var db = CreateDb();
+        var handler = CreateHandler(db);
+        // 用上海今日作为记录日期，保证“最近上报属于今日”判断成立（不受运行时刻影响）
+        var day = AppClock.ToShanghaiDate(DateTime.UtcNow);
+
+        // 服务端原始累计 90、偏移 60（服务端算得 30），儿童端自算 25（口径差异场景）
+        var r = $"[{{\"packageName\":\"com.tencent.mm\",\"appName\":\"微信\",\"date\":\"{day}\",\"totalMinutes\":90,\"category\":\"social\"}}]";
+        var ack = await handler.HandleUsageReportLegacy(
+            "AND-001", r, dailyResetOffsetMinutes: 60, offsetReported: true,
+            todayAdjustedMinutes: 25, adjustedReported: true);
+
+        var device = await db.Devices.FirstAsync(d => d.DeviceId == "AND-001");
+        Assert.Equal(25, device.TodayAdjustedMinutes);
+
+        // ack 以儿童端值为准：已用 25、剩余 95（而非服务端 90-60=30）
+        Assert.Equal(25, ack.TodayTotalMinutes);
+        Assert.Equal(95, ack.TodayRemainingMinutes);
+        Assert.False(ack.OvertimeLocked);
+    }
+
+    /// <summary>
+    /// [FIX-100] 同批两条同键(包名,日期)记录 → 批内去重后仅一行，取值取最后一条
+    /// </summary>
+    [Fact]
+    public async Task HandleUsageReportLegacy_SameBatchDuplicateKeys_SingleRow()
+    {
+        using var db = CreateDb();
+        var handler = CreateHandler(db);
+        var day = AppClock.ToShanghaiDate(DateTime.UtcNow);
+
+        var r = $"[{{\"packageName\":\"com.tencent.mm\",\"appName\":\"微信\",\"date\":\"{day}\",\"totalMinutes\":45,\"category\":\"social\"}}," +
+                $"{{\"packageName\":\"com.tencent.mm\",\"appName\":\"微信\",\"date\":\"{day}\",\"totalMinutes\":60,\"category\":\"social\"}}]";
+        var ack = await handler.HandleUsageReportLegacy("AND-001", r);
+
+        var rows = await db.UsageRecords
+            .Where(x => x.DeviceId == 1 && x.AppPackage == "com.tencent.mm")
+            .ToListAsync();
+        Assert.Single(rows);
+        Assert.Equal(60 * 60, rows[0].DurationSeconds);   // 最后一条覆盖
+
+        var summary = await db.DailySummaries.FirstOrDefaultAsync(s => s.DeviceId == 1);
+        Assert.NotNull(summary);
+        Assert.Equal(60, summary!.TotalMinutes);   // 45 与 60 不重复累加
+    }
+
     // ==================== 测试用 scope 桩 ====================
 
     private sealed class TestScope : IServiceScope

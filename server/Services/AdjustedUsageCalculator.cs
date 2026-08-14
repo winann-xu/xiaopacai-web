@@ -39,6 +39,12 @@ public static class AppClock
     {
         return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, ShanghaiZone).Date;
     }
+
+    /// <summary>UTC 时间 → Asia/Shanghai 日期（yyyy-MM-dd）</summary>
+    public static string ToShanghaiDate(DateTime utc)
+    {
+        return TimeZoneInfo.ConvertTimeFromUtc(utc, ShanghaiZone).ToString("yyyy-MM-dd");
+    }
 }
 
 /// <summary>
@@ -58,5 +64,31 @@ public static class AdjustedUsageCalculator
         if (string.IsNullOrEmpty(resetDate) || resetDate != today)
             return Math.Max(0, rawTotalMinutes);
         return Math.Max(0, rawTotalMinutes - resetOffsetMinutes);
+    }
+
+    /// <summary>
+    /// [FIX-100] 解析"今日已用"口径（纯函数，便于 xunit 覆盖）：
+    /// 优先采用儿童端上报的调整后值（usage_report.todayAdjustedMinutes，儿童端 UsageStatsHelper
+    /// 实时累计口径，最准确）；仅当上报时间属于今日（上海时区）才采用，避免隔夜陈旧值冒充今日；
+    /// 否则回退服务端计算：原始累计 − 当日重置偏移。
+    /// </summary>
+    /// <param name="childReportedAdjusted">儿童端上报的调整后已用（分钟），null=未上报</param>
+    /// <param name="lastReportAtUtc">该值对应的最近上报时间（UTC）</param>
+    /// <param name="nowUtc">当前时间（UTC）</param>
+    /// <param name="rawTotalMinutes">原始累计分钟（daily_summary 口径）</param>
+    /// <param name="resetOffsetMinutes">设备重置偏移（分钟）</param>
+    /// <param name="resetDate">偏移所属日期（yyyy-MM-dd）</param>
+    /// <param name="today">查询当日（yyyy-MM-dd，Asia/Shanghai 口径）</param>
+    public static int ResolveTodayUsedMinutes(
+        int? childReportedAdjusted, DateTime? lastReportAtUtc, DateTime nowUtc,
+        int rawTotalMinutes, int resetOffsetMinutes, string? resetDate, string today)
+    {
+        // 儿童端值仅当日有效：最近上报落在今天才可信（否则跨日后已是隔夜陈旧值）
+        if (childReportedAdjusted.HasValue && lastReportAtUtc.HasValue
+            && AppClock.ToShanghaiDate(lastReportAtUtc.Value) == today)
+        {
+            return Math.Max(0, childReportedAdjusted.Value);
+        }
+        return ComputeAdjusted(rawTotalMinutes, resetOffsetMinutes, resetDate, today);
     }
 }

@@ -72,7 +72,9 @@ public class DevicesController : ControllerBase
         {
             summaries.TryGetValue(d.Id, out var summary);
             var raw = summary?.TotalMinutes ?? 0;
-            var adjusted = AdjustedUsageCalculator.ComputeAdjusted(
+            // [FIX-100] 优先儿童端上报的调整后已用（当日有效），回退服务端计算
+            var adjusted = AdjustedUsageCalculator.ResolveTodayUsedMinutes(
+                d.TodayAdjustedMinutes, d.LastReportAt, DateTime.UtcNow,
                 raw, d.LastResetOffsetMinutes, d.LastResetDate, today);
             var limit = d.Policy?.DailyLimitMinutes ?? 120;
             return new
@@ -120,7 +122,9 @@ public class DevicesController : ControllerBase
             .FirstOrDefaultAsync(s => s.DeviceId == device.Id && s.SummaryDate == today);
 
         var raw = summary?.TotalMinutes ?? 0;
-        var adjusted = AdjustedUsageCalculator.ComputeAdjusted(
+        // [FIX-100] 优先儿童端上报的调整后已用（当日有效），回退服务端计算
+        var adjusted = AdjustedUsageCalculator.ResolveTodayUsedMinutes(
+            device.TodayAdjustedMinutes, device.LastReportAt, DateTime.UtcNow,
             raw, device.LastResetOffsetMinutes, device.LastResetDate, today);
         var limit = device.Policy?.DailyLimitMinutes ?? 120;
 

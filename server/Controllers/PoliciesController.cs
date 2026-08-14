@@ -132,6 +132,8 @@ public class PoliciesController : ControllerBase
             .FirstOrDefaultAsync(s => s.DeviceId == deviceId && s.SummaryDate == today);
         device.LastResetDate = today;
         device.LastResetOffsetMinutes = Math.Max(0, summary?.TotalMinutes ?? 0);
+        // [FIX-100] 重置后儿童端上报值归零：立即按 0 显示，儿童端下次上报以自算值覆盖
+        device.TodayAdjustedMinutes = 0;
 
         // 先挂起待发标记（设备离线时保留，重连握手补推）
         device.PendingResetAt = resetAt;
