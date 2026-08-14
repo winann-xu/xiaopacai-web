@@ -18,6 +18,8 @@ public static class P2pMessageType
     public const string AnnouncementPush = "announcement_push";
     // [TASK-OPT-12-P4-DEEPEN] 儿童端公告确认回执（确认后中继转发给家长端）
     public const string AnnouncementAck = "announcement_ack";
+    // [TASK-PRELAUNCH-P3] 儿童端公告已显示事件（落库 displayed_at，见 docs/adr/0004）
+    public const string AnnouncementDisplayed = "announcement_displayed";
     public const string Heartbeat = "heartbeat";
     public const string HeartbeatAck = "heartbeat_ack";
     public const string SyncAck = "sync_ack";

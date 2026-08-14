@@ -132,6 +132,31 @@ public static class DataExtensions
             logger.LogInformation("[DB] 已补齐 relay_sessions 表");
         }
 
+        // [TASK-PRELAUNCH-P3] 公告送达/回执表（见 docs/adr/0004）
+        var hasDeliveries = await db.Database.SqlQueryRaw<long>(
+            "SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name='announcement_deliveries'"
+        ).FirstOrDefaultAsync() > 0;
+        if (!hasDeliveries)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE "announcement_deliveries" (
+                    "Id" INTEGER PRIMARY KEY AUTOINCREMENT,
+                    "AnnouncementId" INTEGER NOT NULL,
+                    "DeviceId" INTEGER NOT NULL,
+                    "PushCount" INTEGER NOT NULL DEFAULT 0,
+                    "LastPushedAt" TEXT NULL,
+                    "DisplayedAt" TEXT NULL,
+                    "AcknowledgedAt" TEXT NULL,
+                    "CreatedAt" TEXT NOT NULL DEFAULT (datetime('now')),
+                    "UpdatedAt" TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS "idx_deliveries_ann_device"
+                    ON "announcement_deliveries" ("AnnouncementId", "DeviceId");
+                """);
+            logger.LogInformation("[DB] 已补齐 announcement_deliveries 表");
+        }
+
         // devices 表补列（已存在库 EnsureCreated 不补新列；列已存在时忽略异常）
         await TryAddColumnAsync(db, "devices", "app_categories", "TEXT NULL", logger);
         await TryAddColumnAsync(db, "devices", "owner_user_id", "TEXT NULL", logger);
@@ -141,6 +166,9 @@ public static class DataExtensions
         await TryAddColumnAsync(db, "devices", "PendingResetAt", "TEXT NULL", logger);
         // [REQ] 配对码归属账号：扫码/中继绑定时写入设备 owner
         await TryAddColumnAsync(db, "pairing_info", "OwnerUserId", "TEXT NULL", logger);
+        // [TASK-PRELAUNCH-P3] 公告去重字段（发布代数/内容哈希）
+        await TryAddColumnAsync(db, "announcements", "Version", "INTEGER NOT NULL DEFAULT 0", logger);
+        await TryAddColumnAsync(db, "announcements", "ContentHash", "TEXT NOT NULL DEFAULT ''", logger);
     }
 
     /// <summary>

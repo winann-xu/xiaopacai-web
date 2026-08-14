@@ -23,6 +23,8 @@ public class AppDbContext : DbContext
     public DbSet<SystemConfig> SystemConfigs => Set<SystemConfig>();
     public DbSet<DiagnosticRecord> Diagnostics => Set<DiagnosticRecord>();
     public DbSet<RelaySession> RelaySessions => Set<RelaySession>();
+    // [TASK-PRELAUNCH-P3] 公告送达/回执
+    public DbSet<AnnouncementDelivery> AnnouncementDeliveries => Set<AnnouncementDelivery>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

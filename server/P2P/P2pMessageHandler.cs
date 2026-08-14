@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Data;
@@ -593,6 +595,7 @@ public class P2pMessageHandler
 
     /// <summary>
     /// 构建 2.0 announcement_push 完整消息 JSON（payload.announcements 数组）
+    /// [TASK-PRELAUNCH-P3] 附加 version/content_hash/requires_ack（终端据此去重，见 docs/adr/0004）
     /// </summary>
     public string BuildAnnouncementPushJson(Announcement announcement, string action)
     {
@@ -613,6 +616,9 @@ public class P2pMessageHandler
                 ["expires_at"] = announcement.ValidUntil.HasValue
                     ? new DateTimeOffset(announcement.ValidUntil.Value).ToUnixTimeSeconds()
                     : 0L,
+                ["version"] = announcement.Version,
+                ["content_hash"] = GetContentHash(announcement),
+                ["requires_ack"] = announcement.Priority == "urgent",
             },
         };
 
@@ -664,6 +670,10 @@ public class P2pMessageHandler
             ["expires_at"] = a.ValidUntil.HasValue
                 ? new DateTimeOffset(a.ValidUntil.Value).ToUnixTimeSeconds()
                 : 0L,
+            // [TASK-PRELAUNCH-P3] 去重字段（补推同口径）
+            ["version"] = a.Version,
+            ["content_hash"] = GetContentHash(a),
+            ["requires_ack"] = a.Priority == "urgent",
         }).ToList();
 
         var message = new Dictionary<string, object>
@@ -781,6 +791,7 @@ public class P2pMessageHandler
     /// <summary>
     /// 公告发布/撤回后主动推送到儿童端
     /// 由 REST API 在 announcement 状态变更时调用
+    /// [TASK-PRELAUNCH-P3] 每次成功推送记录送达（push_count++/last_pushed_at）
     /// </summary>
     public async Task PushAnnouncement(Announcement announcement, string action, P2pListenerService? p2pService)
     {
@@ -796,8 +807,12 @@ public class P2pMessageHandler
             var device = await db.Devices.FindAsync(announcement.TargetDeviceId.Value);
             if (device != null)
             {
-                await p2pService.SendToDevice(device.DeviceId, json);
-                _logger.LogInformation("[P2P-Announce] 公告已推送到设备 {DeviceId}: {Title}", device.DeviceId, announcement.Title);
+                var pushed = await p2pService.SendToDevice(device.DeviceId, json);
+                if (pushed)
+                {
+                    await RecordDeliveryPushAsync(announcement.Id, device.Id);
+                    _logger.LogInformation("[P2P-Announce] 公告已推送到设备 {DeviceId}: {Title}", device.DeviceId, announcement.Title);
+                }
             }
         }
         else
@@ -807,15 +822,123 @@ public class P2pMessageHandler
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var devices = await db.Devices
                 .Where(d => d.PairStatus == "paired" && d.IsActive)
-                .Select(d => d.DeviceId)
                 .ToListAsync();
 
-            foreach (var deviceId in devices)
+            var pushedCount = 0;
+            foreach (var device in devices)
             {
-                await p2pService.SendToDevice(deviceId, json);
+                var pushed = await p2pService.SendToDevice(device.DeviceId, json);
+                if (pushed)
+                {
+                    await RecordDeliveryPushAsync(announcement.Id, device.Id);
+                    pushedCount++;
+                }
             }
-            _logger.LogInformation("[P2P-Announce] 公告已广播到 {Count} 个设备: {Title}", devices.Count, announcement.Title);
+            _logger.LogInformation("[P2P-Announce] 公告已广播到 {Count}/{Total} 个设备: {Title}",
+                pushedCount, devices.Count, announcement.Title);
         }
+    }
+
+    /// <summary>
+    /// [TASK-PRELAUNCH-P3] 送达记录 upsert：推送成功一次 push_count++（见 docs/adr/0004）
+    /// </summary>
+    private async Task RecordDeliveryPushAsync(int announcementId, int deviceDbId)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var row = await db.AnnouncementDeliveries
+            .FirstOrDefaultAsync(d => d.AnnouncementId == announcementId && d.DeviceId == deviceDbId);
+        if (row == null)
+        {
+            row = new AnnouncementDelivery { AnnouncementId = announcementId, DeviceId = deviceDbId };
+            db.AnnouncementDeliveries.Add(row);
+        }
+        row.PushCount++;
+        row.LastPushedAt = DateTime.UtcNow;
+        row.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// [TASK-PRELAUNCH-P3] 处理儿童端公告已显示事件（announcement_displayed）
+    /// 落库 displayed_at（保留首次显示时间），不覆盖已有值
+    /// </summary>
+    public async Task HandleAnnouncementDisplayed(string childDeviceId, string? announcementIdRaw, long? displayedAtUnix)
+    {
+        await UpdateDeliveryEventAsync(childDeviceId, announcementIdRaw, displayedAtUnix,
+            setDisplayed: true, setAcked: false);
+    }
+
+    /// <summary>
+    /// [TASK-PRELAUNCH-P3] 处理儿童端公告确认回执（announcement_ack）
+    /// 落库 acknowledged_at（保留首次确认时间），不只中继转发
+    /// </summary>
+    public async Task HandleAnnouncementAck(string childDeviceId, string? announcementIdRaw, long? acknowledgedAtUnix)
+    {
+        await UpdateDeliveryEventAsync(childDeviceId, announcementIdRaw, acknowledgedAtUnix,
+            setDisplayed: false, setAcked: true);
+    }
+
+    private async Task UpdateDeliveryEventAsync(string childDeviceId, string? announcementIdRaw,
+        long? unixTime, bool setDisplayed, bool setAcked)
+    {
+        if (!int.TryParse(announcementIdRaw, out var announcementId))
+        {
+            _logger.LogWarning("[P2P-Announce] 回执公告 ID 非法: {Id}（device={DeviceId}）",
+                announcementIdRaw, childDeviceId);
+            return;
+        }
+
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var device = await db.Devices.FirstOrDefaultAsync(d => d.DeviceId == childDeviceId);
+        if (device == null)
+        {
+            _logger.LogWarning("[P2P-Announce] 回执设备未注册: {DeviceId}", childDeviceId);
+            return;
+        }
+
+        var row = await db.AnnouncementDeliveries
+            .FirstOrDefaultAsync(d => d.AnnouncementId == announcementId && d.DeviceId == device.Id);
+        if (row == null)
+        {
+            // 设备离线期间发布、重连补推前收到回执等边界：补建一行，推送次数为 0
+            row = new AnnouncementDelivery { AnnouncementId = announcementId, DeviceId = device.Id };
+            db.AnnouncementDeliveries.Add(row);
+        }
+
+        var eventTime = unixTime is > 0
+            ? DateTimeOffset.FromUnixTimeSeconds(unixTime.Value).UtcDateTime
+            : DateTime.UtcNow;
+        if (setDisplayed && row.DisplayedAt == null)
+            row.DisplayedAt = eventTime;
+        if (setAcked && row.AcknowledgedAt == null)
+            row.AcknowledgedAt = eventTime;
+        row.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// [TASK-PRELAUNCH-P3] 公告内容哈希：SHA-256(title|content|priority) 前 16 位十六进制
+    /// 内容未变则哈希不变，终端据此去重（见 docs/adr/0004）
+    /// </summary>
+    public static string GetContentHash(Announcement announcement)
+    {
+        if (!string.IsNullOrEmpty(announcement.ContentHash))
+            return announcement.ContentHash;
+        var raw = $"{announcement.Title}\n{announcement.Content}\n{announcement.Priority}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
+        return Convert.ToHexString(hash)[..16].ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// [TASK-PRELAUNCH-P3] 计算并保存内容哈希（发布时调用）
+    /// </summary>
+    public static string ComputeContentHash(string title, string content, string priority)
+    {
+        var raw = $"{title}\n{content}\n{priority}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
+        return Convert.ToHexString(hash)[..16].ToLowerInvariant();
     }
 
     // ========== 策略构建 ==========

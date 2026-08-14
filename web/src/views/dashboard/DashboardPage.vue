@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // 小趴菜 Web 3.0 — 仪表盘
-import { onMounted, computed } from 'vue'
+import { onMounted, computed, ref } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import { useAnnouncementStore } from '@/stores/announcements'
 import { useIsMobile } from '@/composables/useIsMobile'
+import { announcementApi } from '@/api'
 import { Monitor, WarningFilled, Notification, Clock } from '@element-plus/icons-vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
@@ -17,14 +18,24 @@ const deviceStore = useDeviceStore()
 const announcementStore = useAnnouncementStore()
 const isMobile = useIsMobile()
 
+// [TASK-PRELAUNCH-P3] 紧急公告口径修正：显示“未确认紧急公告数”（基于回执记录），
+// 接口失败时回退为“已发布紧急公告数”并如实标注（需求 9 第 4 条）
+const urgentUnack = ref<number | null>(null)
+const urgentLoaded = ref(false)
+
 // 统计卡片数据
 const stats = computed(() => ({
   totalDevices: deviceStore.totalCount,
   onlineDevices: deviceStore.onlineCount,
   totalUsageMin: deviceStore.devices.reduce((s, d) => s + d.todayUsageMinutes, 0),
   totalLimitMin: deviceStore.devices.reduce((s, d) => s + d.todayLimitMinutes, 0),
-  urgentAnnouncements: announcementStore.announcements.filter(a => a.priority === 'urgent' && a.status === 'published').length,
+  urgentAnnouncements: urgentLoaded.value
+    ? (urgentUnack.value ?? 0)
+    : announcementStore.announcements.filter(a => a.priority === 'urgent' && a.status === 'published').length,
 }))
+// 未确认口径下 0 是合法值，不能用 ?? 兜底；仅接口失败时走回退
+const urgentLabel = computed(() =>
+  urgentLoaded.value ? '未确认紧急公告' : '已发布紧急公告')
 
 // 使用时长饼图
 const usagePieOption = computed(() => ({
@@ -65,6 +76,12 @@ onMounted(async () => {
     deviceStore.fetchDevices(),
     announcementStore.fetchAnnouncements(),
   ])
+  // [TASK-PRELAUNCH-P3] 拉取紧急公告未确认统计（基于回执记录）
+  try {
+    const res = await announcementApi.urgentStats()
+    urgentUnack.value = res.data.unacknowledged ?? 0
+    urgentLoaded.value = true
+  } catch { urgentLoaded.value = false } // 失败回退“已发布紧急公告数”口径
 })
 </script>
 
@@ -113,7 +130,8 @@ onMounted(async () => {
             <el-icon class="stat-icon warning" :size="32"><Notification /></el-icon>
             <div>
               <div class="stat-value">{{ stats.urgentAnnouncements }}<small> 条</small></div>
-              <div class="stat-label">紧急公告</div>
+              <!-- [TASK-PRELAUNCH-P3] 口径随数据源切换（回执口径 / 发布数回退） -->
+              <div class="stat-label">{{ urgentLabel }}</div>
             </div>
           </div>
         </el-card>

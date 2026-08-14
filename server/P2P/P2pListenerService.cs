@@ -341,10 +341,36 @@ public class P2pListenerService : IHostedService
                     }
 
                 // [TASK-OPT-12-P4-DEEPEN] 儿童端公告确认回执 → 中继转发给绑定家长端
+                // [TASK-PRELAUNCH-P3] 同时落库 acknowledged_at（不只中继，见 docs/adr/0004）
                 case P2pMessageType.AnnouncementAck:
                     {
                         if (deviceIdHolder.Value != null)
                         {
+                            if (envelope.Payload is JsonElement ackPayload)
+                            {
+                                var announcementId = GetPayloadString(ackPayload, "announcementId");
+                                long.TryParse(GetPayloadString(ackPayload, "acknowledgedAt"), out var ackedAt);
+                                await _messageHandler.HandleAnnouncementAck(
+                                    deviceIdHolder.Value, announcementId, ackedAt > 0 ? ackedAt : null);
+                            }
+                            await _messageHandler.RelayMessageToParent(
+                                deviceIdHolder.Value, EnvelopeToJson(envelope), this);
+                        }
+                        break;
+                    }
+
+                // [TASK-PRELAUNCH-P3] 儿童端公告已显示事件 → 落库 displayed_at + 中继家长端
+                case P2pMessageType.AnnouncementDisplayed:
+                    {
+                        if (deviceIdHolder.Value != null)
+                        {
+                            if (envelope.Payload is JsonElement displayedPayload)
+                            {
+                                var announcementId = GetPayloadString(displayedPayload, "announcementId");
+                                long.TryParse(GetPayloadString(displayedPayload, "displayedAt"), out var shownAt);
+                                await _messageHandler.HandleAnnouncementDisplayed(
+                                    deviceIdHolder.Value, announcementId, shownAt > 0 ? shownAt : null);
+                            }
                             await _messageHandler.RelayMessageToParent(
                                 deviceIdHolder.Value, EnvelopeToJson(envelope), this);
                         }

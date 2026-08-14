@@ -135,6 +135,7 @@ public class AnnouncementsController : ControllerBase
 
     /// <summary>
     /// POST /api/announcements/{id}/publish — 发布并实时推送儿童端
+    /// [TASK-PRELAUNCH-P3] 发布时递增版本并计算内容哈希（终端去重依据，见 docs/adr/0004）
     /// </summary>
     [HttpPost("{id:int}/publish")]
     public async Task<IActionResult> Publish(int id)
@@ -146,12 +147,16 @@ public class AnnouncementsController : ControllerBase
         item.Status = "published";
         item.PublishedAt = DateTime.UtcNow;
         item.UpdatedAt = DateTime.UtcNow;
+        // [TASK-PRELAUNCH-P3] 版本递增 + 内容哈希（撤回后重新发布视为新代数；内容未变哈希不变）
+        item.Version++;
+        item.ContentHash = P2pMessageHandler.ComputeContentHash(item.Title, item.Content, item.Priority);
         await _db.SaveChangesAsync();
 
         await _messageHandler.PushAnnouncement(item, "publish", _p2p);
-        await AuditAsync("announcement.publish", "Announcement", item.Id, $"{{\"title\":\"{item.Title}\"}}");
+        await AuditAsync("announcement.publish", "Announcement", item.Id,
+            $"{{\"title\":\"{item.Title}\",\"version\":{item.Version}}}");
 
-        _logger.LogInformation("[Announcements] 公告已发布并推送: {Title}", item.Title);
+        _logger.LogInformation("[Announcements] 公告已发布并推送 v{Version}: {Title}", item.Version, item.Title);
         return Ok(ToDto(item));
     }
 
@@ -178,6 +183,79 @@ public class AnnouncementsController : ControllerBase
 
     // ========== helpers ==========
 
+    /// <summary>
+    /// [TASK-PRELAUNCH-P3] GET /api/announcements/{id}/deliveries — 送达与回执明细
+    /// 按设备返回：推送次数/最近推送/终端显示/确认时间（见 docs/adr/0004）
+    /// </summary>
+    [HttpGet("{id:int}/deliveries")]
+    public async Task<IActionResult> Deliveries(int id)
+    {
+        var item = await _db.Announcements.FindAsync(id);
+        if (item == null)
+            return NotFound(new { error = "公告不存在" });
+
+        var devices = await _db.Devices.AsNoTracking()
+            .ToDictionaryAsync(d => d.Id, d => d.DeviceName);
+
+        var rows = await _db.AnnouncementDeliveries.AsNoTracking()
+            .Where(d => d.AnnouncementId == id)
+            .ToListAsync();
+
+        return Ok(new
+        {
+            announcementId = id,
+            version = item.Version,
+            contentHash = item.ContentHash,
+            deliveries = rows
+                .OrderByDescending(r => r.UpdatedAt)
+                .Select(r => new
+                {
+                    deviceId = r.DeviceId,
+                    deviceName = devices.TryGetValue(r.DeviceId, out var name) ? name : $"设备#{r.DeviceId}",
+                    pushCount = r.PushCount,
+                    lastPushedAt = r.LastPushedAt,
+                    displayedAt = r.DisplayedAt,
+                    acknowledgedAt = r.AcknowledgedAt,
+                })
+                .ToList(),
+        });
+    }
+
+    /// <summary>
+    /// [TASK-PRELAUNCH-P3] GET /api/announcements/urgent-stats — 紧急公告未确认统计
+    /// 口径：已发布紧急公告 ×（已配对激活设备中未确认数），供仪表盘“未确认紧急公告”卡片
+    /// </summary>
+    [HttpGet("urgent-stats")]
+    public async Task<IActionResult> UrgentStats()
+    {
+        var urgentIds = await _db.Announcements.AsNoTracking()
+            .Where(a => a.Priority == "urgent" && a.Status == "published")
+            .Select(a => a.Id)
+            .ToListAsync();
+
+        var activeDeviceIds = await _db.Devices.AsNoTracking()
+            .Where(d => d.PairStatus == "paired" && d.IsActive)
+            .Select(d => d.Id)
+            .ToListAsync();
+
+        var acked = await _db.AnnouncementDeliveries.AsNoTracking()
+            .Where(d => urgentIds.Contains(d.AnnouncementId) && d.AcknowledgedAt != null)
+            .Select(d => new { d.AnnouncementId, d.DeviceId })
+            .ToListAsync();
+
+        // 未确认数 = 紧急公告数 × 激活设备数 − 已确认（公告×设备）组合数
+        var totalPairs = urgentIds.Count * activeDeviceIds.Count;
+        var ackedPairs = acked.Count(p => activeDeviceIds.Contains(p.DeviceId));
+        var unacknowledged = Math.Max(0, totalPairs - ackedPairs);
+
+        return Ok(new
+        {
+            publishedUrgent = urgentIds.Count,
+            activeDevices = activeDeviceIds.Count,
+            unacknowledged,
+        });
+    }
+
     private static object ToDto(Announcement a)
     {
         return new
@@ -193,6 +271,9 @@ public class AnnouncementsController : ControllerBase
             createdAt = a.CreatedAt,
             publishedAt = a.PublishedAt,
             revokedAt = a.RevokedAt,
+            // [TASK-PRELAUNCH-P3] 去重字段透出（发布代数/内容哈希）
+            version = a.Version,
+            contentHash = a.ContentHash,
         };
     }
 
