@@ -235,3 +235,16 @@ export const adminDataApi = {
 export const healthApi = {
   check: () => apiClient.get('/health'),
 }
+
+// ==================== 守护事件与健康度（[TASK-HARDENING-V1.1.1] Bug1-D/1-B） ====================
+export const guardEventsApi = {
+  // 上传守护事件（家长端 App 调用；Web 侧为只读，保留封装以备调试/后续写入场景）
+  upload: (deviceId: string, events: any[]) =>
+    apiClient.post('/guard-events', { deviceId, events }),
+  // 失守/恢复/健康快照列表（按接收时间倒序；家长仅本账号设备，admin 可全量）
+  list: (deviceId: string, limit = 50) =>
+    apiClient.get('/guard-events', { params: { deviceId, limit } }),
+  // 最近一次健康度快照（{ health: 对象|null, updatedAt: ISO|null }）
+  latestHealth: (deviceId: string) =>
+    apiClient.get('/guard-events/health', { params: { deviceId } }),
+}

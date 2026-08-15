@@ -31,6 +31,8 @@ public class AppDbContext : DbContext
     public DbSet<AnnouncementTombstone> AnnouncementTombstones => Set<AnnouncementTombstone>();
     // [TASK-MILESTONE-V3] 需求 14：客户端上传的运行日志（账号级归属，保留 7 天）
     public DbSet<AppLogEntry> AppLogEntries => Set<AppLogEntry>();
+    // [TASK-HARDENING-V1.1.1] Bug1-D/1-B：守护失守事件 + 健康度快照（账号级归属：按设备归属校验）
+    public DbSet<GuardEvent> GuardEvents => Set<GuardEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -216,6 +218,19 @@ public class AppDbContext : DbContext
             e.HasIndex(l => new { l.AccountId, l.ReceivedAt });
             e.HasIndex(l => l.ReceivedAt);
             e.Property(l => l.ReceivedAt).HasDefaultValueSql("datetime('now')");
+        });
+
+        // ---- GuardEvents（[TASK-HARDENING-V1.1.1] Bug1-D/1-B：守护失守事件 + 健康度快照） ----
+        // [Bug3 根因防御] 必须显式 ToTable("guard_events")：与 DataExtensions 建表 DDL 同名，
+        // 否则 EF 默认按 DbSet 属性名建表（GuardEvents）导致"写入表 ≠ 查询表"（app_logs 曾踩此坑）。
+        modelBuilder.Entity<GuardEvent>(e =>
+        {
+            e.ToTable("guard_events");
+            e.HasIndex(g => new { g.DeviceId, g.ReceivedAt });
+            e.Property(g => g.EventType).HasMaxLength(64);
+            e.Property(g => g.Reason).HasMaxLength(128);
+            e.Property(g => g.RestoredReason).HasMaxLength(128);
+            e.Property(g => g.ReceivedAt).HasDefaultValueSql("datetime('now')");
         });
     }
 }

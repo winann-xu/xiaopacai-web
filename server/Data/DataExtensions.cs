@@ -237,6 +237,35 @@ public static class DataExtensions
             logger.LogInformation("[DB] 已补齐 app_logs 表");
         }
 
+        // [TASK-HARDENING-V1.1.1] Bug1-D/1-B：守护失守事件 + 健康度快照表
+        // [Bug3 根因防御] 表名/列名必须与 AppDbContext OnModelCreating 中
+        // GuardEvent 的 ToTable("guard_events") 映射完全一致，否则写入/查询分表。
+        var hasGuardEvents = await db.Database.SqlQueryRaw<long>(
+            "SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name='guard_events'"
+        ).FirstOrDefaultAsync() > 0;
+        if (!hasGuardEvents)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE "guard_events" (
+                    "Id" INTEGER PRIMARY KEY AUTOINCREMENT,
+                    "DeviceId" TEXT NOT NULL,
+                    "EventType" TEXT NOT NULL,
+                    "StartedAt" INTEGER NULL,
+                    "EndedAt" INTEGER NULL,
+                    "DurationSeconds" INTEGER NULL,
+                    "Reason" TEXT NULL,
+                    "RestoredReason" TEXT NULL,
+                    "WasEnforcing" INTEGER NOT NULL DEFAULT 0,
+                    "HealthJson" TEXT NULL,
+                    "ReceivedAt" TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS "IX_guard_events_DeviceId_ReceivedAt"
+                    ON "guard_events" ("DeviceId", "ReceivedAt");
+                """);
+            logger.LogInformation("[DB] 已补齐 guard_events 表");
+        }
+
         // [SEC-P1] 清理 RefreshTokens 明文列：历史行置空（验证仅走 TokenHash），
         // 防止库文件被窃后明文 token 直接可用（红线 R4.3）
         await PurgePlaintextRefreshTokensAsync(db, logger);

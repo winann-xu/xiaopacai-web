@@ -3,10 +3,55 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import type { Device } from '@/stores/devices'
-import { pairingApi, policyApi, authApi } from '@/api'
+import { pairingApi, policyApi, authApi, guardEventsApi } from '@/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search, Monitor, Refresh } from '@element-plus/icons-vue'
+import { Plus, Search, Monitor, Refresh, CircleCheckFilled, CircleCloseFilled } from '@element-plus/icons-vue'
 import { toDataURL as qrToDataURL } from 'qrcode'
+
+// [TASK-HARDENING-V1.1.1] Bug1-D/1-B：守护健康度快照与失守历史
+interface HealthSnapshot {
+  score?: number
+  readyCount?: number
+  totalCount?: number
+  status?: string
+  guardDown?: boolean
+  manufacturer?: string
+  model?: string
+  timestamp?: number
+  items?: Record<string, any>
+  [k: string]: any
+}
+interface GuardHistoryItem {
+  eventType: string
+  startedAt?: number | null
+  durationSeconds?: number | null
+  reason?: string | null
+  restoredReason?: string | null
+  [k: string]: any
+}
+// 健康度 6 项检查项中文名（无障碍/设备管理员 + OPPO 保活四项；未知键原样显示）
+const ITEM_LABELS: Record<string, string> = {
+  accessibility_service: '无障碍服务',
+  accessibility: '无障碍服务',
+  device_owner: '设备管理员',
+  device_admin: '设备管理员',
+  self_start: '自启动管理',
+  background_activity: '后台活动/冻结',
+  battery_whitelist: '电池优化白名单',
+  battery_optimization: '电池优化白名单',
+  recent_task_lock: '最近任务锁定',
+}
+const REASON_LABELS: Record<string, string> = {
+  process_killed: '进程被杀',
+  swipe_killed: '上滑关闭',
+  accessibility_disabled: '无障碍被关闭',
+  device_owner_removed: '设备管理员被移除',
+  auto_recovered: '自动恢复',
+  swipe_recovery: '上滑恢复',
+  accessibility_reenabled: '无障碍已开启',
+  device_owner_reenabled: '设备管理员已恢复',
+  manual_recovery: '手动恢复',
+}
 
 const deviceStore = useDeviceStore()
 const searchText = ref('')
@@ -21,6 +66,13 @@ const bindExpiresAt = ref('')
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 const resettingId = ref<number | null>(null)
 
+// [TASK-HARDENING-V1.1.1] 守护健康：卡片徽章（挂载/手动刷新拉取，≤10 台）+ 详情弹窗完整数据
+const healthBadges = ref<Record<string, HealthSnapshot>>({})
+const detailHealth = ref<HealthSnapshot | null>(null)
+const detailHealthLoading = ref(false)
+const detailEvents = ref<GuardHistoryItem[]>([])
+const detailEventsLoading = ref(false)
+
 const filteredDevices = computed(() => {
   if (!searchText.value) return deviceStore.devices
   const q = searchText.value.toLowerCase()
@@ -29,7 +81,7 @@ const filteredDevices = computed(() => {
 })
 
 onMounted(() => {
-  deviceStore.fetchDevices()
+  deviceStore.fetchDevices().then(() => refreshHealthBadges())
   refreshTimer = setInterval(() => { deviceStore.fetchDevices() }, 30_000)
 })
 onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
@@ -52,7 +104,55 @@ async function openBindQr() {
   }
 }
 
-function showDetail(device: Device) { detailDevice.value = device; showDetailDialog.value = true }
+function showDetail(device: Device) {
+  detailDevice.value = device
+  showDetailDialog.value = true
+  loadGuardData(device.deviceId)
+}
+
+// 手动刷新：设备列表 + 卡片健康徽章（30s 轮询不重复拉健康，避免请求风暴）
+function handleRefresh() {
+  deviceStore.fetchDevices().then(() => refreshHealthBadges())
+}
+
+// [TASK-HARDENING-V1.1.1] 卡片健康度徽章：挂载与手动刷新时并行拉取（≤10 台，静默失败）
+async function refreshHealthBadges() {
+  const targets = deviceStore.devices.slice(0, 10)
+  await Promise.all(targets.map(async (d) => {
+    try {
+      const res = await guardEventsApi.latestHealth(d.deviceId)
+      const health = res.data?.health
+      if (health) healthBadges.value[d.deviceId] = health
+      else delete healthBadges.value[d.deviceId]
+    } catch {
+      delete healthBadges.value[d.deviceId] // 静默：详情弹窗内仍可查看
+    }
+  }))
+}
+
+// 详情弹窗：健康度快照 + 失守历史（服务端已做账号隔离，前端无需角色判断）
+async function loadGuardData(deviceId: string) {
+  detailHealthLoading.value = true
+  detailEventsLoading.value = true
+  detailHealth.value = null
+  detailEvents.value = []
+  try {
+    const [healthRes, eventsRes] = await Promise.all([
+      guardEventsApi.latestHealth(deviceId),
+      guardEventsApi.list(deviceId, 50),
+    ])
+    detailHealth.value = healthRes.data?.health ?? null
+    // 失守历史：过滤健康快照，仅展示失守/恢复事件，取最近 10 条（服务端按接收时间倒序）
+    detailEvents.value = (eventsRes.data?.events ?? [])
+      .filter((e: GuardHistoryItem) => e.eventType !== 'health_snapshot')
+      .slice(0, 10)
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '获取守护健康数据失败')
+  } finally {
+    detailHealthLoading.value = false
+    detailEventsLoading.value = false
+  }
+}
 
 async function handleUnpair(device: Device) {
   try {
@@ -105,6 +205,37 @@ async function handleResetLimit(device: Device) {
 function statusTagType(s: string) { return s === 'online' ? 'success' : s === 'reconnecting' ? 'warning' : 'info' }
 function statusText(s: string) { return s === 'online' ? '在线' : s === 'reconnecting' ? '重连中' : '离线' }
 function fmtTime(iso?: string | null) { return iso ? new Date(iso).toLocaleString('zh-CN') : '—' }
+
+// ===== 守护健康展示辅助 =====
+function healthTagType(status?: string) { return status === 'good' ? 'success' : status === 'attention' ? 'warning' : status === 'danger' ? 'danger' : 'info' }
+function healthStatusText(status?: string) { return status === 'good' ? '良好' : status === 'attention' ? '需关注' : status === 'danger' ? '危险' : (status || '—') }
+function badgeTagType(status?: string) { return status === 'good' ? 'success' : status === 'danger' ? 'danger' : 'warning' }
+function eventTagType(t: string) { return t === 'guard_down' ? 'danger' : t === 'guard_restored' ? 'success' : 'info' }
+function eventTagText(t: string) { return t === 'guard_down' ? '守护失效' : t === 'guard_restored' ? '守护恢复' : '健康快照' }
+// 客户端 epoch 秒 → 本地时间（null/0 → —）
+function fmtEpoch(sec?: number | null) { return sec ? new Date(sec * 1000).toLocaleString('zh-CN') : '—' }
+function fmtDuration(sec?: number | null) {
+  if (sec == null) return '—'
+  const s = Math.max(0, sec)
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const r = s % 60
+  if (h > 0) return `${h} 小时 ${m} 分`
+  if (m > 0) return `${m} 分 ${r} 秒`
+  return `${r} 秒`
+}
+// 检查项值：布尔直接判定；对象兼容 { ok } / { healthy } / { status }
+function isItemOk(v: any): boolean {
+  if (typeof v === 'boolean') return v
+  if (v && typeof v === 'object') {
+    if (typeof v.ok === 'boolean') return v.ok
+    if (typeof v.healthy === 'boolean') return v.healthy
+    return v.status === 'ok' || v.status === 'good'
+  }
+  return false
+}
+function itemLabel(key: string) { return ITEM_LABELS[key] || key }
+function reasonLabel(r?: string | null) { return r ? (REASON_LABELS[r] || r) : '—' }
 </script>
 
 <template>
@@ -113,7 +244,7 @@ function fmtTime(iso?: string | null) { return iso ? new Date(iso).toLocaleStrin
       <h2 class="page-title">设备管理</h2>
       <div class="page-actions">
         <el-input v-model="searchText" placeholder="搜索设备" :prefix-icon="Search" clearable style="width: 220px" />
-        <el-button :icon="Refresh" @click="deviceStore.fetchDevices()" :loading="deviceStore.loading">刷新</el-button>
+        <el-button :icon="Refresh" @click="handleRefresh" :loading="deviceStore.loading">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="openBindQr">添加设备</el-button>
       </div>
     </div>
@@ -167,6 +298,13 @@ function fmtTime(iso?: string | null) { return iso ? new Date(iso).toLocaleStrin
             <p v-if="(device.rawTodayUsageMinutes ?? 0) !== device.todayUsageMinutes" class="device-raw">
               原始累计 {{ device.rawTodayUsageMinutes }} 分钟（含重置前，报告同口径）
             </p>
+            <!-- [TASK-HARDENING-V1.1.1] 守护健康徽章：失守立即醒目提示，正常显示健康分 -->
+            <p v-if="healthBadges[device.deviceId]" class="device-guard">
+              <el-tag v-if="healthBadges[device.deviceId].guardDown" type="danger" size="small" effect="dark">守护失效</el-tag>
+              <el-tag v-else :type="badgeTagType(healthBadges[device.deviceId].status)" size="small" effect="plain">
+                守护健康 {{ healthBadges[device.deviceId].score ?? '—' }}
+              </el-tag>
+            </p>
           </div>
         </div>
         <div class="card-actions">
@@ -197,7 +335,7 @@ function fmtTime(iso?: string | null) { return iso ? new Date(iso).toLocaleStrin
     </el-dialog>
 
     <!-- 详情弹窗 -->
-    <el-dialog v-model="showDetailDialog" title="设备详情" width="560px">
+    <el-dialog v-model="showDetailDialog" title="设备详情" width="660px">
       <template v-if="detailDevice">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="设备名称">{{ detailDevice.name }}</el-descriptions-item>
@@ -228,6 +366,59 @@ function fmtTime(iso?: string | null) { return iso ? new Date(iso).toLocaleStrin
             <code style="font-size:11px;word-break:break-all">{{ detailDevice.certFingerprint }}</code>
           </el-descriptions-item>
         </el-descriptions>
+
+        <!-- [TASK-HARDENING-V1.1.1] Bug1-D/1-B：守护健康 + 失守历史（服务端已账号隔离） -->
+        <div class="guard-section">
+          <h4 class="guard-title">守护健康</h4>
+          <div v-loading="detailHealthLoading" class="guard-body">
+            <template v-if="detailHealth">
+              <div class="guard-score-row">
+                <span class="guard-score" :class="`is-${detailHealth.status || 'unknown'}`">{{ detailHealth.score ?? '—' }}</span>
+                <el-tag :type="healthTagType(detailHealth.status)" size="small" disable-transitions>{{ healthStatusText(detailHealth.status) }}</el-tag>
+                <el-tag v-if="detailHealth.guardDown" type="danger" size="small" effect="dark">守护失效</el-tag>
+              </div>
+              <div v-if="detailHealth.items && Object.keys(detailHealth.items).length" class="guard-items">
+                <div v-for="(val, key) in detailHealth.items" :key="key" class="guard-item">
+                  <el-icon :size="14" :color="isItemOk(val) ? '#67c23a' : '#f56c6c'">
+                    <CircleCheckFilled v-if="isItemOk(val)" />
+                    <CircleCloseFilled v-else />
+                  </el-icon>
+                  <span class="guard-item-name">{{ itemLabel(String(key)) }}</span>
+                </div>
+              </div>
+              <p class="guard-meta">
+                已就绪 {{ detailHealth.readyCount ?? 0 }} / {{ detailHealth.totalCount ?? 0 }} 项
+                <template v-if="detailHealth.timestamp"> · 快照时间 {{ fmtEpoch(detailHealth.timestamp) }}</template>
+                <template v-if="detailHealth.manufacturer"> · {{ detailHealth.manufacturer }} {{ detailHealth.model || '' }}</template>
+              </p>
+            </template>
+            <el-empty v-else-if="!detailHealthLoading" description="暂无健康度数据（儿童端上报后显示）" :image-size="60" />
+          </div>
+
+          <h4 class="guard-title">失守历史（最近 10 条）</h4>
+          <div v-loading="detailEventsLoading">
+            <el-table v-if="detailEvents.length" :data="detailEvents" size="small" stripe style="width: 100%">
+              <el-table-column label="时间" width="150">
+                <template #default="{ row }">{{ fmtEpoch(row.startedAt) }}</template>
+              </el-table-column>
+              <el-table-column label="事件" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="eventTagType(row.eventType)" size="small" disable-transitions>{{ eventTagText(row.eventType) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="原因" width="130" show-overflow-tooltip>
+                <template #default="{ row }">{{ reasonLabel(row.reason) }}</template>
+              </el-table-column>
+              <el-table-column label="时长" width="100">
+                <template #default="{ row }">{{ fmtDuration(row.durationSeconds) }}</template>
+              </el-table-column>
+              <el-table-column label="恢复方式" min-width="120" show-overflow-tooltip>
+                <template #default="{ row }">{{ reasonLabel(row.restoredReason) }}</template>
+              </el-table-column>
+            </el-table>
+            <el-empty v-else-if="!detailEventsLoading" description="暂无失守记录" :image-size="60" />
+          </div>
+        </div>
       </template>
     </el-dialog>
   </div>
@@ -250,6 +441,20 @@ function fmtTime(iso?: string | null) { return iso ? new Date(iso).toLocaleStrin
 .device-meta, .device-ip { font-size: 12px; color: var(--el-text-color-secondary); margin: 0 0 2px; }
 .device-usage { font-size: 12px; color: var(--el-text-color-secondary); margin: 4px 0 0; }
 .device-raw { font-size: 11px; color: var(--el-text-color-placeholder); margin: 2px 0 0; }
+.device-guard { margin: 6px 0 0; }
+
+/* [TASK-HARDENING-V1.1.1] 守护健康区块 */
+.guard-section { margin-top: 16px; border-top: 1px solid var(--el-border-color-lighter); padding-top: 12px; }
+.guard-title { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+.guard-body { min-height: 40px; }
+.guard-score-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.guard-score { font-size: 26px; font-weight: 700; line-height: 1; color: var(--el-color-success); }
+.guard-score.is-attention { color: var(--el-color-warning); }
+.guard-score.is-danger { color: var(--el-color-danger); }
+.guard-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 12px; margin-bottom: 8px; }
+.guard-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--el-text-color-regular); }
+.guard-item-name { word-break: break-all; }
+.guard-meta { font-size: 12px; color: var(--el-text-color-placeholder); margin: 0 0 8px; }
 .last-refresh { font-size: 12px; color: var(--el-text-color-placeholder); margin: 0 0 12px; }
 .load-error { margin-bottom: 12px; }
 .report-delay-hint { font-size: 11px; color: var(--el-text-color-placeholder); }
