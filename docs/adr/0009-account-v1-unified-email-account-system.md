@@ -103,3 +103,15 @@ P1 单邮箱账号全平台统一 → A1；P2 取消本地免密入口 → C1/C2
 8. 全量回归：Web 单测、Android 单测（120+）、Windows 单测（15）、npm build、Release APK 构建；
 9. 安全：验证码爆破限速、审计留痕、无明文密钥入库入仓；
 10. 邮件设置页：admin 配置/修改/脱敏回显/测试发送/未配置降级/权限隔离。
+
+## 实现记录（[TASK-ACCOUNT-V1] 双端落地，2026-08-15）
+
+- **服务端**（f3fef09）与 **Web 前端**（8a84375）按 A/B 节落地：邮箱注册/验证码登录/找回、verify-password + X-Action-Token 解绑、{devices,deviceCount} 响应、admin 邮件设置页（DB mail_config → 环境变量 MAIL_* 兜底、Secret 经 XIAOPACAI_MASTER_KEY AES-256-GCM 加密）。部署说明见 docs/deployment-account-v1.md。
+- **Android**（本仓库）：
+  - ParentPasswordManager/ParentLoginScreen 本地密码、恢复码、修改密码入口全部移除；RoleManager 仅存角色状态，验证职责移交 `CloudAccountManager`（POST /api/auth/login，JWT KeyStore 加密、密码不落盘、只记邮箱）。
+  - 家长登录态仅进程会话内（parentLoggedIn 不持久化）——进入/切回/重启一律云端验证；新增 `web_host`/`web_port` 持久化（家长登录页/中继设置页保存），供儿童端门禁复用服务器地址。
+  - 儿童端统一 `SystemGateDialog`（守护设置/权限管理/应用分类/解除设备管理器/切换到儿童端/换账号清理共用），每次云端验证，离线明确拒绝并提示「需要联网」。
+  - 绑定账号展示落在家长端（设置页 Web 账号卡片显示邮箱 + 退出登录）。**偏离 C4**：儿童端本地无归属邮箱数据源（配对/中继握手不携带 owner 邮箱），展示由 Web 端设备详情承担（服务端 devices 响应已含 ownerAccount）；Android 侧不展示，属文档化取舍。
+  - **门禁验证语义**：云端登录成功即视为通过（自托管家庭场景：能登录本服务器账号者即家庭成员）；未强制要求与绑定邮箱一致——设备级归属仍由服务端 P2P 握手指纹/中继会话绑定保证（红线 R3.x 不受影响）。
+  - 离线语义（C5）：策略/公告/限额/分类本地缓存照常执行；usage_records sync_status=0 增量补报、诊断报告缓存补传（既有机制，未改动）；离线仅影响验证类操作（家长模式进入、系统级门禁、换账号清理）。
+  - 单测：新增 CloudAccountManagerTest（6 用例：服务器地址/邮箱绑定/未配置服务器/401/离线拒绝），重写 ParentAccountResetTest（4 用例：云端验证失败/离线/未配置服务器拒绝清除 + 清除仅移除凭据保留服务器配置）；删除 ParentPasswordManagerTest。
