@@ -23,6 +23,7 @@ public class DevicesController : ControllerBase
     private readonly P2pMessageHandler _messageHandler;
     private readonly P2pListenerService _p2p;
     private readonly IJwtService _jwt;
+    private readonly ActionTokenStore _actionTokens;
     private readonly ILogger<DevicesController> _logger;
 
     public DevicesController(
@@ -30,12 +31,14 @@ public class DevicesController : ControllerBase
         P2pMessageHandler messageHandler,
         P2pListenerService p2p,
         IJwtService jwt,
+        ActionTokenStore actionTokens,
         ILogger<DevicesController> logger)
     {
         _db = db;
         _messageHandler = messageHandler;
         _p2p = p2p;
         _jwt = jwt;
+        _actionTokens = actionTokens;
         _logger = logger;
     }
 
@@ -58,7 +61,7 @@ public class DevicesController : ControllerBase
         if (!isAdmin)
         {
             if (currentUserId == null)
-                return Ok(Array.Empty<object>());
+                return Ok(new { devices = Array.Empty<object>(), deviceCount = 0 });
             query = query.Where(d => d.OwnerUserId == currentUserId);
         }
 
@@ -107,9 +110,14 @@ public class DevicesController : ControllerBase
                 ownerAccount = string.IsNullOrEmpty(d.OwnerUserId) ? null
                     : users.TryGetValue(d.OwnerUserId, out var u) ? u.Username : null,
             };
-        });
+        }).ToList();
 
-        return Ok(result);
+        // [TASK-ACCOUNT-V1] A6：响应带 deviceCount（前端 >10 台预警，不阻断）
+        return Ok(new
+        {
+            devices = result,
+            deviceCount = result.Count,
+        });
     }
 
     /// <summary>
@@ -172,10 +180,23 @@ public class DevicesController : ControllerBase
 
     /// <summary>
     /// DELETE /api/devices/{id} — 解绑设备（软解绑：unpaired，可重新扫码绑定）
+    /// [TASK-ACCOUNT-V1] A5：必须携带 X-Action-Token（POST /api/auth/verify-password 签发，
+    /// 5 分钟单次有效、绑定 userId）；无/过期/跨账号一律 401。
     /// </summary>
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Unpair(int id)
     {
+        // [TASK-ACCOUNT-V1] 解绑前置：登录态密码二次验证一次性令牌
+        var userId = GetUserId();
+        if (userId == null)
+            return Unauthorized();
+        var actionToken = Request.Headers["X-Action-Token"].ToString();
+        if (string.IsNullOrWhiteSpace(actionToken) || !_actionTokens.VerifyAndConsume(actionToken, userId.Value))
+        {
+            _logger.LogWarning("[Devices] 解绑缺少有效操作令牌: deviceId={Id}", id);
+            return Unauthorized(new { error = "操作令牌缺失或已过期，请重新验证密码" });
+        }
+
         // [SEC-K2] 设备归属校验：家长仅可解绑自己绑定的设备，越权一律 403
         var (access, device) = await DeviceAccess.CheckAsync(_db, id, User);
         if (access == DeviceAccessResult.NotFound)

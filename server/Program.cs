@@ -99,10 +99,17 @@ builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = Compre
 // ---- 密码哈希服务（无状态，Singleton） ----
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 
-// ---- 扫码登录/重置 Ticket 内存存储（OPT12 需求 10/12，Singleton） ----
+// ---- 扫码登录 Ticket 内存存储（OPT12 需求 10，Singleton；[TASK-ACCOUNT-V1] reset-ticket 已退役） ----
 builder.Services.AddSingleton<TicketStore>();
 // [SEC-P1] 过期 Ticket 定时清理（防内存无限增长）
 builder.Services.AddHostedService<TicketCleanupService>();
+
+// ---- [TASK-ACCOUNT-V1] 邮箱验证码 / 一次性 Action Token 内存存储（Singleton） ----
+builder.Services.AddSingleton<VerificationCodeStore>();
+builder.Services.AddSingleton<ActionTokenStore>();
+
+// ---- [TASK-ACCOUNT-V1-MAILCONFIG] 邮件发送器（DB 配置 → 环境变量 MAIL_* 兜底，热加载） ----
+builder.Services.AddSingleton<IMailSender, MailSender>();
 
 // ---- SQLCipher 服务（Singleton：密钥管理 + 连接字符串提供） ----
 var sqlCipherService = SqlCipherService.CreateFromConfig(builder.Configuration);

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using XiaopacaiWeb.Models;
+using XiaopacaiWeb.Security;
 using XiaopacaiWeb.Services;
 
 namespace XiaopacaiWeb.Data;
@@ -31,15 +32,17 @@ public static class DataExtensions
         // 2.1 兼容已有库：EnsureCreated 不会为既有库补新表，手工补齐缺失表
         await EnsureMissingTablesAsync(db, logger);
 
-        // 3. 种子数据（仅当 users 表为空时）
+        // 3. [TASK-ACCOUNT-V1] 管理员邮箱引导（仅当 users 表为空时）：
+        // 不再播种 admin123/parent123 种子账号；未配置 ADMIN_EMAIL/ADMIN_INITIAL_PASSWORD
+        // 时拒绝创建（安全优先，宁可无法登录也不落默认口令）
         if (!await db.Users.AnyAsync())
         {
-            await SeedDefaultUsers(db, passwordHasher);
-            logger.LogInformation("[DB] 种子数据已插入（默认管理员 + 默认家长）");
+            await BootstrapAdminFromEnvAsync(db, passwordHasher, logger);
         }
 
-        // 3.1 [SEC-P1] 存量库回填：默认口令仍可用的账号置强制改密标记（红线 R4.2）
-        await FlagDefaultPasswordAccountsAsync(db, passwordHasher, logger);
+        // 3.1 [TASK-ACCOUNT-V1] 孤儿设备启动迁移：OwnerUserId 为空的已绑定设备
+        // 强制回到 unpaired（清除 PairCode），杜绝无归属设备悬挂占用（A5 归属纪律）
+        await CleanupOrphanDevicesAsync(db, logger);
 
         // 4. 默认系统配置（仅当配置表为空时）
         if (!await db.SystemConfigs.AnyAsync())
@@ -192,6 +195,35 @@ public static class DataExtensions
         // [FIX-100] usage_records 去重迁移：P4 前历史重复行导致 raw SUM 虚高。
         // 按 (DeviceId, AppPackage, 日期) 保留 Id 最大（最新）一条，删除其余，再建唯一索引防复发。
         await DedupUsageRecordsAsync(db, logger);
+
+        // [TASK-ACCOUNT-V1-MAILCONFIG] 邮件配置单行表
+        var hasMailConfig = await db.Database.SqlQueryRaw<long>(
+            "SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name='mail_config'"
+        ).FirstOrDefaultAsync() > 0;
+        if (!hasMailConfig)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE "mail_config" (
+                    "Id" INTEGER NOT NULL CONSTRAINT "PK_mail_config" PRIMARY KEY,
+                    "Channel" TEXT NOT NULL DEFAULT '',
+                    "AccessKeyId" TEXT NOT NULL DEFAULT '',
+                    "AccessKeySecretEnc" TEXT NOT NULL DEFAULT '',
+                    "FromAddress" TEXT NOT NULL DEFAULT '',
+                    "FromName" TEXT NOT NULL DEFAULT '',
+                    "SmtpHost" TEXT NOT NULL DEFAULT '',
+                    "SmtpPort" INTEGER NOT NULL DEFAULT 587,
+                    "SmtpUser" TEXT NOT NULL DEFAULT '',
+                    "SmtpPasswordEnc" TEXT NOT NULL DEFAULT '',
+                    "SmtpUseSsl" INTEGER NOT NULL DEFAULT 1,
+                    "LastTestOk" INTEGER NULL,
+                    "LastTestDetail" TEXT NULL,
+                    "LastTestAt" TEXT NULL,
+                    "UpdatedAt" TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """);
+            logger.LogInformation("[DB] 已补齐 mail_config 表");
+        }
     }
 
     /// <summary>
@@ -275,59 +307,86 @@ public static class DataExtensions
     }
 
     /// <summary>
-    /// [SEC-P1] 存量库回填：种子账号若仍为出厂默认口令，置 MustChangePassword 标记
+    /// [TASK-ACCOUNT-V1] A1 管理员邮箱引导（users 表为空时）：
+    /// 环境变量 ADMIN_EMAIL + ADMIN_INITIAL_PASSWORD 均配置才创建 admin 账号
+    /// （Username=邮箱、MustChangePassword=true）；未配置则拒绝创建并输出明确指引
+    /// （安全优先：不再播种 admin123/parent123 默认口令账号）。
     /// </summary>
-    private static async Task FlagDefaultPasswordAccountsAsync(
+    private static async Task BootstrapAdminFromEnvAsync(
         AppDbContext db, IPasswordHasher hasher, ILogger logger)
     {
-        var defaults = new Dictionary<string, string> { ["admin"] = "admin123", ["parent"] = "parent123" };
-        foreach (var (username, pwd) in defaults)
+        var adminEmail = Environment.GetEnvironmentVariable("ADMIN_EMAIL")?.Trim().ToLower();
+        var adminPassword = Environment.GetEnvironmentVariable("ADMIN_INITIAL_PASSWORD");
+
+        if (string.IsNullOrWhiteSpace(adminEmail) || string.IsNullOrWhiteSpace(adminPassword))
         {
-            var user = await db.Users.FirstOrDefaultAsync(u => u.Username == username && u.IsActive);
-            if (user == null) continue;
-            if (hasher.VerifyPassword(pwd, user.PasswordHash, user.PasswordSalt))
-            {
-                user.MustChangePassword = true;
-                user.UpdatedAt = DateTime.UtcNow;
-                logger.LogWarning("[DB][SEC] 账号 {Username} 仍为默认口令，已置强制改密标记", username);
-            }
+            logger.LogWarning(
+                "[DB][SEC] users 表为空且未配置 ADMIN_EMAIL / ADMIN_INITIAL_PASSWORD，" +
+                "拒绝创建默认账号（安全优先）。请配置后重启完成管理员引导。");
+            return;
         }
-        await db.SaveChangesAsync();
-    }
 
-    private static async Task SeedDefaultUsers(AppDbContext db, IPasswordHasher hasher)
-    {
-        var (adminHash, adminSalt) = hasher.HashPassword("admin123");
-        var (parentHash, parentSalt) = hasher.HashPassword("parent123");
+        var policyError = PasswordPolicy.Validate(adminPassword);
+        if (policyError != null)
+        {
+            logger.LogWarning("[DB][SEC] ADMIN_INITIAL_PASSWORD 不满足密码策略（{Err}），拒绝创建管理员账号", policyError);
+            return;
+        }
 
-        // [SEC-P1] 种子账号使用默认口令，强制首次登录后改密（红线 R4.2）
+        var (hash, salt) = hasher.HashPassword(adminPassword);
         db.Users.Add(new User
         {
-            Username = "admin",
-            PasswordHash = adminHash,
-            PasswordSalt = adminSalt,
+            Username = adminEmail,
+            Email = adminEmail,
+            PasswordHash = hash,
+            PasswordSalt = salt,
             DisplayName = "管理员",
             Role = "admin",
             IsActive = true,
+            // [SEC-P1] 初始口令由环境变量下发，首次登录强制改密（红线 R4.2）
             MustChangePassword = true,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
         });
-
-        db.Users.Add(new User
-        {
-            Username = "parent",
-            PasswordHash = parentHash,
-            PasswordSalt = parentSalt,
-            DisplayName = "家长",
-            Role = "parent",
-            Email = "parent@xiaopacai.local",
-            IsActive = true,
-            MustChangePassword = true,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
-        });
-
         await db.SaveChangesAsync();
+        logger.LogInformation("[DB] 管理员账号已按 ADMIN_EMAIL 引导创建: {Email}", adminEmail);
+    }
+
+    /// <summary>
+    /// [TASK-ACCOUNT-V1] A5 孤儿设备启动迁移：OwnerUserId 为空且 PairStatus != unpaired
+    /// 的设备回到 unpaired 并清除 PairCode（无归属设备不得保持绑定态，杜绝悬挂占用）。
+    /// </summary>
+    private static async Task CleanupOrphanDevicesAsync(AppDbContext db, ILogger logger)
+    {
+        try
+        {
+            var orphans = await db.Devices
+                .Where(d => (d.OwnerUserId == null || d.OwnerUserId == "") && d.PairStatus != "unpaired")
+                .ToListAsync();
+            if (orphans.Count == 0)
+                return;
+
+            foreach (var d in orphans)
+            {
+                d.PairStatus = "unpaired";
+                d.PairCode = null;
+                d.UpdatedAt = DateTime.UtcNow;
+                db.AuditLogs.Add(new AuditLog
+                {
+                    Action = "orphan_device_cleanup",
+                    TargetType = "Device",
+                    TargetId = d.Id,
+                    Detail = $"{{\"deviceId\":\"{d.DeviceId}\",\"prevStatus\":\"paired/revoked\"}}",
+                    CreatedAt = DateTime.UtcNow,
+                });
+            }
+            await db.SaveChangesAsync();
+            logger.LogWarning("[DB][ACCOUNT-V1] 孤儿设备清理：{Count} 台无归属设备已重置为 unpaired", orphans.Count);
+        }
+        catch (Exception ex)
+        {
+            // 失败不阻断启动（审计无归属状态兜底仍在 API 层）
+            logger.LogWarning(ex, "[DB][ACCOUNT-V1] 孤儿设备清理失败（不阻断启动）");
+        }
     }
 }

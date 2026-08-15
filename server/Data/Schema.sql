@@ -240,9 +240,33 @@ CREATE INDEX IF NOT EXISTS idx_relay_sessions_device
 CREATE INDEX IF NOT EXISTS idx_relay_sessions_status
     ON relay_sessions(status, connected_at);
 
+-- ----------------------------------------------------------------------------
+-- 11. mail_config — 邮件发送配置（单行表，[TASK-ACCOUNT-V1-MAILCONFIG]）
+--      Channel='api' → 阿里云 DirectMail API；'smtp' → 自备 SMTP；'' → 未配置
+--      Secret 字段（*Enc）为服务端主密钥 AES-256-GCM 密文，禁止明文
+--      （列名与 EF 模型一致；运行时由 EnsureMissingTablesAsync 补齐）
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS mail_config (
+    Id                  INTEGER NOT NULL PRIMARY KEY,       -- 恒为 1
+    Channel             TEXT    NOT NULL DEFAULT ''         -- api / smtp / ''
+                               CHECK(Channel IN ('api', 'smtp', '')),
+    AccessKeyId         TEXT    NOT NULL DEFAULT '',        -- DirectMail RAM AccessKey ID（非机密）
+    AccessKeySecretEnc  TEXT    NOT NULL DEFAULT '',        -- RAM AccessKey Secret（AES-GCM 密文）
+    FromAddress         TEXT    NOT NULL DEFAULT '',        -- 发信地址（两通道共用）
+    FromName            TEXT    NOT NULL DEFAULT '',        -- 发信人显示名
+    SmtpHost            TEXT    NOT NULL DEFAULT '',
+    SmtpPort            INTEGER NOT NULL DEFAULT 587,
+    SmtpUser            TEXT    NOT NULL DEFAULT '',
+    SmtpPasswordEnc     TEXT    NOT NULL DEFAULT '',        -- SMTP 密码（AES-GCM 密文）
+    SmtpUseSsl          INTEGER NOT NULL DEFAULT 1,
+    LastTestOk          INTEGER DEFAULT NULL,               -- 最近一次测试发送结果
+    LastTestDetail      TEXT    DEFAULT NULL,
+    LastTestAt          TEXT    DEFAULT NULL,
+    UpdatedAt           TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 -- ============================================================================
--- 种子数据（P1 骨架：默认管理员账号）
--- 密码 "admin123" → PBKDF2 哈希（P2 阶段由应用层生成实际哈希）
+-- [TASK-ACCOUNT-V1] 不再播种 admin123/parent123 种子账号。
+-- 首次启动引导由环境变量 ADMIN_EMAIL + ADMIN_INITIAL_PASSWORD 完成
+-- （应用层 BootstrapAdminFromEnvAsync，MustChangePassword=true）。
 -- ============================================================================
-INSERT OR IGNORE INTO users (username, password_hash, password_salt, display_name, role)
-VALUES ('admin', 'PLACEHOLDER_HASH_P2_STAGE', 'PLACEHOLDER_SALT_P2_STAGE', '管理员', 'admin');

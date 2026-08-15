@@ -65,6 +65,15 @@ public class DeviceAccessTests
                 provider.GetRequiredService<P2pListenerService>());
     }
 
+    /// <summary>
+    /// [TASK-ACCOUNT-V1] 为当前请求签发并注入一次性 Action Token（模拟 verify-password 通过后的解绑前置）
+    /// </summary>
+    private static void SetActionTokenHeader(ControllerBase controller, ActionTokenStore store, int userId)
+    {
+        var token = store.Issue(userId);
+        controller.HttpContext.Request.Headers["X-Action-Token"] = token;
+    }
+
     private async Task<(Device Own, Device Other)> SeedTwoDevices(AppDbContext db)
     {
         var own = new Device { Id = 1, DeviceName = "自家设备", DeviceId = "own-001", Platform = "android", OwnerUserId = "1", PairStatus = "paired" };
@@ -183,14 +192,52 @@ public class DeviceAccessTests
     // ==================== DevicesController ====================
 
     [Fact]
+    public async Task Devices_Unpair_WithoutActionToken_Returns401()
+    {
+        // [TASK-ACCOUNT-V1] 解绑前置：缺少 X-Action-Token 一律 401（不进入归属校验）
+        var db = CreateInMemoryDbContext();
+        var (own, _) = await SeedTwoDevices(db);
+        var (handler, p2p) = CreateP2pServices(db);
+        var controller = new DevicesController(db, handler, p2p, Mock.Of<XiaopacaiWeb.Services.IJwtService>(),
+            new ActionTokenStore(), NullLogger<DevicesController>.Instance);
+        SetHttpContext(controller, Principal(1));
+
+        var result = await controller.Unpair(own.Id);
+
+        var status = Assert.IsType<UnauthorizedObjectResult>(result);
+        Assert.Equal(401, status.StatusCode);
+    }
+
+    [Fact]
+    public async Task Devices_Unpair_OtherUsersToken_Returns401()
+    {
+        // [TASK-ACCOUNT-V1] Action Token 绑定 userId：他人令牌不可用于本账号解绑
+        var db = CreateInMemoryDbContext();
+        var (own, _) = await SeedTwoDevices(db);
+        var (handler, p2p) = CreateP2pServices(db);
+        var tokens = new ActionTokenStore();
+        var controller = new DevicesController(db, handler, p2p, Mock.Of<XiaopacaiWeb.Services.IJwtService>(),
+            tokens, NullLogger<DevicesController>.Instance);
+        SetHttpContext(controller, Principal(1));
+        SetActionTokenHeader(controller, tokens, userId: 2); // 令牌属于用户 2
+
+        var result = await controller.Unpair(own.Id);
+
+        var status = Assert.IsType<UnauthorizedObjectResult>(result);
+        Assert.Equal(401, status.StatusCode);
+    }
+
+    [Fact]
     public async Task Devices_Unpair_OtherParentDevice_Returns403()
     {
         var db = CreateInMemoryDbContext();
         var (_, other) = await SeedTwoDevices(db);
         var (handler, p2p) = CreateP2pServices(db);
+        var tokens = new ActionTokenStore();
         var controller = new DevicesController(db, handler, p2p, Mock.Of<XiaopacaiWeb.Services.IJwtService>(),
-            NullLogger<DevicesController>.Instance);
+            tokens, NullLogger<DevicesController>.Instance);
         SetHttpContext(controller, Principal(1));
+        SetActionTokenHeader(controller, tokens, userId: 1); // 令牌有效，但设备归属他人 → 403
 
         var result = await controller.Unpair(other.Id);
 
@@ -209,9 +256,11 @@ public class DeviceAccessTests
         await db.SaveChangesAsync();
 
         var (handler, p2p) = CreateP2pServices(db);
+        var tokens = new ActionTokenStore();
         var controller = new DevicesController(db, handler, p2p, Mock.Of<XiaopacaiWeb.Services.IJwtService>(),
-            NullLogger<DevicesController>.Instance);
+            tokens, NullLogger<DevicesController>.Instance);
         SetHttpContext(controller, Principal(1));
+        SetActionTokenHeader(controller, tokens, userId: 1);
 
         var result = await controller.Unpair(own.Id);
 
@@ -237,19 +286,29 @@ public class DeviceAccessTests
         await db.SaveChangesAsync();
 
         var (handler, p2p) = CreateP2pServices(db);
+        var tokens = new ActionTokenStore();
         var controller = new DevicesController(db, handler, p2p, Mock.Of<XiaopacaiWeb.Services.IJwtService>(),
-            NullLogger<DevicesController>.Instance);
+            tokens, NullLogger<DevicesController>.Instance);
         SetHttpContext(controller, Principal(1));
 
+        // [TASK-ACCOUNT-V1] List 响应为 { devices, deviceCount }
         var ok = Assert.IsType<OkObjectResult>(await controller.List());
-        var first = Assert.IsAssignableFrom<System.Collections.IEnumerable>(ok.Value!).Cast<object>().First();
+        var payload = ok.Value!;
+        var devices = Assert.IsAssignableFrom<System.Collections.IEnumerable>(
+            payload.GetType().GetProperty("devices")!.GetValue(payload));
+        Assert.Equal(1, (int)payload.GetType().GetProperty("deviceCount")!.GetValue(payload)!);
+        var first = devices.Cast<object>().First();
         Assert.Equal("parent1", first.GetType().GetProperty("ownerAccount")!.GetValue(first));
 
         // 解绑后归属清空 → 管理员视角 ownerAccount 为 null
+        SetActionTokenHeader(controller, tokens, userId: 1);
         await controller.Unpair(1);
         SetHttpContext(controller, Principal(99, "admin"));
         var ok2 = Assert.IsType<OkObjectResult>(await controller.List());
-        var first2 = Assert.IsAssignableFrom<System.Collections.IEnumerable>(ok2.Value!).Cast<object>().First();
+        var payload2 = ok2.Value!;
+        var devices2 = Assert.IsAssignableFrom<System.Collections.IEnumerable>(
+            payload2.GetType().GetProperty("devices")!.GetValue(payload2));
+        var first2 = devices2.Cast<object>().First();
         Assert.Null(first2.GetType().GetProperty("ownerAccount")!.GetValue(first2));
     }
 

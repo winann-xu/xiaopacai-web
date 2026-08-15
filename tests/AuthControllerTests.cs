@@ -44,7 +44,9 @@ public class AuthControllerTests
         var logger = new Microsoft.Extensions.Logging.Abstractions.NullLogger<AuthController>();
         // [SEC-K5] 空配置即可：RefreshTokenExpiryDays 走默认值 7
         var config = new ConfigurationBuilder().Build();
-        var controller = new AuthController(db, hasher, jwt, new TicketStore(), logger, config);
+        // [TASK-ACCOUNT-V1] 新增依赖：验证码存储 / Action Token 存储 / 邮件发送器（默认未配置 → 发码 503）
+        var controller = new AuthController(db, hasher, jwt, new TicketStore(),
+            new VerificationCodeStore(), new ActionTokenStore(), Mock.Of<IMailSender>(), logger, config);
         // [SEC-P2] 提供默认 HttpContext：IsSameOriginRequest 需读取 Request（无 Origin 头时放行）
         controller.ControllerContext = new ControllerContext
         {

@@ -22,6 +22,9 @@ public class AuthController : ControllerBase
     private readonly IPasswordHasher _hasher;
     private readonly IJwtService _jwt;
     private readonly TicketStore _tickets;
+    private readonly VerificationCodeStore _codes;
+    private readonly ActionTokenStore _actionTokens;
+    private readonly IMailSender _mail;
     private readonly ILogger<AuthController> _logger;
     private readonly int _refreshTokenExpiryDays;
 
@@ -31,18 +34,22 @@ public class AuthController : ControllerBase
         new PasswordHasher().HashPassword(Guid.NewGuid().ToString("N"));
 
     public AuthController(AppDbContext db, IPasswordHasher hasher, IJwtService jwt, TicketStore tickets,
+        VerificationCodeStore codes, ActionTokenStore actionTokens, IMailSender mail,
         ILogger<AuthController> logger, IConfiguration config)
     {
         _db = db;
         _hasher = hasher;
         _jwt = jwt;
         _tickets = tickets;
+        _codes = codes;
+        _actionTokens = actionTokens;
+        _mail = mail;
         _logger = logger;
         _refreshTokenExpiryDays = config.GetValue<int>("Jwt:RefreshTokenExpiryDays", 7);
     }
 
     /// <summary>
-    /// POST /api/auth/login — 用户登录
+    /// POST /api/auth/login — 用户登录（[TASK-ACCOUNT-V1] 仅接受邮箱）
     /// </summary>
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
@@ -54,53 +61,53 @@ public class AuthController : ControllerBase
         if (!IsSameOriginRequest())
             return StatusCode(403, new { error = "跨站请求被拒绝" });
 
-        // [TASK-OPT-12-P4-DEEPEN] 登录失败限速：5 次/小时，按用户名 + IP 双维度封锁
+        // [TASK-OPT-12-P4-DEEPEN] 登录失败限速：5 次/小时，按邮箱 + IP 双维度封锁
         const int maxLoginFailures = 5;
         const int loginWindowSeconds = 3600;
         var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
 
-        if (RequestRateLimiter.IsBlocked($"login:user:{request.Username}", maxLoginFailures, loginWindowSeconds) ||
+        // [TASK-ACCOUNT-V1] 账号名即邮箱（小写归一）；旧数据 Username 非邮箱时兜底匹配 Email 列
+        var loginName = request.Username.Trim().ToLower();
+        if (RequestRateLimiter.IsBlocked($"login:user:{loginName}", maxLoginFailures, loginWindowSeconds) ||
             RequestRateLimiter.IsBlocked($"login:ip:{clientIp}", maxLoginFailures, loginWindowSeconds))
         {
-            _logger.LogWarning("[Auth] 登录被限速: {U} @ {Ip}", request.Username, clientIp);
+            _logger.LogWarning("[Auth] 登录被限速: {U} @ {Ip}", loginName, clientIp);
             return StatusCode(429, new { error = "登录失败次数过多，请 1 小时后再试" });
         }
 
-        // 查找用户（支持用户名或邮箱登录）
-        var loginName = request.Username.Trim();
         var user = await _db.Users.FirstOrDefaultAsync(u =>
             u.IsActive && (u.Username == loginName ||
-                (loginName.Contains("@") && u.Email != null && u.Email.ToLower() == loginName.ToLower())));
+                (loginName.Contains("@") && u.Email != null && u.Email.ToLower() == loginName)));
 
         if (user == null)
         {
             // [SEC-P2] 虚拟哈希：耗时与真实校验对齐，防账号枚举
             _ = _hasher.VerifyPassword(request.Password, DummyCredential.Hash, DummyCredential.Salt);
-            _logger.LogWarning("[Auth] 登录失败 — 用户不存在: {U}", request.Username);
+            _logger.LogWarning("[Auth] 登录失败 — 用户不存在: {U}", loginName);
             await AuditAsync("login_failed", null, null, null, null,
-                $"{{\"username\":\"{request.Username}\",\"reason\":\"user_not_found\"}}");
-            var overLimit = RequestRateLimiter.RecordFailure($"login:user:{request.Username}", maxLoginFailures, loginWindowSeconds) |
+                $"{{\"username\":\"{loginName}\",\"reason\":\"user_not_found\"}}");
+            var overLimit = RequestRateLimiter.RecordFailure($"login:user:{loginName}", maxLoginFailures, loginWindowSeconds) |
                             RequestRateLimiter.RecordFailure($"login:ip:{clientIp}", maxLoginFailures, loginWindowSeconds);
             if (overLimit)
                 return StatusCode(429, new { error = "登录失败次数过多，请 1 小时后再试" });
-            return Unauthorized(new { error = "用户名或密码错误" });
+            return Unauthorized(new { error = "邮箱或密码错误" });
         }
 
         // 验证密码
         if (!_hasher.VerifyPassword(request.Password, user.PasswordHash, user.PasswordSalt))
         {
-            _logger.LogWarning("[Auth] 登录失败 — 密码错误: {U}", request.Username);
+            _logger.LogWarning("[Auth] 登录失败 — 密码错误: {U}", loginName);
             await AuditAsync("login_failed", user.Id, null, null, null,
                 $"{{\"username\":\"{user.Username}\",\"reason\":\"password_wrong\"}}");
-            var overLimit = RequestRateLimiter.RecordFailure($"login:user:{request.Username}", maxLoginFailures, loginWindowSeconds) |
+            var overLimit = RequestRateLimiter.RecordFailure($"login:user:{loginName}", maxLoginFailures, loginWindowSeconds) |
                             RequestRateLimiter.RecordFailure($"login:ip:{clientIp}", maxLoginFailures, loginWindowSeconds);
             if (overLimit)
                 return StatusCode(429, new { error = "登录失败次数过多，请 1 小时后再试" });
-            return Unauthorized(new { error = "用户名或密码错误" });
+            return Unauthorized(new { error = "邮箱或密码错误" });
         }
 
         // [TASK-OPT-12-P4-DEEPEN] 登录成功释放失败计数
-        RequestRateLimiter.Clear($"login:user:{request.Username}");
+        RequestRateLimiter.Clear($"login:user:{loginName}");
         RequestRateLimiter.Clear($"login:ip:{clientIp}");
 
         // 签发 Token
@@ -149,7 +156,85 @@ public class AuthController : ControllerBase
     }
 
     /// <summary>
-    /// POST /api/auth/register — 家长邮箱注册（个人唯一账号，无需管理员预置）
+    /// [TASK-ACCOUNT-V1] POST /api/auth/email-code — 发送邮箱验证码
+    /// purpose ∈ register | login | reset_password；6 位码 5 分钟有效、单码单用。
+    /// 邮件未配置 → 503 明确报错（不阻断密码登录）。
+    /// 防枚举：login/reset 用途下目标邮箱未注册时不发信，但统一应答成功文案。
+    /// </summary>
+    [HttpPost("email-code")]
+    [AllowAnonymous]
+    public async Task<IActionResult> SendEmailCode([FromBody] EmailCodeRequest request)
+    {
+        if (!ModelState.IsValid)
+            return BadRequest(ModelState);
+
+        // [SEC-P2] Origin/Host 一致性校验（CSRF 纵深防御）
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
+
+        var email = request.Email.Trim().ToLower();
+        var purpose = request.Purpose.Trim().ToLower();
+
+        // 邮件服务未配置 → 明确报错（A7：不阻断登录，但发码流程必须可解释）
+        if (!_mail.IsConfigured)
+        {
+            await AuditAsync("email_code_unconfigured", null, null, null, null,
+                $"{{\"email\":\"{email}\",\"purpose\":\"{purpose}\"}}");
+            return StatusCode(503, new { error = "邮件服务未配置，请联系管理员完成邮件设置" });
+        }
+
+        // 发码限速：IP 10/小时 + 邮箱 5/小时
+        const int maxPerHour = 10;
+        const int maxPerHourEmail = 5;
+        const int windowSeconds = 3600;
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (RequestRateLimiter.IsBlocked($"email-code:ip:{clientIp}", maxPerHour, windowSeconds) ||
+            RequestRateLimiter.IsBlocked($"email-code:email:{email}", maxPerHourEmail, windowSeconds))
+        {
+            await AuditAsync("email_code_rate_limited", null, null, null, null,
+                $"{{\"email\":\"{email}\",\"purpose\":\"{purpose}\"}}");
+            return StatusCode(429, new { error = "发送过于频繁，请 1 小时后再试" });
+        }
+
+        // 防枚举 + 减少无效发信：register 已存在 / login、reset 不存在 → 不发信，统一应答
+        var exists = await _db.Users.AnyAsync(u => u.IsActive &&
+            (u.Username == email || (u.Email != null && u.Email.ToLower() == email)));
+        var suppress = purpose switch
+        {
+            "register" => exists,
+            "login" or "reset_password" => !exists,
+            _ => false,
+        };
+        if (suppress)
+        {
+            _logger.LogInformation("[Auth] 发码抑制（防枚举）: {Email} purpose={P}", email, purpose);
+            return Ok(new { message = "验证码已发送，5 分钟内有效" });
+        }
+
+        var code = _codes.Issue(email, purpose);
+        var subject = purpose switch
+        {
+            "register" => "【小趴菜】注册验证码",
+            "login" => "【小趴菜】登录验证码",
+            _ => "【小趴菜】重置密码验证码",
+        };
+        var (ok, sendError) = await _mail.SendAsync(email, subject, BuildCodeEmailHtml(code, purpose));
+        if (!ok)
+        {
+            _logger.LogError("[Auth] 验证码邮件发送失败: {Email} ({Err})", email, sendError);
+            await AuditAsync("email_code_send_failed", null, null, null, null,
+                $"{{\"email\":\"{email}\",\"purpose\":\"{purpose}\"}}");
+            return StatusCode(502, new { error = "验证码发送失败，请稍后重试" });
+        }
+
+        await AuditAsync("email_code_sent", null, null, null, null,
+            $"{{\"email\":\"{email}\",\"purpose\":\"{purpose}\"}}");
+        _logger.LogInformation("[Auth] 验证码已发送: {Email} purpose={P}", email, purpose);
+        return Ok(new { message = "验证码已发送，5 分钟内有效" });
+    }
+
+    /// <summary>
+    /// [TASK-ACCOUNT-V1] POST /api/auth/register — 家长邮箱注册（需邮箱验证码，个人唯一账号）
     /// </summary>
     [HttpPost("register")]
     [AllowAnonymous]
@@ -179,6 +264,26 @@ public class AuthController : ControllerBase
             u.Username == email || (u.Email != null && u.Email.ToLower() == email));
         if (exists)
             return BadRequest(new { error = "该邮箱已注册" });
+
+        // [TASK-ACCOUNT-V1] 验证码校验（单码单用）；验证失败限速：10 次/小时按邮箱
+        const int maxVerifyFailures = 10;
+        const int verifyWindowSeconds = 3600;
+        if (RequestRateLimiter.IsBlocked($"verify:email:{email}", maxVerifyFailures, verifyWindowSeconds))
+        {
+            await AuditAsync("register_code_verify_rate_limited", null, null, null, null,
+                $"{{\"email\":\"{email}\"}}");
+            return StatusCode(429, new { error = "验证码尝试次数过多，请 1 小时后再试" });
+        }
+        if (!_codes.VerifyAndConsume(email, "register", request.Code))
+        {
+            await AuditAsync("register_code_verify_failed", null, null, null, null,
+                $"{{\"email\":\"{email}\"}}");
+            var over = RequestRateLimiter.RecordFailure($"verify:email:{email}", maxVerifyFailures, verifyWindowSeconds);
+            if (over)
+                return StatusCode(429, new { error = "验证码尝试次数过多，请 1 小时后再试" });
+            return BadRequest(new { error = "验证码错误或已过期" });
+        }
+        RequestRateLimiter.Clear($"verify:email:{email}");
 
         var (hash, salt) = _hasher.HashPassword(request.Password);
         var user = new User
@@ -223,6 +328,183 @@ public class AuthController : ControllerBase
             tokenType = "Bearer",
             profile,
             user = profile,
+        });
+    }
+
+    /// <summary>
+    /// [TASK-ACCOUNT-V1] POST /api/auth/login/code — 验证码登录（辅助登录方式）
+    /// 验证失败限速 5 次/小时（邮箱 + IP 双维度），成功后释放计数。
+    /// </summary>
+    [HttpPost("login/code")]
+    [AllowAnonymous]
+    public async Task<IActionResult> CodeLogin([FromBody] CodeLoginRequest request)
+    {
+        if (!ModelState.IsValid)
+            return BadRequest(ModelState);
+
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
+
+        var email = request.Email.Trim().ToLower();
+        const int maxFailures = 5;
+        const int windowSeconds = 3600;
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (RequestRateLimiter.IsBlocked($"codelogin:user:{email}", maxFailures, windowSeconds) ||
+            RequestRateLimiter.IsBlocked($"codelogin:ip:{clientIp}", maxFailures, windowSeconds))
+        {
+            return StatusCode(429, new { error = "登录失败次数过多，请 1 小时后再试" });
+        }
+
+        var user = await _db.Users.FirstOrDefaultAsync(u =>
+            u.IsActive && (u.Username == email || (u.Email != null && u.Email.ToLower() == email)));
+        if (user == null || !_codes.VerifyAndConsume(email, "login", request.Code))
+        {
+            _logger.LogWarning("[Auth] 验证码登录失败: {E}", email);
+            await AuditAsync("code_login_failed", user?.Id, null, null, null,
+                $"{{\"email\":\"{email}\",\"reason\":\"{(user == null ? "user_not_found" : "code_wrong")}\"}}");
+            var over = RequestRateLimiter.RecordFailure($"codelogin:user:{email}", maxFailures, windowSeconds) |
+                       RequestRateLimiter.RecordFailure($"codelogin:ip:{clientIp}", maxFailures, windowSeconds);
+            if (over)
+                return StatusCode(429, new { error = "登录失败次数过多，请 1 小时后再试" });
+            return Unauthorized(new { error = "验证码错误或已过期" });
+        }
+
+        RequestRateLimiter.Clear($"codelogin:user:{email}");
+        RequestRateLimiter.Clear($"codelogin:ip:{clientIp}");
+
+        var (accessToken, refreshToken, accessExpiry, refreshExpiry) =
+            _jwt.GenerateTokens(user.Id, user.Username, user.Role);
+        await _jwt.StoreRefreshToken(user.Id, refreshToken, refreshExpiry);
+
+        user.LastLoginAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        await AuditAsync("code_login_success", user.Id, null, null, null,
+            $"{{\"username\":\"{user.Username}\"}}");
+        _logger.LogInformation("[Auth] 验证码登录成功: {U}", user.Username);
+
+        var profile = BuildProfile(user);
+        SetAuthCookies(accessToken, refreshToken, accessExpiry, refreshExpiry);
+        return Ok(new
+        {
+            accessToken,
+            refreshToken,
+            expiresAt = accessExpiry,
+            tokenType = "Bearer",
+            mustChangePassword = user.MustChangePassword,
+            profile,
+            user = profile,
+        });
+    }
+
+    /// <summary>
+    /// [TASK-ACCOUNT-V1] POST /api/auth/password-reset — 找回密码（邮箱验证码 + 新密码）
+    /// 成功后吊销该账号全部 Refresh Token（所有设备强制重新登录）。
+    /// </summary>
+    [HttpPost("password-reset")]
+    [AllowAnonymous]
+    public async Task<IActionResult> PasswordReset([FromBody] PasswordResetRequest request)
+    {
+        if (!ModelState.IsValid)
+            return BadRequest(ModelState);
+
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
+
+        var email = request.Email.Trim().ToLower();
+        const int maxFailures = 5;
+        const int windowSeconds = 3600;
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (RequestRateLimiter.IsBlocked($"pwreset:user:{email}", maxFailures, windowSeconds) ||
+            RequestRateLimiter.IsBlocked($"pwreset:ip:{clientIp}", maxFailures, windowSeconds))
+        {
+            return StatusCode(429, new { error = "操作过于频繁，请 1 小时后再试" });
+        }
+
+        var user = await _db.Users.FirstOrDefaultAsync(u =>
+            u.IsActive && (u.Username == email || (u.Email != null && u.Email.ToLower() == email)));
+        if (user == null || !_codes.VerifyAndConsume(email, "reset_password", request.Code))
+        {
+            _logger.LogWarning("[Auth] 找回密码失败: {E}", email);
+            await AuditAsync("password_reset_failed", user?.Id, null, null, null,
+                $"{{\"email\":\"{email}\",\"reason\":\"{(user == null ? "user_not_found" : "code_wrong")}\"}}");
+            var over = RequestRateLimiter.RecordFailure($"pwreset:user:{email}", maxFailures, windowSeconds) |
+                       RequestRateLimiter.RecordFailure($"pwreset:ip:{clientIp}", maxFailures, windowSeconds);
+            if (over)
+                return StatusCode(429, new { error = "操作过于频繁，请 1 小时后再试" });
+            return BadRequest(new { error = "验证码错误或已过期" });
+        }
+
+        var policyError = PasswordPolicy.Validate(request.NewPassword);
+        if (policyError != null)
+            return BadRequest(new { error = policyError });
+
+        var (newHash, newSalt) = _hasher.HashPassword(request.NewPassword);
+        user.PasswordHash = newHash;
+        user.PasswordSalt = newSalt;
+        user.MustChangePassword = false;
+        user.UpdatedAt = DateTime.UtcNow;
+
+        // 吊销全部 Refresh Token（所有设备强制重新登录）
+        await _jwt.RevokeAllUserTokens(user.Id);
+        await _db.SaveChangesAsync();
+
+        await AuditAsync("password_reset", user.Id, null, null, null,
+            $"{{\"username\":\"{user.Username}\"}}");
+        _logger.LogInformation("[Auth] 找回密码完成: {U}", user.Username);
+        return Ok(new { message = "密码已重置，请重新登录" });
+    }
+
+    /// <summary>
+    /// [TASK-ACCOUNT-V1] POST /api/auth/verify-password — 登录态密码二次验证
+    /// 用于解绑/换绑前置确认；成功签发 5 分钟一次性 Action Token（绑定 userId）。
+    /// </summary>
+    [HttpPost("verify-password")]
+    [Authorize]
+    public async Task<IActionResult> VerifyPassword([FromBody] VerifyPasswordRequest request)
+    {
+        if (!ModelState.IsValid)
+            return BadRequest(ModelState);
+
+        if (!IsSameOriginRequest())
+            return StatusCode(403, new { error = "跨站请求被拒绝" });
+
+        var userId = GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var user = await _db.Users.FindAsync(userId.Value);
+        if (user == null)
+            return NotFound(new { error = "用户不存在" });
+
+        const int maxFailures = 5;
+        const int windowSeconds = 3600;
+        if (RequestRateLimiter.IsBlocked($"verifypw:user:{userId}", maxFailures, windowSeconds))
+        {
+            return StatusCode(429, new { error = "尝试次数过多，请 1 小时后再试" });
+        }
+
+        if (!_hasher.VerifyPassword(request.Password, user.PasswordHash, user.PasswordSalt))
+        {
+            _logger.LogWarning("[Auth] 二次验证失败: userId={U}", userId);
+            await AuditAsync("verify_password_failed", userId, null, null, null,
+                $"{{\"username\":\"{user.Username}\",\"reason\":\"password_wrong\"}}");
+            var over = RequestRateLimiter.RecordFailure($"verifypw:user:{userId}", maxFailures, windowSeconds);
+            if (over)
+                return StatusCode(429, new { error = "尝试次数过多，请 1 小时后再试" });
+            return BadRequest(new { error = "密码错误" });
+        }
+
+        RequestRateLimiter.Clear($"verifypw:user:{userId}");
+
+        var token = _actionTokens.Issue(userId.Value);
+        await AuditAsync("verify_password_success", userId, null, null, null,
+            $"{{\"username\":\"{user.Username}\"}}");
+        return Ok(new
+        {
+            actionToken = token,
+            expiresInSeconds = ActionTokenStore.LifetimeSeconds,
+            message = "身份已确认，5 分钟内完成操作",
         });
     }
 
@@ -532,202 +814,6 @@ public class AuthController : ControllerBase
         return Ok(new { status = TicketStore.StatusConfirmed, message = "已确认，网页端即将自动登录" });
     }
 
-    // ========== 忘记密码重置 Ticket（OPT12 需求 12） ==========
-
-    /// <summary>
-    /// POST /api/auth/reset-ticket — 生成一次性重置 Ticket（10 分钟有效，状态 pending）
-    /// 未登录可调用；账号不存在时同样返回 Ticket（不泄露账号存在性），确认环节兜底。
-    /// </summary>
-    [HttpPost("reset-ticket")]
-    [AllowAnonymous]
-    public async Task<IActionResult> CreateResetTicket([FromBody] ResetTicketRequest request)
-    {
-        if (!ModelState.IsValid)
-            return BadRequest(ModelState);
-
-        // [SEC-P1] 匿名端点限速：防批量生成/账号枚举（账号不存在也返回相同 Ticket 流程）
-        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
-        if (!RequestRateLimiter.Allow($"reset-ticket:ip:{clientIp}", 5, 60))
-            return StatusCode(429, new { error = "操作过于频繁，请 1 分钟后再试" });
-
-        // 校验账号是否存在（仅记录日志，不向调用方泄露）
-        var exists = await _db.Users.AnyAsync(u => u.Username == request.Username && u.IsActive);
-        if (!exists)
-        {
-            _logger.LogWarning("[Auth] 重置 Ticket 生成 — 目标账号不存在: {U}", request.Username);
-        }
-
-        var entry = _tickets.CreateResetTicket(request.Username);
-        if (entry == null)
-            return StatusCode(429, new { error = "系统繁忙，请稍后重试" });
-
-        // [SEC-P1] 日志打码：不落完整 Ticket
-        _logger.LogInformation("[Auth] 重置 Ticket 已生成: {Ticket} (target={U})", MaskTicket(entry.Ticket), request.Username);
-
-        // [TASK-OPT-12-P4-DEEPEN] 审计日志：生成重置 Ticket
-        await AuditAsync("reset_ticket_generate", null, null, null, null,
-            $"{{\"ticket\":\"{MaskTicket(entry.Ticket)}\",\"target\":\"{request.Username}\"}}");
-
-        return Ok(BuildResetTicketResponse(entry));
-    }
-
-    /// <summary>
-    /// GET /api/auth/reset-ticket/{ticket} — 轮询重置 Ticket 状态
-    /// 状态：pending / confirmed / expired
-    /// </summary>
-    [HttpGet("reset-ticket/{ticket}")]
-    [AllowAnonymous]
-    public IActionResult PollResetTicket(string ticket)
-    {
-        // [SEC-P1] 匿名轮询限速
-        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
-        if (!RequestRateLimiter.Allow($"reset-ticket-poll:ip:{clientIp}", 60, 60))
-            return StatusCode(429, new { error = "操作过于频繁，请稍后再试" });
-
-        var entry = _tickets.Get(ticket);
-        if (entry == null || entry.Kind != "reset")
-            return Ok(new ResetTicketResponse
-            {
-                Ticket = ticket,
-                Status = TicketStore.StatusExpired,
-                ExpiresAt = DateTime.UtcNow,
-                ExpiresInSeconds = 0,
-            });
-
-        return Ok(BuildResetTicketResponse(entry));
-    }
-
-    /// <summary>
-    /// POST /api/auth/reset-ticket/{ticket}/confirm — 家长端 APP 确认重置身份（需登录态）
-    /// 确认者账号必须与 Ticket 目标账号一致。
-    /// </summary>
-    [HttpPost("reset-ticket/{ticket}/confirm")]
-    [Authorize]
-    public async Task<IActionResult> ConfirmResetTicket(string ticket, [FromBody] ResetTicketConfirmRequest? request)
-    {
-        var userId = GetUserId();
-        if (userId == null)
-            return Unauthorized();
-
-        // [TASK-OPT-12-P4-DEEPEN] 确认失败限速：5 次/小时（按 IP）
-        const int maxConfirmFailures = 5;
-        const int confirmWindowSeconds = 3600;
-        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
-        if (RequestRateLimiter.IsBlocked($"reset-ticket-confirm:ip:{clientIp}", maxConfirmFailures, confirmWindowSeconds))
-        {
-            _logger.LogWarning("[Auth] 重置确认被限速: {Ticket} @ {Ip}", MaskTicket(ticket), clientIp);
-            return StatusCode(429, new { error = "操作过于频繁，请 1 小时后再试" });
-        }
-
-        var user = await _db.Users.FindAsync(userId.Value);
-        if (user == null)
-            return NotFound(new { error = "用户不存在" });
-
-        if (!_tickets.Confirm(ticket, userId.Value, user.Username))
-        {
-            var entry = _tickets.Get(ticket);
-            var reason = entry == null || entry.Kind != "reset" ? "invalid"
-                : entry.Status == TicketStore.StatusExpired ? "expired"
-                : entry.Status == TicketStore.StatusConfirmed ? "confirmed" : "account_mismatch";
-
-            // [TASK-OPT-12-P4-DEEPEN] 审计日志：确认失败 + 失败计数
-            await AuditAsync("reset_ticket_confirm_failed", userId, null, null, null,
-                $"{{\"ticket\":\"{MaskTicket(ticket)}\",\"reason\":\"{reason}\"}}");
-            var overLimit = RequestRateLimiter.RecordFailure($"reset-ticket-confirm:ip:{clientIp}",
-                maxConfirmFailures, confirmWindowSeconds);
-            if (overLimit)
-                return StatusCode(429, new { error = "操作过于频繁，请 1 小时后再试" });
-
-            if (entry == null || entry.Kind != "reset")
-                return NotFound(new { error = "Ticket 无效" });
-            if (entry.Status == TicketStore.StatusExpired)
-                return BadRequest(new { error = "Ticket 已过期" });
-            if (entry.Status == TicketStore.StatusConfirmed)
-                return BadRequest(new { error = "Ticket 已确认" });
-            return BadRequest(new { error = "确认账号与目标账号不一致" });
-        }
-
-        // [TASK-OPT-12-P4-DEEPEN] 审计日志：确认成功
-        await AuditAsync("reset_ticket_confirm", userId, null, null, null,
-            $"{{\"ticket\":\"{MaskTicket(ticket)}\"}}");
-
-        _logger.LogInformation("[Auth] 重置 Ticket 已确认: {Ticket} by userId={U}", MaskTicket(ticket), userId);
-        return Ok(new { status = TicketStore.StatusConfirmed, message = "身份已确认，可设置新密码" });
-    }
-
-    /// <summary>
-    /// POST /api/auth/reset-ticket/{ticket}/reset — 设置新密码（需 Ticket 已确认）
-    /// 成功后吊销该账号全部 Refresh Token，Ticket 一次性消费。
-    /// TODO(P5)：失败限速（5 次/小时）与审计日志落库。
-    /// </summary>
-    [HttpPost("reset-ticket/{ticket}/reset")]
-    [AllowAnonymous]
-    public async Task<IActionResult> ResetPassword(string ticket, [FromBody] ResetTicketResetRequest request)
-    {
-        if (!ModelState.IsValid)
-            return BadRequest(ModelState);
-
-        // [TASK-OPT-12-P4-DEEPEN] 重置密码失败限速：5 次/小时（按 IP）
-        const int maxResetFailures = 5;
-        const int resetWindowSeconds = 3600;
-        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
-        if (RequestRateLimiter.IsBlocked($"ticket-reset:ip:{clientIp}", maxResetFailures, resetWindowSeconds))
-        {
-            _logger.LogWarning("[Auth] 重置密码被限速: {Ticket} @ {Ip}", MaskTicket(ticket), clientIp);
-            return StatusCode(429, new { error = "操作过于频繁，请 1 小时后再试" });
-        }
-
-        var entry = _tickets.Get(ticket);
-        if (entry == null || entry.Kind != "reset")
-        {
-            await RecordResetFailureAsync(clientIp, maxResetFailures, resetWindowSeconds, "invalid");
-            return BadRequest(new { error = "Ticket 无效" });
-        }
-
-        if (entry.Status != TicketStore.StatusConfirmed || entry.Consumed)
-        {
-            await RecordResetFailureAsync(clientIp, maxResetFailures, resetWindowSeconds, "not_confirmed");
-            return BadRequest(new { error = "Ticket 尚未确认或已使用" });
-        }
-
-        if (string.IsNullOrWhiteSpace(entry.Username))
-        {
-            await RecordResetFailureAsync(clientIp, maxResetFailures, resetWindowSeconds, "no_target");
-            return BadRequest(new { error = "Ticket 缺少目标账号" });
-        }
-
-        var user = await _db.Users.FirstOrDefaultAsync(u => u.Username == entry.Username && u.IsActive);
-        if (user == null)
-        {
-            await RecordResetFailureAsync(clientIp, maxResetFailures, resetWindowSeconds, "user_not_found");
-            return NotFound(new { error = "账号不存在或已停用" });
-        }
-
-        // [SEC-P2] 新密码策略校验（红线 R4.2）
-        var policyError = PasswordPolicy.Validate(request.NewPassword);
-        if (policyError != null)
-            return BadRequest(new { error = policyError });
-
-        // 哈希新密码 + 吊销全部 Refresh Token
-        var (newHash, newSalt) = _hasher.HashPassword(request.NewPassword);
-        user.PasswordHash = newHash;
-        user.PasswordSalt = newSalt;
-        // [SEC-P1] 用户自设新密码，清除强制改密标记
-        user.MustChangePassword = false;
-        user.UpdatedAt = DateTime.UtcNow;
-
-        await _jwt.RevokeAllUserTokens(user.Id);
-        _tickets.Consume(ticket);
-        await _db.SaveChangesAsync();
-
-        // [TASK-OPT-12-P4-DEEPEN] 审计日志：重置密码成功
-        await AuditAsync("reset_ticket_reset", user.Id, null, null, null,
-            $"{{\"username\":\"{user.Username}\"}}");
-
-        _logger.LogInformation("[Auth] 密码已通过重置 Ticket 修改: {U}", user.Username);
-        return Ok(new { message = "密码已重置，请重新登录" });
-    }
-
     // ========== helpers ==========
 
     // [TASK-OPT-12-P4-DEEPEN] ========== 审计日志 + 失败限速辅助 ==========
@@ -821,37 +907,12 @@ public class AuthController : ControllerBase
         => ControllerContext?.HttpContext == null ? null : Request.Cookies["refresh_token"];
 
     /// <summary>
-    /// 记录一次重置密码失败（审计 + 计数），超限时由调用方返回 429
-    /// </summary>
-    private async Task<bool> RecordResetFailureAsync(string clientIp, int maxFailures, int windowSeconds, string reason)
-    {
-        await AuditAsync("reset_ticket_reset_failed", null, null, null, null,
-            $"{{\"reason\":\"{reason}\"}}");
-        return RequestRateLimiter.RecordFailure($"ticket-reset:ip:{clientIp}", maxFailures, windowSeconds);
-    }
-
-    /// <summary>
     /// 构建扫码登录 Ticket 轮询响应
     /// </summary>
     private static LoginTicketResponse BuildLoginTicketResponse(TicketEntry entry)
     {
         var now = DateTime.UtcNow;
         return new LoginTicketResponse
-        {
-            Ticket = entry.Ticket,
-            Status = entry.Status,
-            ExpiresAt = entry.ExpiresAt,
-            ExpiresInSeconds = Math.Max(0, (int)(entry.ExpiresAt - now).TotalSeconds),
-        };
-    }
-
-    /// <summary>
-    /// 构建重置 Ticket 轮询响应
-    /// </summary>
-    private static ResetTicketResponse BuildResetTicketResponse(TicketEntry entry)
-    {
-        var now = DateTime.UtcNow;
-        return new ResetTicketResponse
         {
             Ticket = entry.Ticket,
             Status = entry.Status,
@@ -882,6 +943,29 @@ public class AuthController : ControllerBase
         var claim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
                  ?? User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value;
         return int.TryParse(claim, out var id) ? id : null;
+    }
+
+    /// <summary>
+    /// [TASK-ACCOUNT-V1] 验证码邮件 HTML 正文（纯展示用途，不含链接，防钓鱼混淆）
+    /// </summary>
+    private static string BuildCodeEmailHtml(string code, string purpose)
+    {
+        var title = purpose switch
+        {
+            "register" => "注册小趴菜账号",
+            "login" => "登录小趴菜账号",
+            _ => "重置小趴菜密码",
+        };
+        var usage = purpose == "register" ? "注册" : purpose == "login" ? "登录" : "重置密码";
+        return $"""
+            <div style="max-width:480px;margin:0 auto;font-family:'Microsoft YaHei',sans-serif;color:#303133">
+              <h2 style="color:#409EFF">{title}</h2>
+              <p>您正在{usage}，验证码如下（5 分钟内有效，单次使用）：</p>
+              <div style="font-size:32px;letter-spacing:8px;font-weight:bold;color:#409EFF;
+                          background:#ecf5ff;border-radius:8px;padding:16px;text-align:center">{code}</div>
+              <p style="color:#909399;font-size:13px">若非本人操作，请忽略本邮件。验证码请勿转发他人。</p>
+            </div>
+            """;
     }
 }
 
