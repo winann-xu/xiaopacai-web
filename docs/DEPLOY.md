@@ -12,6 +12,16 @@
 - 回滚点：tag `v1.1.0`；备份 /opt/xiaopacai/app.bak-20260815-192036
 - 验收：Web 294/294、Android 137/137、Windows 15/15、npm build 通过；生产 health/login/下载 200
 
+## 部署记录：v1.1.1（阿里云，2026-08-15，[TASK-HARDENING-V1.1.1]）
+
+- Git tag：`v1.1.1`（android tag 对应 commit 69cf9e2；web tag 对应 commit 931abce）
+- 部署 commit：android `69cf9e2` / web `931abce`（另含本仓库后续发布补丁：下载中心文件名 1.1.0→1.1.1、DEPLOY 记录）
+- 部署时间：2026-08-15 22:53（CST）阿里云 8.217.165.122
+- 环境变量变更：无（沿用 /etc/xiaopacai-web.env）
+- 下载中心：XiaopacaiParent-1.1.1-{arm64-v8a,armeabi-v7a,x86_64}.apk（versionName 1.1.1 / versionCode 10101），旧 1.1.0 安装包已移除
+- 回滚点：tag `v1.1.1`；备份 /opt/xiaopacai/app.bak-20260815-225329
+- 验收：Web 303/303、Android 154/154、Windows 15/15、npm build 通过；生产 health/login 200、/api/logs 200（原 500 根因修复）、/api/guard-events 200、下载 200
+
 ## 一、环境要求
 
 | 组件 | 最低版本 | 说明 |
