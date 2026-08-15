@@ -21,6 +21,9 @@
 
 ### 变更
 - 策略 GET 返回 `version`；PUT 兼容旧页面（不传 expectedVersion 不校验）
+- 需求 3/4（ADR 0011）：换账号/解绑全清客户端侧配套完成——Android `LocalDataWipe` 全清 +
+  三处核对、登录页/儿童端换绑确认提醒、换账号时经 verify-password + DELETE /api/devices
+  同步解绑本机设备；服务端侧复用需求 2 的 A12 硬删除，无新增接口
 
 ### 修复
 - 公告详情/送达明细接口补归属校验（此前任意家长可读任意公告 id）
