@@ -6,6 +6,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import { useIsMobile } from '@/composables/useIsMobile'
+// [TASK-MILESTONE-V3] 需求 1：构建产物版本号（vite 构建时注入）
+import { APP_VERSION } from '@/config/version'
 import {
   Odometer, Monitor, Setting, Notification, DataAnalysis, Tools,
   UserFilled, DocumentChecked, SetUp, FolderOpened, FirstAidKit, Connection,
@@ -138,6 +140,8 @@ onMounted(async () => {
 
       <!-- 底部控制 -->
       <div class="aside-footer">
+        <!-- [TASK-MILESTONE-V3] 需求 1：构建产物携带版本号展示 -->
+        <span v-if="!ui.sidebarCollapsed" class="aside-version">v{{ APP_VERSION }}</span>
         <el-button
           :icon="ui.sidebarCollapsed ? Expand : Fold"
           text
@@ -329,6 +333,16 @@ onMounted(async () => {
   border-top: 1px solid var(--el-border-color-lighter);
   padding: 4px;
   flex-shrink: 0;
+}
+
+/* [TASK-MILESTONE-V3] 需求 1：侧边栏底部版本号 */
+.aside-version {
+  display: block;
+  text-align: center;
+  font-size: 11px;
+  color: var(--el-text-color-placeholder);
+  padding: 2px 0 6px;
+  user-select: all;
 }
 
 .layout-main {
