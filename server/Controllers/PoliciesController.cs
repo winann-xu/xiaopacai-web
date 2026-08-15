@@ -78,6 +78,22 @@ public class PoliciesController : ControllerBase
             policy = new Policy { DeviceId = deviceId };
             _db.Policies.Add(policy);
         }
+        else
+        {
+            // [TASK-MILESTONE-V3] A2 乐观并发：客户端携带 expectedVersion 时，
+            // 版本不匹配（期间已被其他端修改）→ 409 + 服务端最新版，调用方刷新后重试
+            if (request.ExpectedVersion.HasValue && request.ExpectedVersion.Value > 0 &&
+                request.ExpectedVersion.Value != policy.Version)
+            {
+                _logger.LogWarning("[Policy] 并发修改冲突: deviceId={D}, expected={E}, server={S}",
+                    deviceId, request.ExpectedVersion, policy.Version);
+                return StatusCode(409, new
+                {
+                    error = "策略已被其他端修改，请以服务端最新版本为准",
+                    policy = ToDto(policy),
+                });
+            }
+        }
 
         policy.DailyLimitMinutes = Math.Clamp(request.DailyLimitMinutes, 30, 480);
         policy.BedtimeStart = request.BedtimeStart;
@@ -94,6 +110,8 @@ public class PoliciesController : ControllerBase
         policy.CategoryLearningLimit = -1;
         policy.IsActive = true;
         policy.UpdatedAt = DateTime.UtcNow;
+        // [TASK-MILESTONE-V3] A2 服务端权威版本递增（每次保存 +1）
+        policy.Version++;
         await _db.SaveChangesAsync();
 
         // 立即推送（设备在线时）
@@ -274,6 +292,8 @@ public class PoliciesController : ControllerBase
         return new
         {
             deviceId = policy.DeviceId,
+            // [TASK-MILESTONE-V3] A2 服务端权威版本（PUT 时作为 expectedVersion 回传）
+            version = policy.Version,
             dailyLimitMinutes = policy.DailyLimitMinutes,
             // [SEC-K7] 历史脏数据（ISO 时间戳等）按未设置返回，避免前端/儿童端解析异常
             bedtimeStart = NormalizeBedtime(policy.BedtimeStart),
@@ -348,6 +368,11 @@ public class PolicySaveRequest
     public List<string>? Whitelist { get; set; }
     public List<string>? Blacklist { get; set; }
     [System.ComponentModel.DataAnnotations.MaxLength(16)] public string? TimeoutAction { get; set; }
+    /// <summary>
+    /// [TASK-MILESTONE-V3] A2 乐观并发版本（GET 返回的 version 原样回传）；
+    /// 不传 = 不校验（Web 端旧页面兼容），传了且不匹配 → 409。
+    /// </summary>
+    public int? ExpectedVersion { get; set; }
 }
 
 /// <summary>

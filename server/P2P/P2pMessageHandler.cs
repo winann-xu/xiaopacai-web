@@ -602,12 +602,17 @@ public class P2pMessageHandler
         }
 
         // 检查是否有待下发的公告（过去 1 小时内发布/撤回的，且目标设备匹配）
+        // [TASK-MILESTONE-V3] B11：账号隔离——广播公告仅本账号可见
         var oneHourAgo = DateTime.UtcNow.AddHours(-1);
+        var ownerId = device != null ? await ResolveOwnerUserIdAsync(db, device) : null;
+        var hasOwner = ownerId.HasValue;
+        var ownerIdInt = ownerId ?? 0;
         var hasPendingAnnouncement = device != null && await db.Announcements
             .AnyAsync(a =>
                 (a.Status == "published" || a.Status == "revoked") &&
                 a.UpdatedAt >= oneHourAgo &&
-                (a.TargetDeviceId == null || a.TargetDeviceId == device.Id));
+                ((a.TargetDeviceId == device.Id) ||
+                 (a.TargetDeviceId == null && hasOwner && a.CreatedBy == ownerIdInt)));
 
         // 检查策略是否有更新（通过版本号判断，这里简化为总是 false，除非主动触发）
         var hasPolicyPending = false;
@@ -876,8 +881,31 @@ public class P2pMessageHandler
     }
 
     /// <summary>
+    /// [TASK-MILESTONE-V3] B5 构建“清除本地公告”指令消息
+    /// 客户端收到后按 announcementIds 删除本地公告记录（含已过期/已读记录）。
+    /// </summary>
+    public string BuildAnnouncementClearJson(IReadOnlyList<int> announcementIds)
+    {
+        var message = new Dictionary<string, object>
+        {
+            ["type"] = P2pMessageType.AnnouncementClear,
+            ["payload"] = new Dictionary<string, object>
+            {
+                ["announcementIds"] = announcementIds,
+                ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            },
+        };
+        return JsonSerializer.Serialize(message);
+    }
+
+    /// <summary>
     /// [FIX] 构建补推公告消息：儿童端握手连接时下发最近 3 条已发布/已撤回公告。
     /// 解决“儿童端离线期间发布的公告永远收不到”（实时推送只在在线时生效）。
+    ///
+    /// [TASK-MILESTONE-V3] 增强（B5/B6/B11）：
+    /// - B11 账号隔离：补推仅限本账号公告（广播按 CreatedBy，定向按 TargetDeviceId）；
+    /// - B6 紧急未确认公告：重连必补推，不限于最近 3 条/1 小时窗口；
+    /// - B5 删除墓碑：随同步携带 7 天内 cleared_ids，客户端清除本地残留。
     /// </summary>
     public async Task<string?> BuildAnnouncementSyncJson(string deviceId)
     {
@@ -886,14 +914,48 @@ public class P2pMessageHandler
         var device = await db.Devices.FirstOrDefaultAsync(d => d.DeviceId == deviceId);
         if (device == null) return null;
 
-        var announcements = await db.Announcements
-            .Where(a => (a.Status == "published" || a.Status == "revoked") &&
-                        (a.TargetDeviceId == null || a.TargetDeviceId == device.Id))
+        var ownerId = await ResolveOwnerUserIdAsync(db, device);
+        // 提取为值类型：Nullable<T>.Value 在 EF 表达式树中不可靠翻译
+        var ownerIdInt = ownerId ?? 0;
+        var hasOwner = ownerId.HasValue;
+
+        // [TASK-MILESTONE-V3] B11：本账号广播公告 + 定向本设备的公告
+        IQueryable<Announcement> AccountAnnouncements() => hasOwner
+            ? db.Announcements.Where(a =>
+                (a.TargetDeviceId == device.Id) ||
+                (a.TargetDeviceId == null && a.CreatedBy == ownerIdInt))
+            : db.Announcements.Where(a => a.TargetDeviceId == device.Id);
+
+        // 基础补推：最近 3 条已发布/已撤回
+        var recent = await AccountAnnouncements()
+            .Where(a => a.Status == "published" || a.Status == "revoked")
             .OrderByDescending(a => a.UpdatedAt)
             .Take(3)
             .ToListAsync();
 
-        if (announcements.Count == 0) return null;
+        // [TASK-MILESTONE-V3] B6：紧急且未确认（无本设备 ack 记录）→ 必补推，无视窗口
+        var urgentUnacked = await AccountAnnouncements()
+            .Where(a => a.Status == "published" && a.Priority == "urgent")
+            .Where(a => !db.AnnouncementDeliveries.Any(d =>
+                d.AnnouncementId == a.Id && d.DeviceId == device.Id && d.AcknowledgedAt != null))
+            .ToListAsync();
+
+        // 合并去重（紧急未确认公告可能同时命中两条查询）
+        var announcements = recent.Concat(urgentUnacked)
+            .GroupBy(a => a.Id)
+            .Select(g => g.First())
+            .ToList();
+
+        // [TASK-MILESTONE-V3] B5：7 天内删除墓碑随同步下发（离线设备也能清除本地残留）
+        var tombstoneCutoff = DateTime.UtcNow.AddDays(-7);
+        var clearedIds = ownerId.HasValue
+            ? await db.AnnouncementTombstones.AsNoTracking()
+                .Where(t => t.CreatedBy == ownerId.Value && t.DeletedAt >= tombstoneCutoff)
+                .Select(t => t.AnnouncementId)
+                .ToListAsync()
+            : new List<int>();
+
+        if (announcements.Count == 0 && clearedIds.Count == 0) return null;
 
         var list = announcements.Select(a => new Dictionary<string, object>
         {
@@ -916,15 +978,19 @@ public class P2pMessageHandler
             ["requires_ack"] = a.Priority == "urgent",
         }).ToList();
 
+        var payload = new Dictionary<string, object>
+        {
+            ["announcements"] = list,
+            ["action"] = "sync",
+            ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        };
+        if (clearedIds.Count > 0)
+            payload["cleared_ids"] = clearedIds;
+
         var message = new Dictionary<string, object>
         {
             ["type"] = P2pMessageType.AnnouncementPush,
-            ["payload"] = new Dictionary<string, object>
-            {
-                ["announcements"] = list,
-                ["action"] = "sync",
-                ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            },
+            ["payload"] = payload,
         };
         return JsonSerializer.Serialize(message);
     }
@@ -1036,6 +1102,7 @@ public class P2pMessageHandler
     /// 公告发布/撤回后主动推送到儿童端
     /// 由 REST API 在 announcement 状态变更时调用
     /// [TASK-PRELAUNCH-P3] 每次成功推送记录送达（push_count++/last_pushed_at）
+    /// [TASK-MILESTONE-V3] B11 账号隔离：广播仅推发布者账号下的设备（此前跨账号泄露）
     /// </summary>
     public async Task PushAnnouncement(Announcement announcement, string action, P2pListenerService? p2pService)
     {
@@ -1061,12 +1128,10 @@ public class P2pMessageHandler
         }
         else
         {
-            // 广播到所有在线设备
+            // 广播到发布者账号下的在线设备（B11）
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var devices = await db.Devices
-                .Where(d => d.PairStatus == "paired" && d.IsActive)
-                .ToListAsync();
+            var devices = await GetBroadcastAudienceAsync(db, announcement.CreatedBy);
 
             var pushedCount = 0;
             foreach (var device in devices)
@@ -1078,9 +1143,71 @@ public class P2pMessageHandler
                     pushedCount++;
                 }
             }
-            _logger.LogInformation("[P2P-Announce] 公告已广播到 {Count}/{Total} 个设备: {Title}",
+            _logger.LogInformation("[P2P-Announce] 公告已广播到 {Count}/{Total} 个账号内设备: {Title}",
                 pushedCount, devices.Count, announcement.Title);
         }
+    }
+
+    /// <summary>
+    /// [TASK-MILESTONE-V3] B5：公告删除后推送“清除本地公告”指令
+    /// 受众与发布广播同口径（B11：发布者账号设备；定向公告仅目标设备）。
+    /// 设备离线时由其重连同步的 cleared_ids 墓碑覆盖。
+    /// </summary>
+    public async Task PushAnnouncementClearAsync(Announcement announcement, P2pListenerService? p2pService)
+    {
+        if (p2pService == null) return;
+
+        var json = BuildAnnouncementClearJson(new List<int> { announcement.Id });
+
+        if (announcement.TargetDeviceId != null)
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var device = await db.Devices.FindAsync(announcement.TargetDeviceId.Value);
+            if (device != null)
+            {
+                var pushed = await p2pService.SendToDevice(device.DeviceId, json);
+                _logger.LogInformation("[P2P-Announce] 公告清除指令已推送到设备 {DeviceId}: id={Id}, pushed={Pushed}",
+                    device.DeviceId, announcement.Id, pushed);
+            }
+        }
+        else
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var devices = await GetBroadcastAudienceAsync(db, announcement.CreatedBy);
+
+            var pushedCount = 0;
+            foreach (var device in devices)
+            {
+                if (await p2pService.SendToDevice(device.DeviceId, json)) pushedCount++;
+            }
+            _logger.LogInformation("[P2P-Announce] 公告清除指令已广播到 {Count}/{Total} 个账号内设备: id={Id}",
+                pushedCount, devices.Count, announcement.Id);
+        }
+    }
+
+    /// <summary>
+    /// [TASK-MILESTONE-V3] B11 广播受众解析：已配对激活设备中归属发布者账号的设备。
+    /// OwnerUserId 兼容用户 ID 或用户名两种历史格式。
+    /// </summary>
+    private static async Task<List<Device>> GetBroadcastAudienceAsync(AppDbContext db, int createdBy)
+    {
+        var devices = await db.Devices
+            .Where(d => d.PairStatus == "paired" && d.IsActive)
+            .ToListAsync();
+        if (devices.Count == 0) return devices;
+
+        var users = await db.Users.AsNoTracking().ToDictionaryAsync(u => u.Username);
+
+        bool BelongsToPublisher(Device d)
+        {
+            if (string.IsNullOrEmpty(d.OwnerUserId)) return false;
+            if (int.TryParse(d.OwnerUserId, out var uid)) return uid == createdBy;
+            return users.TryGetValue(d.OwnerUserId, out var u) && u.Id == createdBy;
+        }
+
+        return devices.Where(BelongsToPublisher).ToList();
     }
 
     /// <summary>
@@ -1244,6 +1371,17 @@ public class P2pMessageHandler
     }
 
     // ========== 内部辅助 ==========
+
+    /// <summary>
+    /// [TASK-MILESTONE-V3] B11/B13 设备归属账号解析：owner_user_id 兼容用户 ID 或用户名两种格式
+    /// </summary>
+    private static async Task<int?> ResolveOwnerUserIdAsync(AppDbContext db, Device device)
+    {
+        if (string.IsNullOrEmpty(device.OwnerUserId)) return null;
+        if (int.TryParse(device.OwnerUserId, out var uid)) return uid;
+        return (await db.Users.AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Username == device.OwnerUserId))?.Id;
+    }
 
     /// <summary>
     /// 更新每日汇总（按 device + date upsert）

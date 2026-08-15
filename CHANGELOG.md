@@ -4,6 +4,29 @@
 
 ---
 
+## [1.1.0] — 2026-08-15（[TASK-MILESTONE-V3]，进行中）
+
+> 版本号自本期起按 `docs/VERSIONING.md` 规范（里程碑 V3 = 1.1.0，交付时打 tag v1.1.0）。
+
+### 新增
+- 需求 1：Git 版本管控 — Vite 构建注入 `__APP_VERSION__`（Git tag / dev-短哈希），侧边栏展示版本号
+- 需求 2：策略下发与家长公告场景 A/B 决策（ADR 0010）
+  - A2 策略乐观并发：`policies.version` 列 + PUT expectedVersion 校验（409 冲突返回服务端最新版），前端保存回传版本、冲突采纳服务端最新
+  - A12 解绑硬删除：设备行 + 策略 + 公告送达 + 使用记录/汇总 + 中继会话 + 配对信息全清
+  - B2/B10 公告 60 秒补偿重推：`AnnouncementCompensationService`（30s 扫描、每设备一次、幂等打标 `compensated_at`）
+  - B5 公告删除清除指令：`announcement_clear` P2P 消息 + `announcement_tombstones` 墓碑表（7 天，重连同步下发 cleared_ids）
+  - B6 紧急未确认公告重连必补推（不限于最近 3 条）
+  - B11 公告广播账号隔离（仅发布者账号设备，同步/心跳/补偿同口径）
+  - B13 公告归属账号：列表/详情/送达明细/紧急统计均按账号过滤（修复任意家长可读任意公告 id 的越权读取）
+
+### 变更
+- 策略 GET 返回 `version`；PUT 兼容旧页面（不传 expectedVersion 不校验）
+
+### 修复
+- 公告详情/送达明细接口补归属校验（此前任意家长可读任意公告 id）
+
+---
+
 ## [3.0.0-p3] — 2026-08-11
 
 ### Added (P3 前端页面与后台)

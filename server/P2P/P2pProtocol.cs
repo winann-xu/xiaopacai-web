@@ -25,6 +25,8 @@ public static class P2pMessageType
     public const string SyncAck = "sync_ack";
     // [REQ] 每日限额重置：家长在 Web 端点击“重置当日限额”后下发
     public const string LimitReset = "limit_reset";
+    // [TASK-MILESTONE-V3] B5 公告删除：清除客户端本地公告记录（多端一致）
+    public const string AnnouncementClear = "announcement_clear";
 }
 
 /// <summary>

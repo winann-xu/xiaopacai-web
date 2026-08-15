@@ -1,9 +1,11 @@
 -- ============================================================================
 -- 小趴菜 Web 3.0 — SQLCipher 数据库 Schema
--- 版本：V3.0-OPT12-P1  日期：2026-08-11
+-- 版本：V3.0-MILESTONE-V3  日期：2026-08-15
 -- 引擎：SQLite 3 + SQLCipher 加密扩展
 -- 说明：对照 2.0 AppDatabase，新增管理后端表（audit_logs / pairing_info）；
---       OPT12 P1 新增：diagnostics / relay_sessions，devices 增加 owner_user_id / app_categories
+--       OPT12 P1 新增：diagnostics / relay_sessions，devices 增加 owner_user_id / app_categories；
+--       MILESTONE-V3 新增：policies.version（A2 乐观并发）、announcement_deliveries.compensated_at
+--       （B2/B10 补偿重推）、announcement_tombstones（B5 公告删除墓碑）
 -- ============================================================================
 
 -- 启用外键约束
@@ -75,6 +77,7 @@ CREATE TABLE IF NOT EXISTS policies (
     overtime_action     TEXT    NOT NULL DEFAULT 'full_lock' -- 整机停用/部分APP停用/仅提醒
                                 CHECK(overtime_action IN ('full_lock', 'partial_lock', 'warn_only')),
     is_active           INTEGER NOT NULL DEFAULT 1,
+    version             INTEGER NOT NULL DEFAULT 1,         -- [MILESTONE-V3 A2] 服务端权威版本（每次保存 +1）
     created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT    NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
@@ -264,6 +267,23 @@ CREATE TABLE IF NOT EXISTS mail_config (
     LastTestAt          TEXT    DEFAULT NULL,
     UpdatedAt           TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ============================================================================
+-- 12. announcement_tombstones — 公告删除墓碑（[TASK-MILESTONE-V3] B5）
+--      删除公告时落一行，客户端 7 天内重连同步清除本地残留（保留 7 天到期清理）
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS announcement_tombstones (
+    AnnouncementId  INTEGER NOT NULL PRIMARY KEY,           -- 被删除公告 id
+    CreatedBy       INTEGER NOT NULL,                       -- 公告创建者（账号归属过滤）
+    DeletedAt       TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS IX_announcement_tombstones_CreatedBy_DeletedAt
+    ON announcement_tombstones (CreatedBy, DeletedAt);
+
+-- 注：announcement_deliveries 在 [TASK-PRELAUNCH-P3] 引入（见 EnsureMissingTablesAsync），
+--     [TASK-MILESTONE-V3] B2/B10 新增 CompensatedAt 列：
+--     ALTER TABLE announcement_deliveries ADD COLUMN CompensatedAt TEXT NULL
+--     （60 秒未 displayed 补偿重推打标，幂等不重复推）
 
 -- ============================================================================
 -- [TASK-ACCOUNT-V1] 不再播种 admin123/parent123 种子账号。

@@ -40,6 +40,14 @@ public class Policy
 
     public bool IsActive { get; set; } = true;
 
+    /// <summary>
+    /// [TASK-MILESTONE-V3] A2 策略版本号：每次保存递增（服务端权威版本）。
+    /// 多端并发修改时客户端携带 expectedVersion，不匹配返回 409 由调用方刷新后重试；
+    /// 儿童端重连收到策略时比对本地版本，旧版本不覆盖新版本。
+    /// </summary>
+    [Required]
+    public int Version { get; set; } = 1;
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 

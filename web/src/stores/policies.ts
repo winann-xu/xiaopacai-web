@@ -21,6 +21,8 @@ export interface Policy {
   blacklist: string[]             // 黑名单应用包名
   timeoutAction: 'full_lock' | 'partial_lock' | 'warn_only'
   updatedAt?: string
+  // [TASK-MILESTONE-V3] A2 服务端权威版本：保存时作为 expectedVersion 回传，冲突返回 409
+  version?: number
 }
 
 export const usePolicyStore = defineStore('policies', () => {
@@ -51,10 +53,21 @@ export const usePolicyStore = defineStore('policies', () => {
     saving.value = true
     error.value = null
     try {
-      await policyApi.save(deviceId, policy)
-      policies.value[deviceId] = { ...policy, updatedAt: new Date().toISOString() }
+      // [TASK-MILESTONE-V3] A2 乐观并发：回传服务端版本，冲突时服务端返回 409 + 最新版
+      const res = await policyApi.save(deviceId, {
+        ...policy,
+        expectedVersion: policy.version,
+      })
+      // 保存成功：服务端版本已递增，以响应为准（后端返回最新 policy）
+      policies.value[deviceId] = { ...policy, ...(res.data?.policy ?? {}), updatedAt: new Date().toISOString() }
     } catch (e: any) {
-      error.value = e.response?.data?.message || '保存策略失败'
+      // [TASK-MILESTONE-V3] A2 409 冲突：采纳服务端最新版并提示刷新，不静默覆盖
+      if (e.response?.status === 409 && e.response?.data?.policy) {
+        policies.value[deviceId] = { ...e.response.data.policy, updatedAt: e.response.data.policy.updatedAt }
+        error.value = e.response?.data?.error || '策略已被其他端修改，已加载服务端最新版本，请确认后重新保存'
+      } else {
+        error.value = e.response?.data?.message || '保存策略失败'
+      }
       throw e
     } finally {
       saving.value = false

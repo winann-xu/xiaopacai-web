@@ -27,6 +27,8 @@ public class AppDbContext : DbContext
     public DbSet<AnnouncementDelivery> AnnouncementDeliveries => Set<AnnouncementDelivery>();
     // [TASK-ACCOUNT-V1-MAILCONFIG] 邮件发送配置（单行表）
     public DbSet<MailConfig> MailConfigs => Set<MailConfig>();
+    // [TASK-MILESTONE-V3] B5 公告删除墓碑（客户端清除本地公告，见 docs/adr/）
+    public DbSet<AnnouncementTombstone> AnnouncementTombstones => Set<AnnouncementTombstone>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -65,6 +67,8 @@ public class AppDbContext : DbContext
             e.Property(p => p.CategoryLearningLimit).HasDefaultValue(-1);
             e.Property(p => p.OvertimeAction).HasDefaultValue("full_lock");
             e.Property(p => p.IsActive).HasDefaultValue(true);
+            // [TASK-MILESTONE-V3] A2 服务端权威版本号（每次保存递增）
+            e.Property(p => p.Version).HasDefaultValue(1);
             e.Property(p => p.CreatedAt).HasDefaultValueSql("datetime('now')");
             e.Property(p => p.UpdatedAt).HasDefaultValueSql("datetime('now')");
 
@@ -195,6 +199,13 @@ public class AppDbContext : DbContext
         {
             e.Property(m => m.SmtpPort).HasDefaultValue(587);
             e.Property(m => m.SmtpUseSsl).HasDefaultValue(true);
+        });
+
+        // ---- AnnouncementTombstones（[TASK-MILESTONE-V3] B5 公告删除墓碑） ----
+        modelBuilder.Entity<AnnouncementTombstone>(e =>
+        {
+            e.HasIndex(t => new { t.CreatedBy, t.DeletedAt });
+            e.Property(t => t.DeletedAt).HasDefaultValueSql("datetime('now')");
         });
     }
 }

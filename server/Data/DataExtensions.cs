@@ -187,6 +187,29 @@ public static class DataExtensions
         await TryAddColumnAsync(db, "relay_sessions", "Fingerprint", "TEXT NULL", logger);
         // [SEC-P1] 强制改密标记（种子账号/管理员重置口令后置 true）
         await TryAddColumnAsync(db, "users", "MustChangePassword", "INTEGER NOT NULL DEFAULT 0", logger);
+        // [TASK-MILESTONE-V3] A2 策略服务端权威版本号（保存递增；既有行按 1 起步）
+        await TryAddColumnAsync(db, "policies", "Version", "INTEGER NOT NULL DEFAULT 1", logger);
+        // [TASK-MILESTONE-V3] B2/B10 公告补偿重推时间（60 秒未 displayed 补推一次后打标）
+        await TryAddColumnAsync(db, "announcement_deliveries", "CompensatedAt", "TEXT NULL", logger);
+
+        // [TASK-MILESTONE-V3] B5 公告删除墓碑表（客户端清除本地公告，保留 7 天）
+        var hasTombstones = await db.Database.SqlQueryRaw<long>(
+            "SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name='announcement_tombstones'"
+        ).FirstOrDefaultAsync() > 0;
+        if (!hasTombstones)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE "announcement_tombstones" (
+                    "AnnouncementId" INTEGER NOT NULL CONSTRAINT "PK_announcement_tombstones" PRIMARY KEY,
+                    "CreatedBy" INTEGER NOT NULL,
+                    "DeletedAt" TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS "IX_announcement_tombstones_CreatedBy_DeletedAt"
+                    ON "announcement_tombstones" ("CreatedBy", "DeletedAt");
+                """);
+            logger.LogInformation("[DB] 已补齐 announcement_tombstones 表");
+        }
 
         // [SEC-P1] 清理 RefreshTokens 明文列：历史行置空（验证仅走 TokenHash），
         // 防止库文件被窃后明文 token 直接可用（红线 R4.3）

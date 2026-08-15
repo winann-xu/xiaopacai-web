@@ -34,6 +34,12 @@ public class AnnouncementDelivery
     /// <summary>终端确认回执时间（announcement_ack 上报）</summary>
     public DateTime? AcknowledgedAt { get; set; }
 
+    /// <summary>
+    /// [TASK-MILESTONE-V3] B2/B10 补偿重推时间：发布后 60 秒未收到 displayed 回执时
+    /// 对在线设备补偿重推一次（幂等：终端按版本+内容哈希去重），避免偶发瞬时未处理。
+    /// </summary>
+    public DateTime? CompensatedAt { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 

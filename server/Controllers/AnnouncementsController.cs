@@ -35,11 +35,20 @@ public class AnnouncementsController : ControllerBase
 
     /// <summary>
     /// GET /api/announcements — 公告列表（新→旧）
+    /// [TASK-MILESTONE-V3] B13 公告归属账号：家长仅见自己创建的公告，管理员见全部
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> List()
     {
-        var items = await _db.Announcements
+        var query = _db.Announcements.AsQueryable();
+        if (!User.IsInRole("admin"))
+        {
+            var userId = GetUserId();
+            if (userId == null) return Ok(Array.Empty<object>());
+            query = query.Where(a => a.CreatedBy == userId.Value);
+        }
+
+        var items = await query
             .OrderByDescending(a => a.CreatedAt)
             .Take(100)
             .ToListAsync();
@@ -49,6 +58,7 @@ public class AnnouncementsController : ControllerBase
 
     /// <summary>
     /// GET /api/announcements/{id} — 公告详情
+    /// [TASK-MILESTONE-V3] B13 归属校验：家长仅可查看自己创建的公告（此前任意家长可读任意 id）
     /// </summary>
     [HttpGet("{id:int}")]
     public async Task<IActionResult> Get(int id)
@@ -56,6 +66,8 @@ public class AnnouncementsController : ControllerBase
         var item = await _db.Announcements.FindAsync(id);
         if (item == null)
             return NotFound(new { error = "公告不存在" });
+        if (!CanManage(item))
+            return StatusCode(403, new { error = "无权操作该公告" });
         return Ok(ToDto(item));
     }
 
@@ -143,6 +155,8 @@ public class AnnouncementsController : ControllerBase
 
     /// <summary>
     /// DELETE /api/announcements/{id} — 删除公告
+    /// [TASK-MILESTONE-V3] B5：删除即落墓碑 + 向发布者账号设备推送“清除本地公告”指令
+    /// （离线设备由重连同步的 cleared_ids 清除，多端一致）
     /// </summary>
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
@@ -155,11 +169,28 @@ public class AnnouncementsController : ControllerBase
         if (!CanManage(item))
             return StatusCode(403, new { error = "无权操作该公告" });
 
+        var createdBy = item.CreatedBy;
+
+        // [TASK-MILESTONE-V3] B5 墓碑先行：客户端 7 天内重连同步可清除本地残留
+        var tombstone = await _db.AnnouncementTombstones.FindAsync(item.Id);
+        if (tombstone == null)
+        {
+            _db.AnnouncementTombstones.Add(new AnnouncementTombstone
+            {
+                AnnouncementId = item.Id,
+                CreatedBy = createdBy,
+                DeletedAt = DateTime.UtcNow,
+            });
+        }
+
         _db.Announcements.Remove(item);
         await _db.SaveChangesAsync();
 
+        // 实时清除指令（B5）
+        await _messageHandler.PushAnnouncementClearAsync(item, _p2p);
+
         await AuditAsync("announcement.delete", "Announcement", id, $"{{\"title\":\"{item.Title}\"}}");
-        return Ok(new { message = "公告已删除" });
+        return Ok(new { message = "公告已删除，客户端本地记录已同步清除" });
     }
 
     /// <summary>
@@ -231,6 +262,10 @@ public class AnnouncementsController : ControllerBase
         if (item == null)
             return NotFound(new { error = "公告不存在" });
 
+        // [TASK-MILESTONE-V3] B13 归属校验：家长仅可查看自己公告的送达明细
+        if (!CanManage(item))
+            return StatusCode(403, new { error = "无权操作该公告" });
+
         var devices = await _db.Devices.AsNoTracking()
             .ToDictionaryAsync(d => d.Id, d => d.DeviceName);
 
@@ -261,19 +296,29 @@ public class AnnouncementsController : ControllerBase
     /// <summary>
     /// [TASK-PRELAUNCH-P3] GET /api/announcements/urgent-stats — 紧急公告未确认统计
     /// 口径：已发布紧急公告 ×（已配对激活设备中未确认数），供仪表盘“未确认紧急公告”卡片
+    /// [TASK-MILESTONE-V3] B13 账号隔离：家长仅统计自己账号的公告与设备
     /// </summary>
     [HttpGet("urgent-stats")]
     public async Task<IActionResult> UrgentStats()
     {
-        var urgentIds = await _db.Announcements.AsNoTracking()
-            .Where(a => a.Priority == "urgent" && a.Status == "published")
-            .Select(a => a.Id)
-            .ToListAsync();
+        var isAdmin = User.IsInRole("admin");
+        var currentUserId = GetUserId()?.ToString();
 
-        var activeDeviceIds = await _db.Devices.AsNoTracking()
-            .Where(d => d.PairStatus == "paired" && d.IsActive)
-            .Select(d => d.Id)
-            .ToListAsync();
+        var urgentQuery = _db.Announcements.AsNoTracking()
+            .Where(a => a.Priority == "urgent" && a.Status == "published");
+        if (!isAdmin)
+        {
+            if (currentUserId == null || !int.TryParse(currentUserId, out var uid))
+                return Ok(new { publishedUrgent = 0, activeDevices = 0, unacknowledged = 0 });
+            urgentQuery = urgentQuery.Where(a => a.CreatedBy == uid);
+        }
+        var urgentIds = await urgentQuery.Select(a => a.Id).ToListAsync();
+
+        var deviceQuery = _db.Devices.AsNoTracking()
+            .Where(d => d.PairStatus == "paired" && d.IsActive);
+        if (!isAdmin)
+            deviceQuery = deviceQuery.Where(d => d.OwnerUserId == currentUserId);
+        var activeDeviceIds = await deviceQuery.Select(d => d.Id).ToListAsync();
 
         var acked = await _db.AnnouncementDeliveries.AsNoTracking()
             .Where(d => urgentIds.Contains(d.AnnouncementId) && d.AcknowledgedAt != null)

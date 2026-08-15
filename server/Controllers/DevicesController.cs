@@ -179,9 +179,11 @@ public class DevicesController : ControllerBase
     }
 
     /// <summary>
-    /// DELETE /api/devices/{id} — 解绑设备（软解绑：unpaired，可重新扫码绑定）
+    /// DELETE /api/devices/{id} — 解绑设备
     /// [TASK-ACCOUNT-V1] A5：必须携带 X-Action-Token（POST /api/auth/verify-password 签发，
     /// 5 分钟单次有效、绑定 userId）；无/过期/跨账号一律 401。
+    /// [TASK-MILESTONE-V3] A12/D2：解绑即硬删除设备行 + 策略 + 公告送达 + 使用记录/汇总 +
+    /// 中继会话 + 配对信息等全部关联数据；重绑走全新设备身份（儿童端 device_id 一并重置，见需求 4）。
     /// </summary>
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Unpair(int id)
@@ -204,21 +206,27 @@ public class DevicesController : ControllerBase
         if (access == DeviceAccessResult.Forbidden)
             return StatusCode(403, new { error = "无权访问该设备" });
 
-        device!.PairStatus = "unpaired";
-        device.IsActive = true;
-        device.OnlineStatus = "offline";
-        // [TASK-PRELAUNCH-FIX-SCAN] 解绑即释放归属：清空 OwnerUserId 与 PairCode，
-        // 使任意账号凭新 pending 配对码可重新绑定（D1 方案）；否则旧归属会拦截新账号重绑
-        device.OwnerUserId = null;
-        device.PairCode = null;
-        device.UpdatedAt = DateTime.UtcNow;
+        var deviceIdStr = device!.DeviceId;
+        var deviceName = device.DeviceName;
+
+        // [TASK-MILESTONE-V3] A12 关联数据全清（按删除依赖序）
+        await _db.AnnouncementDeliveries.Where(d => d.DeviceId == id).ExecuteDeleteAsync();
+        await _db.Policies.Where(p => p.DeviceId == id).ExecuteDeleteAsync();
+        await _db.UsageRecords.Where(r => r.DeviceId == id).ExecuteDeleteAsync();
+        await _db.DailySummaries.Where(s => s.DeviceId == id).ExecuteDeleteAsync();
+        await _db.PairingInfos.Where(p => p.DeviceId == id).ExecuteDeleteAsync();
+        // 中继会话与诊断记录以 device_id 字符串关联
+        await _db.RelaySessions.Where(r => r.DeviceId == deviceIdStr).ExecuteDeleteAsync();
+        await _db.Diagnostics.Where(d => d.DeviceId == deviceIdStr).ExecuteDeleteAsync();
+
+        _db.Devices.Remove(device);
         await _db.SaveChangesAsync();
 
         await AuditAsync("device.unpair", "Device", device.Id,
-            $"{{\"deviceId\":\"{device.DeviceId}\",\"name\":\"{device.DeviceName}\"}}");
+            $"{{\"deviceId\":\"{deviceIdStr}\",\"name\":\"{deviceName}\",\"wipe\":\"hard_delete\"}}");
 
-        _logger.LogInformation("[Devices] 设备已解绑: {DeviceId}", device.DeviceId);
-        return Ok(new { message = "设备已解绑" });
+        _logger.LogInformation("[Devices] 设备已解绑并清除全部关联数据: {DeviceId}", deviceIdStr);
+        return Ok(new { message = "设备已解绑，全部关联数据已清除" });
     }
 
     /// <summary>
