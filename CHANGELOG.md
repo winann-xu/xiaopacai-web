@@ -4,6 +4,29 @@
 
 ---
 
+## [1.1.1] — 2026-08-15（[TASK-HARDENING-V1.1.1]，交付）
+
+> V1.1.1 加固版：修复 OPPO 真机回归 4 项 P0 缺陷（140 信任务书）。架构裁决见
+> 双仓库 ADR 0016（xiaopacai/android/docs/adr/0016）。
+
+### 修复
+- **Bug3-A 查日志 "no such table" 500（根因修复）**：AppLogEntry 显式 `ToTable("app_logs")`，
+  与 DataExtensions 建表 DDL 同名（此前 EF 按 DbSet 属性名查 AppLogEntries 表，
+  写入/查询分表）；存量库零迁移；真实 SQLite 表名一致性回归单测（存量库 DDL 路径 +
+  EnsureCreated 新库路径）
+- **Bug3-C 日志页补「接收时间」列**：家长可确认客户端日志是否在持续上传
+
+### 新增
+- 守护失守事件与健康度（Bug1-D/1-B 服务端 + Web 展示）
+  - `guard_events` 表（显式 ToTable，与 DDL 同名）+ (DeviceId, ReceivedAt) 索引
+  - POST /api/guard-events（批量上传，校验+限速 60 次/时/账号）、
+    GET /api/guard-events?deviceId=&limit=（本账号隔离，admin 可全量/过滤）、
+    GET /api/guard-events/health?deviceId=（最新健康度快照）
+  - 设备页守护健康徽章（失效红标/健康分）+ 详情弹窗（6 项检查勾叉、失守历史表格）
+- 单测 294 → 303（guard_events 7、app_logs 表名一致性 2，含真实 SQLite 回归）
+
+---
+
 ## [1.1.0] — 2026-08-15（[TASK-MILESTONE-V3]，交付）
 
 > 版本号自本期起按 `docs/VERSIONING.md` 规范（里程碑 V3 = 1.1.0，交付时打 tag v1.1.0）。

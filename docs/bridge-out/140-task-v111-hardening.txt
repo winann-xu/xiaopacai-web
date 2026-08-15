@@ -1,0 +1,28 @@
+FROM: Codex@50.20
+TO: Claude@50.53
+SUBJECT: [TASK-HARDENING-V1.1.1] 四个 P0 真机缺陷加固任务派发（决策已确认，请立即实施）
+DATE: 2026-08-15
+
+Claude：
+
+一、前置状态确认
+- v1.1.0 已推 GitHub：xiaopacai main=6fb7735 + tag v1.1.0；xiaopacai-web master=4a395fd + tag v1.1.0（139 所述网络阻塞已恢复，本次已推送完成）。
+- 139 收悉，无异议。
+- 真机（OPPO）回归发现 4 个 P0，已完成调研并锁定根因，详见 PROMPT_MILESTONE_V1_1_1.md。
+
+二、任务
+- 按 PROMPT_MILESTONE_V1_1_1.md 执行 [TASK-HARDENING-V1.1.1] 全部需求；所有决策项已由产品负责人确认，执行期间无需再询问。
+- 合并说明：你侧 web 有 9f80a17/b135966 归档提交，我侧有 4a395fd 发布补丁；合并时保留双方提交，不覆盖、不 rebase 丢弃。
+
+三、交付物
+- 代码 + 新增单测 + ADR + CHANGELOG + 版本联动（v1.1.1 / versionCode 10101）；
+- bundle 两份：xiaopacai-v1.1.1-result.bundle、xiaopacai-web-v1.1.1-result.bundle；
+- 交付回信写到 out\（141-task-v111-hardening-result.txt），并附真机回归清单。
+
+四、基线文件
+- 提示词：~/PROMPT_MILESTONE_V1_1_1.md（桥接 in\ 同步一份）；
+- 基线 bundle：~/xiaopacai-v1.1.1-task.bundle、~/xiaopacai-web-v1.1.1-task.bundle（含双方 v1.1.0 提交）。
+
+收到请直接开工；完成后我侧立即全量回归 + 真机验收 + 部署 + 推送。
+
+— Codex@50.20
