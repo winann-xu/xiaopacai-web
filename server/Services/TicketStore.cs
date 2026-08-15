@@ -3,7 +3,8 @@ using System.Collections.Concurrent;
 namespace XiaopacaiWeb.Services;
 
 /// <summary>
-/// 一次性 Ticket 内存存储（扫码登录 / 忘记密码重置，OPT12 需求 10/12）
+/// 一次性 Ticket 内存存储（扫码登录，OPT12 需求 10）
+/// [TASK-ACCOUNT-V1] reset-ticket（忘记密码恢复码）链路已退役：找回密码改走邮箱验证码。
 ///
 /// 单进程自托管场景下使用内存字典即可满足 P1 阶段需求；
 /// TODO(P4)：多实例部署 / 进程重启恢复场景下需迁移到数据库表。
@@ -12,9 +13,6 @@ public class TicketStore
 {
     /// <summary>扫码登录 Ticket 有效期（90 秒）</summary>
     public const int LoginTicketLifetimeSeconds = 90;
-
-    /// <summary>重置密码 Ticket 有效期（10 分钟）</summary>
-    public const int ResetTicketLifetimeSeconds = 600;
 
     /// <summary>状态常量</summary>
     public const string StatusPending = "pending";
@@ -50,28 +48,6 @@ public class TicketStore
     }
 
     /// <summary>
-    /// 生成重置密码 Ticket（状态 pending，绑定目标账号）。
-    /// [SEC-P1] 未过期/未消费的 Ticket 超上限时返回 null（调用方应答 429）
-    /// </summary>
-    public TicketEntry? CreateResetTicket(string username)
-    {
-        if (CountLive() >= MaxPendingTickets)
-            return null;
-
-        var entry = new TicketEntry
-        {
-            Ticket = Guid.NewGuid().ToString("N"),
-            Kind = "reset",
-            Username = username,
-            Status = StatusPending,
-            CreatedAt = DateTime.UtcNow,
-            ExpiresAt = DateTime.UtcNow.AddSeconds(ResetTicketLifetimeSeconds),
-        };
-        _tickets[entry.Ticket] = entry;
-        return entry;
-    }
-
-    /// <summary>
     /// [SEC-P1] 存活 Ticket 计数（未过期且未消费）
     /// </summary>
     private int CountLive()
@@ -99,16 +75,13 @@ public class TicketStore
     }
 
     /// <summary>
-    /// 确认 Ticket（登录确认绑定用户；重置确认绑定确认者并核对目标账号）
+    /// 确认扫码登录 Ticket（绑定确认用户）
     /// </summary>
     public bool Confirm(string ticket, int userId, string username)
     {
         var entry = Get(ticket);
         if (entry == null || entry.Status != StatusPending)
             return false;
-
-        if (entry.Kind == "reset" && !string.Equals(entry.Username, username, StringComparison.OrdinalIgnoreCase))
-            return false; // 重置确认者必须与目标账号一致
 
         entry.Status = StatusConfirmed;
         entry.ConfirmedByUserId = userId;
@@ -146,14 +119,11 @@ public class TicketEntry
 {
     public string Ticket { get; set; } = string.Empty;
 
-    /// <summary>类型：login | reset</summary>
+    /// <summary>类型：login（[TASK-ACCOUNT-V1] reset 已退役）</summary>
     public string Kind { get; set; } = "login";
 
     /// <summary>创建方客户端标识（扫码登录用，可选）</summary>
     public string? ClientId { get; set; }
-
-    /// <summary>目标账号（重置密码用）</summary>
-    public string? Username { get; set; }
 
     /// <summary>状态：pending | confirmed | expired</summary>
     public string Status { get; set; } = "pending";

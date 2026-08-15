@@ -25,6 +25,8 @@ public class AppDbContext : DbContext
     public DbSet<RelaySession> RelaySessions => Set<RelaySession>();
     // [TASK-PRELAUNCH-P3] 公告送达/回执
     public DbSet<AnnouncementDelivery> AnnouncementDeliveries => Set<AnnouncementDelivery>();
+    // [TASK-ACCOUNT-V1-MAILCONFIG] 邮件发送配置（单行表）
+    public DbSet<MailConfig> MailConfigs => Set<MailConfig>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -186,6 +188,13 @@ public class AppDbContext : DbContext
             e.Property(s => s.Status).HasDefaultValue("connected");
             e.Property(s => s.ConnectedAt).HasDefaultValueSql("datetime('now')");
             e.Property(s => s.CreatedAt).HasDefaultValueSql("datetime('now')");
+        });
+
+        // ---- MailConfig（[TASK-ACCOUNT-V1-MAILCONFIG] 单行表） ----
+        modelBuilder.Entity<MailConfig>(e =>
+        {
+            e.Property(m => m.SmtpPort).HasDefaultValue(587);
+            e.Property(m => m.SmtpUseSsl).HasDefaultValue(true);
         });
     }
 }

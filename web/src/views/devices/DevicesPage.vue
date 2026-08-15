@@ -3,7 +3,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import type { Device } from '@/stores/devices'
-import { pairingApi, policyApi } from '@/api'
+import { pairingApi, policyApi, authApi } from '@/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Monitor, Refresh } from '@element-plus/icons-vue'
 import { toDataURL as qrToDataURL } from 'qrcode'
@@ -60,9 +60,26 @@ async function handleUnpair(device: Device) {
     await ElMessageBox.confirm(
       `确定要解绑设备「${device.name}」吗？解绑后将清空设备归属，可用任意账号重新扫码绑定。`,
       '确认解绑', { type: 'warning' })
-    await deviceStore.unpairDevice(device.id)
+  } catch { return }
+
+  // [TASK-ACCOUNT-V1] A5 解绑前置：登录密码二次验证 → 一次性 Action Token → 携带解绑
+  try {
+    const { value: password } = await ElMessageBox.prompt(
+      '解绑是敏感操作，请输入登录密码确认身份（验证通过后 5 分钟内有效）',
+      '安全验证',
+      {
+        inputType: 'password',
+        inputPlaceholder: '登录密码',
+        confirmButtonText: '验证并解绑',
+        inputValidator: (v: string) => (v ? true : '请输入登录密码'),
+      })
+    const res = await authApi.verifyPassword(password)
+    await deviceStore.unpairDevice(device.id, res.data.actionToken)
     ElMessage.success('解绑成功')
-  } catch { /* 取消 */ }
+  } catch (e: any) {
+    if (e === 'cancel' || e === 'close') return // 用户取消
+    ElMessage.error(e.response?.data?.error || '解绑失败，请重试')
+  }
 }
 
 // [TASK-PRELAUNCH-P4] 重置当日限额：成功后本地即时归零 + 立即刷新（需求 7 验收）
@@ -112,6 +129,18 @@ function fmtTime(iso?: string | null) { return iso ? new Date(iso).toLocaleStrin
         {{ deviceStore.error }}
         <el-button size="small" type="primary" text @click="deviceStore.fetchDevices()">重试</el-button>
       </template>
+    </el-alert>
+
+    <!-- [TASK-ACCOUNT-V1] A6：绑定设备 >10 台预警（不阻断，提醒清理闲置设备） -->
+    <el-alert
+      v-if="deviceStore.deviceCount > 10"
+      type="warning"
+      :closable="false"
+      class="load-error"
+      title="设备数量预警"
+      show-icon
+    >
+      当前账号绑定 {{ deviceStore.deviceCount }} 台设备，数量较多。设备数不设上限，但建议及时解绑闲置设备，降低账号风险。
     </el-alert>
 
     <div v-loading="deviceStore.loading" class="device-grid">

@@ -2,6 +2,7 @@
 // 小趴菜 Web 3.0 — 管理端：设备管理
 import { onMounted } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
+import { authApi } from '@/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const deviceStore = useDeviceStore()
@@ -10,9 +11,26 @@ onMounted(() => deviceStore.fetchDevices())
 async function handleDeauthorize(deviceId: number) {
   try {
     await ElMessageBox.confirm('确定取消该设备授权？设备将无法连接。', '确认', { type: 'warning' })
-    await deviceStore.unpairDevice(deviceId)
+  } catch { return }
+
+  // [TASK-ACCOUNT-V1] A5 解绑前置：登录密码二次验证 → 一次性 Action Token
+  try {
+    const { value: password } = await ElMessageBox.prompt(
+      '取消授权是敏感操作，请输入登录密码确认身份（验证通过后 5 分钟内有效）',
+      '安全验证',
+      {
+        inputType: 'password',
+        inputPlaceholder: '登录密码',
+        confirmButtonText: '验证并取消授权',
+        inputValidator: (v: string) => (v ? true : '请输入登录密码'),
+      })
+    const res = await authApi.verifyPassword(password)
+    await deviceStore.unpairDevice(deviceId, res.data.actionToken)
     ElMessage.success('已取消授权')
-  } catch { /* */ }
+  } catch (e: any) {
+    if (e === 'cancel' || e === 'close') return
+    ElMessage.error(e.response?.data?.error || '操作失败，请重试')
+  }
 }
 </script>
 

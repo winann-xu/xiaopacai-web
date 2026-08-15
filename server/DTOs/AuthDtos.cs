@@ -17,7 +17,8 @@ public class LoginRequest
 }
 
 /// <summary>
-/// 家长邮箱注册请求（个人唯一账号）
+/// [TASK-ACCOUNT-V1] 家长邮箱注册请求（个人唯一账号）
+/// code：邮箱验证码（register 用途，先调 /api/auth/email-code 获取）
 /// </summary>
 public class RegisterRequest
 {
@@ -26,6 +27,11 @@ public class RegisterRequest
     [MaxLength(128)]
     public string Email { get; set; } = string.Empty;
 
+    /// <summary>[TASK-ACCOUNT-V1] 6 位邮箱验证码</summary>
+    [Required]
+    [RegularExpression(@"^\d{6}$", ErrorMessage = "验证码格式不正确")]
+    public string Code { get; set; } = string.Empty;
+
     [Required]
     [MinLength(8)]
     [MaxLength(128)]
@@ -33,6 +39,69 @@ public class RegisterRequest
 
     [MaxLength(64)]
     public string? DisplayName { get; set; }
+}
+
+/// <summary>
+/// [TASK-ACCOUNT-V1] 邮箱验证码发送请求
+/// purpose ∈ register | login | reset_password
+/// </summary>
+public class EmailCodeRequest
+{
+    [Required]
+    [EmailAddress]
+    [MaxLength(128)]
+    public string Email { get; set; } = string.Empty;
+
+    [Required]
+    [RegularExpression(@"^(register|login|reset_password)$", ErrorMessage = "用途不合法")]
+    public string Purpose { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// [TASK-ACCOUNT-V1] 验证码登录请求
+/// </summary>
+public class CodeLoginRequest
+{
+    [Required]
+    [EmailAddress]
+    [MaxLength(128)]
+    public string Email { get; set; } = string.Empty;
+
+    /// <summary>6 位邮箱验证码（login 用途）</summary>
+    [Required]
+    [RegularExpression(@"^\d{6}$", ErrorMessage = "验证码格式不正确")]
+    public string Code { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// [TASK-ACCOUNT-V1] 找回密码请求（邮箱 + 验证码 + 新密码）
+/// </summary>
+public class PasswordResetRequest
+{
+    [Required]
+    [EmailAddress]
+    [MaxLength(128)]
+    public string Email { get; set; } = string.Empty;
+
+    /// <summary>6 位邮箱验证码（reset_password 用途）</summary>
+    [Required]
+    [RegularExpression(@"^\d{6}$", ErrorMessage = "验证码格式不正确")]
+    public string Code { get; set; } = string.Empty;
+
+    [Required]
+    [MinLength(8)]
+    [MaxLength(128)]
+    public string NewPassword { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// [TASK-ACCOUNT-V1] 登录态密码二次验证请求（解绑/换绑前置，签发一次性 Action Token）
+/// </summary>
+public class VerifyPasswordRequest
+{
+    [Required]
+    [MaxLength(128)]
+    public string Password { get; set; } = string.Empty;
 }
 
 /// <summary>
