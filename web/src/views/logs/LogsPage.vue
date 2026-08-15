@@ -140,6 +140,10 @@ function formatTime(v: string) {
         <el-table-column label="时间" width="165">
           <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
         </el-table-column>
+        <!-- [TASK-HARDENING-V1.1.1] Bug3-C：接收时间列——家长可确认客户端日志是否在持续上传 -->
+        <el-table-column label="接收时间" width="165">
+          <template #default="{ row }">{{ formatTime(row.receivedAt) }}</template>
+        </el-table-column>
         <el-table-column v-if="isAdmin" label="账号" width="200" show-overflow-tooltip>
           <template #default="{ row }">{{ row.accountEmail || `#${row.accountId}` }}</template>
         </el-table-column>
