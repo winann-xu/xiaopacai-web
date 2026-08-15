@@ -213,8 +213,12 @@ public class AppDbContext : DbContext
         });
 
         // ---- AppLogEntries（[TASK-MILESTONE-V3] 需求 14：运行日志，账号级 + 7 天保留） ----
+        // [TASK-HARDENING-V1.1.1] Bug3-A 根因修复：显式 ToTable("app_logs")，
+        // 与 DataExtensions 建表 DDL 同名（此前 EF 默认按 DbSet 属性名查 AppLogEntries
+        // 表 → "no such table" 500；存量库已存在 app_logs，此修复无需迁移、直接命中）。
         modelBuilder.Entity<AppLogEntry>(e =>
         {
+            e.ToTable("app_logs");
             e.HasIndex(l => new { l.AccountId, l.ReceivedAt });
             e.HasIndex(l => l.ReceivedAt);
             e.Property(l => l.ReceivedAt).HasDefaultValueSql("datetime('now')");
