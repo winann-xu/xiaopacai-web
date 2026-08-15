@@ -1,12 +1,14 @@
 <script setup lang="ts">
-// 小趴菜 Web 3.0 — 登录页（密码登录 / 扫码登录 / 忘记密码，OPT12 需求 10/12）
+// 小趴菜 Web 3.0 — 登录页
+// [TASK-ACCOUNT-V1] 账号邮箱化：密码登录（仅邮箱）/ 验证码登录 / 扫码登录（保留）；
+// 注册与找回密码均为「邮箱 → 验证码 → 完成」两步流程（reset-ticket 恢复码链路已退役）
 import { ref, reactive, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { authApi, ticketApi } from '@/api'
 import { ElMessage } from 'element-plus'
 import {
-  UserFilled, Lock,
+  UserFilled, Lock, Message,
   Loading, CircleCheck, RefreshRight, ArrowLeft,
 } from '@element-plus/icons-vue'
 import { toDataURL as qrToDataURL } from 'qrcode'
@@ -15,21 +17,58 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
-// ==================== 密码登录 ====================
+// ==================== 密码登录（仅邮箱） ====================
 const loginForm = reactive({
-  username: '',
+  username: '', // [TASK-ACCOUNT-V1] 值即邮箱（服务端仅接受邮箱）
   password: '',
 })
 const loading = ref(false)
 const loginError = ref('')
 
-// ==================== 注册（邮箱账号） ====================
+const rules = {
+  username: [{ required: true, message: '请输入邮箱', trigger: 'blur' }],
+  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+}
+
+const formRef = ref()
+
+async function handleLogin() {
+  const valid = await formRef.value?.validate().catch(() => false)
+  if (!valid) return
+
+  loading.value = true
+  loginError.value = ''
+  try {
+    // [SEC-P1] 强制改密：管理员引导账号/管理员重置口令后首次登录必须先改密（红线 R4.2）
+    const mustChange = await auth.login(loginForm.username, loginForm.password)
+    if (mustChange) {
+      ElMessage.warning('首次登录请先修改密码')
+      router.push({ path: '/settings', query: { mustChange: '1' } })
+      return
+    }
+    // 保存角色到 localStorage（路由守卫用）
+    localStorage.setItem('user_role', auth.user?.role || 'parent')
+    ElMessage.success('登录成功')
+    const redirect = (route.query.redirect as string) || '/dashboard'
+    router.push(redirect)
+  } catch (e: any) {
+    const msg = e.response?.data?.error || e.response?.data?.message || '登录失败，请检查邮箱和密码'
+    loginError.value = msg
+    ElMessage.error(msg)
+  } finally {
+    loading.value = false
+  }
+}
+
+// ==================== 注册（两步：表单 → 邮箱验证码） ====================
 const registerMode = ref(false)
+const registerStep = ref(0) // 0=填写表单 1=输入验证码
 const registerForm = reactive({
   email: '',
   displayName: '',
   password: '',
   confirmPassword: '',
+  code: '',
 })
 const registerLoading = ref(false)
 const registerError = ref('')
@@ -37,13 +76,35 @@ const registerError = ref('')
 async function handleRegister() {
   if (!registerForm.email.includes('@')) { ElMessage.warning('请输入有效邮箱'); return }
   if (registerForm.password.length < 8) { ElMessage.warning('密码至少 8 位'); return }
+  if (!/\d/.test(registerForm.password) || !/[a-zA-Z]/.test(registerForm.password)) {
+    ElMessage.warning('密码需同时包含字母与数字'); return
+  }
   if (registerForm.password !== registerForm.confirmPassword) { ElMessage.warning('两次密码不一致'); return }
+  if (registerStep.value === 0) {
+    // 步骤 1：发送邮箱验证码
+    registerLoading.value = true
+    registerError.value = ''
+    try {
+      await authApi.emailCode(registerForm.email, 'register')
+      registerStep.value = 1
+      startSectionCountdown('register')
+      ElMessage.success('验证码已发送，请查收邮件')
+    } catch (e: any) {
+      const msg = e.response?.data?.error || '验证码发送失败，请稍后重试'
+      registerError.value = msg
+      ElMessage.error(msg)
+    } finally {
+      registerLoading.value = false
+    }
+    return
+  }
+  // 步骤 2：验证码 + 注册
+  if (!/^\d{6}$/.test(registerForm.code)) { ElMessage.warning('请输入 6 位验证码'); return }
   registerLoading.value = true
   registerError.value = ''
   try {
     const res = await authApi.register(
-      registerForm.email,
-      registerForm.password,
+      registerForm.email, registerForm.code, registerForm.password,
       registerForm.displayName || undefined,
     )
     await auth.loginWithAuthResponse(res.data)
@@ -60,49 +121,135 @@ async function handleRegister() {
   }
 }
 
-// 登录表单校验规则
-const rules = {
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+function toggleRegister() {
+  registerMode.value = !registerMode.value
+  registerStep.value = 0
+  registerForm.code = ''
+  registerError.value = ''
 }
 
-const formRef = ref()
+// ==================== 验证码登录 ====================
+const codeLoginForm = reactive({ email: '', code: '' })
+const codeLoginLoading = ref(false)
+const codeLoginError = ref('')
 
-async function handleLogin() {
-  const valid = await formRef.value?.validate().catch(() => false)
-  if (!valid) return
-
-  loading.value = true
-  loginError.value = ''
+async function sendLoginCode() {
+  if (!codeLoginForm.email.includes('@')) { ElMessage.warning('请输入有效邮箱'); return }
+  codeLoginLoading.value = true
   try {
-    // [SEC-P1] 强制改密：种子账号/管理员重置口令后首次登录必须先改密（红线 R4.2）
-    const mustChange = await auth.login(loginForm.username, loginForm.password)
-    if (mustChange) {
-      ElMessage.warning('首次登录请先修改密码')
-      router.push({ path: '/settings', query: { mustChange: '1' } })
-      return
-    }
-    // 保存角色到 localStorage（路由守卫用）
+    // 防枚举：服务端对未注册邮箱不发信，统一应答成功文案
+    await authApi.emailCode(codeLoginForm.email, 'login')
+    startSectionCountdown('codelogin')
+    ElMessage.success('验证码已发送（若邮箱已注册）')
+  } catch (e: any) {
+    codeLoginError.value = e.response?.data?.error || '验证码发送失败'
+    ElMessage.error(codeLoginError.value)
+  } finally {
+    codeLoginLoading.value = false
+  }
+}
+
+async function handleCodeLogin() {
+  if (!codeLoginForm.email.includes('@')) { ElMessage.warning('请输入有效邮箱'); return }
+  if (!/^\d{6}$/.test(codeLoginForm.code)) { ElMessage.warning('请输入 6 位验证码'); return }
+  codeLoginLoading.value = true
+  codeLoginError.value = ''
+  try {
+    const res = await authApi.codeLogin(codeLoginForm.email, codeLoginForm.code)
+    await auth.loginWithAuthResponse(res.data)
     localStorage.setItem('user_role', auth.user?.role || 'parent')
     ElMessage.success('登录成功')
     const redirect = (route.query.redirect as string) || '/dashboard'
     router.push(redirect)
   } catch (e: any) {
-    const msg = e.response?.data?.message || '登录失败，请检查用户名和密码'
-    loginError.value = msg
+    const msg = e.response?.data?.error || '验证码登录失败'
+    codeLoginError.value = msg
     ElMessage.error(msg)
   } finally {
-    loading.value = false
+    codeLoginLoading.value = false
   }
 }
 
-// ==================== 登录方式 Tab ====================
-const activeTab = ref<'password' | 'qr'>('password')
+// ==================== 找回密码（两步：邮箱 → 验证码+新密码） ====================
+const resetStep = ref(0) // 0=未进入 1=输入邮箱 2=验证码+新密码
+const resetForm = reactive({ email: '', code: '', newPassword: '', confirmPassword: '' })
+const resetLoading = ref(false)
+const resetError = ref('')
 
-// ==================== 扫码登录（需求 10） ====================
+function openResetFlow() {
+  resetStep.value = 1
+  resetError.value = ''
+}
+
+function cancelReset() {
+  resetStep.value = 0
+  resetError.value = ''
+  activeTab.value = 'password'
+}
+
+async function startReset() {
+  if (!resetForm.email.includes('@')) { ElMessage.warning('请输入有效邮箱'); return }
+  resetLoading.value = true
+  resetError.value = ''
+  try {
+    // 防枚举：服务端对未注册邮箱不发信，统一应答成功文案
+    await authApi.emailCode(resetForm.email, 'reset_password')
+    resetStep.value = 2
+    startSectionCountdown('reset')
+    ElMessage.success('验证码已发送（若邮箱已注册）')
+  } catch (e: any) {
+    const msg = e.response?.data?.error || '验证码发送失败，请稍后重试'
+    resetError.value = msg
+    ElMessage.error(msg)
+  } finally {
+    resetLoading.value = false
+  }
+}
+
+async function submitReset() {
+  if (!/^\d{6}$/.test(resetForm.code)) { ElMessage.warning('请输入 6 位验证码'); return }
+  if (resetForm.newPassword.length < 8) { ElMessage.warning('新密码至少 8 位'); return }
+  if (resetForm.newPassword !== resetForm.confirmPassword) { ElMessage.warning('两次输入的密码不一致'); return }
+  resetLoading.value = true
+  resetError.value = ''
+  try {
+    await authApi.passwordReset(resetForm.email, resetForm.code, resetForm.newPassword)
+    ElMessage.success('密码已重置，请使用新密码登录')
+    cancelReset()
+  } catch (e: any) {
+    const msg = e.response?.data?.error || '重置失败，请重试'
+    resetError.value = msg
+    ElMessage.error(msg)
+  } finally {
+    resetLoading.value = false
+  }
+}
+
+// ==================== 发码倒计时（60 秒可重发） ====================
+type SectionKey = 'register' | 'codelogin' | 'reset'
+const sectionCountdowns = reactive<Record<SectionKey, number>>({ register: 0, codelogin: 0, reset: 0 })
+const sectionTimers: Partial<Record<SectionKey, number>> = {}
+
+function startSectionCountdown(section: SectionKey) {
+  clearSectionTimer(section)
+  sectionCountdowns[section] = 60
+  sectionTimers[section] = window.setInterval(() => {
+    sectionCountdowns[section] -= 1
+    if (sectionCountdowns[section] <= 0) clearSectionTimer(section)
+  }, 1000)
+}
+
+function clearSectionTimer(section: SectionKey) {
+  if (sectionTimers[section]) { clearInterval(sectionTimers[section]); delete sectionTimers[section] }
+}
+
+// ==================== 登录方式 Tab ====================
+const activeTab = ref<'password' | 'code' | 'qr'>('password')
+
+// ==================== 扫码登录（需求 10，保留） ====================
 // 二维码内容约定（与 Android 端 QrCodeGenerator 保持一致，JSON 格式）：
 // {"type":"login_ticket","ticketUrl":"{origin}/auth/login-ticket/{ticket}","expiresAt":<epoch秒>,"action":"scan_to_login"}
-// Android 家长端（P3）扫码后从 ticketUrl 中提取 ticket，
+// Android 家长端扫码后从 ticketUrl 中提取 ticket，
 // 调用 POST /api/auth/login-ticket/{ticket}/confirm（需家长端登录态）确认。
 const qrStatus = ref<'idle' | 'loading' | 'pending' | 'confirmed' | 'expired'>('idle')
 const qrDataUrl = ref('')
@@ -120,43 +267,28 @@ function clearQrTimers() {
 }
 
 // 生成 Ticket 二维码内容（JSON 格式，与 Android 端 QrCodeGenerator 约定一致）
-function buildTicketQrContent(kind: 'login' | 'reset', ticket: string, expiresAt: string, username?: string): string {
-  const ticketUrl = `${window.location.origin}/auth/${kind}-ticket/${ticket}`
+function buildTicketQrContent(ticket: string, expiresAt: string): string {
+  const ticketUrl = `${window.location.origin}/auth/login-ticket/${ticket}`
   const expiresAtEpoch = Math.floor(new Date(expiresAt).getTime() / 1000)
-  const payload: Record<string, string> = {
-    type: kind === 'login' ? 'login_ticket' : 'reset_ticket',
+  return JSON.stringify({
+    type: 'login_ticket',
     ticketUrl,
     expiresAt: String(expiresAtEpoch),
-    action: kind === 'login' ? 'scan_to_login' : 'confirm_reset',
-  }
-  if (username) payload.username = username
-  return JSON.stringify(payload)
+    action: 'scan_to_login',
+  })
 }
 
 // 启动倒计时，归零后置为过期
-function startCountdown(target: 'qr' | 'reset', seconds: number) {
-  const setValue = (v: number) => {
-    if (target === 'qr') qrCountdown.value = v
-    else resetCountdown.value = v
-  }
-  const timer = target === 'qr' ? qrCountdownTimer : resetCountdownTimer
-  if (timer) clearInterval(timer)
-  setValue(seconds)
-  const newTimer = window.setInterval(() => {
-    const cur = target === 'qr' ? qrCountdown.value : resetCountdown.value
-    setValue(cur - 1)
-    if (cur - 1 <= 0) {
-      if (target === 'qr') {
-        clearQrTimers()
-        qrStatus.value = 'expired'
-      } else {
-        clearResetTimers()
-        resetStatus.value = 'expired'
-      }
+function startQrCountdown(seconds: number) {
+  if (qrCountdownTimer) clearInterval(qrCountdownTimer)
+  qrCountdown.value = seconds
+  qrCountdownTimer = window.setInterval(() => {
+    qrCountdown.value -= 1
+    if (qrCountdown.value <= 0) {
+      clearQrTimers()
+      qrStatus.value = 'expired'
     }
   }, 1000)
-  if (target === 'qr') qrCountdownTimer = newTimer
-  else resetCountdownTimer = newTimer
 }
 
 // 轮询扫码登录状态（每 2 秒），确认后自动登录
@@ -205,11 +337,11 @@ async function generateLoginQr() {
     const data = res.data
     qrTicket.value = data.ticket
     qrDataUrl.value = await qrToDataURL(
-      buildTicketQrContent('login', data.ticket, data.expiresAt),
+      buildTicketQrContent(data.ticket, data.expiresAt),
       { width: 200, margin: 1 },
     )
     qrStatus.value = 'pending'
-    startCountdown('qr', data.expiresInSeconds ?? 90)
+    startQrCountdown(data.expiresInSeconds ?? 90)
     qrPollTimer = window.setInterval(pollQrLogin, 2000)
   } catch {
     qrStatus.value = 'expired'
@@ -224,106 +356,11 @@ function onTabChange(name: string | number) {
       generateLoginQr()
     } else if (qrStatus.value === 'pending' && !qrPollTimer) {
       // 从其他 Tab 切回：恢复倒计时与 2 秒轮询
-      startCountdown('qr', qrCountdown.value)
+      startQrCountdown(qrCountdown.value)
       qrPollTimer = window.setInterval(pollQrLogin, 2000)
     }
   } else {
     clearQrTimers()
-  }
-}
-
-// ==================== 忘记密码（需求 12） ====================
-// 流程：输入账号 → 生成重置 Ticket（10 分钟）→ 展示二维码等家长 APP 扫码确认 →
-// 确认后设置新密码 → 提交（成功后吊销全部 refresh token）
-const resetStep = ref(0) // 0=未进入 1=输入账号 2=扫码确认 3=设置新密码
-const resetUsername = ref('')
-const resetStatus = ref<'pending' | 'confirmed' | 'expired'>('pending')
-const resetDataUrl = ref('')
-const resetTicket = ref('')
-const resetCountdown = ref(0)
-const resetForm = reactive({ newPassword: '', confirmPassword: '' })
-const resetSubmitting = ref(false)
-let resetPollTimer: number | undefined
-let resetCountdownTimer: number | undefined
-
-// 清理重置流程相关定时器
-function clearResetTimers() {
-  if (resetPollTimer) { clearInterval(resetPollTimer); resetPollTimer = undefined }
-  if (resetCountdownTimer) { clearInterval(resetCountdownTimer); resetCountdownTimer = undefined }
-}
-
-// 进入忘记密码流程（登录页"忘记密码"链接）
-function openResetFlow() {
-  clearQrTimers()
-  resetStep.value = 1
-  resetUsername.value = ''
-  resetForm.newPassword = ''
-  resetForm.confirmPassword = ''
-}
-
-// 退出忘记密码流程，回到密码登录
-function cancelReset() {
-  clearResetTimers()
-  resetStep.value = 0
-  activeTab.value = 'password'
-}
-
-// 步骤 1 → 2：校验账号并生成重置 Ticket + 二维码
-async function startReset() {
-  const username = resetUsername.value.trim()
-  if (!username) { ElMessage.warning('请输入家长账号'); return }
-  clearResetTimers() // 防止重复点击产生多个轮询定时器
-  resetStatus.value = 'pending'
-  try {
-    const res = await ticketApi.createReset(username)
-    const data = res.data
-    resetTicket.value = data.ticket
-    resetDataUrl.value = await qrToDataURL(
-      buildTicketQrContent('reset', data.ticket, data.expiresAt, username),
-      { width: 200, margin: 1 },
-    )
-    resetStep.value = 2
-    startCountdown('reset', data.expiresInSeconds ?? 600)
-    resetPollTimer = window.setInterval(pollReset, 2000)
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.error || '生成重置二维码失败，请重试')
-  }
-}
-
-// 轮询重置 Ticket 状态（每 2 秒），确认后进入设置新密码步骤
-async function pollReset() {
-  if (!resetTicket.value) return
-  try {
-    const res = await ticketApi.pollReset(resetTicket.value)
-    const data = res.data
-    if (data.status === 'confirmed') {
-      clearResetTimers()
-      resetStatus.value = 'confirmed'
-      resetStep.value = 3
-    } else if (data.status === 'expired') {
-      clearResetTimers()
-      resetStatus.value = 'expired'
-    } else {
-      resetCountdown.value = data.expiresInSeconds ?? resetCountdown.value
-    }
-  } catch {
-    // 网络抖动忽略，等待下一轮轮询
-  }
-}
-
-// 步骤 3：提交新密码
-async function submitReset() {
-  if (resetForm.newPassword.length < 8) { ElMessage.warning('新密码至少 8 位'); return }
-  if (resetForm.newPassword !== resetForm.confirmPassword) { ElMessage.warning('两次输入的密码不一致'); return }
-  resetSubmitting.value = true
-  try {
-    await ticketApi.resetPassword(resetTicket.value, resetForm.newPassword)
-    ElMessage.success('密码已重置，请使用新密码登录')
-    cancelReset()
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.error || '重置失败，请重试')
-  } finally {
-    resetSubmitting.value = false
   }
 }
 
@@ -339,7 +376,9 @@ function formatCountdown(seconds: number): string {
 // 组件卸载时清理所有定时器
 onBeforeUnmount(() => {
   clearQrTimers()
-  clearResetTimers()
+  clearSectionTimer('register')
+  clearSectionTimer('codelogin')
+  clearSectionTimer('reset')
 })
 </script>
 
@@ -353,7 +392,7 @@ onBeforeUnmount(() => {
         <p class="brand-subtitle">儿童守护 · 家长控制面板</p>
       </div>
 
-      <!-- 密码登录 / 扫码登录 Tabs -->
+      <!-- 密码登录 / 验证码登录 / 扫码登录 Tabs -->
       <el-tabs
         v-if="resetStep === 0"
         v-model="activeTab"
@@ -362,6 +401,7 @@ onBeforeUnmount(() => {
       >
         <!-- ===== 密码登录 ===== -->
         <el-tab-pane label="密码登录" name="password">
+          <!-- 登录表单 -->
           <el-form
             v-if="!registerMode"
             ref="formRef"
@@ -372,11 +412,11 @@ onBeforeUnmount(() => {
             class="login-form"
             @submit.prevent="handleLogin"
           >
-            <el-form-item label="用户名 / 邮箱" prop="username">
+            <el-form-item label="邮箱" prop="username">
               <el-input
                 v-model="loginForm.username"
-                placeholder="请输入用户名或邮箱"
-                :prefix-icon="UserFilled"
+                placeholder="请输入注册邮箱"
+                :prefix-icon="Message"
                 autocomplete="username"
               />
             </el-form-item>
@@ -414,7 +454,7 @@ onBeforeUnmount(() => {
             </el-form-item>
           </el-form>
 
-          <!-- 注册（邮箱账号） -->
+          <!-- 注册（两步：表单 → 邮箱验证码） -->
           <el-form
             v-else
             :model="registerForm"
@@ -423,43 +463,57 @@ onBeforeUnmount(() => {
             class="login-form"
             @submit.prevent="handleRegister"
           >
-            <el-form-item label="邮箱" required>
-              <el-input
-                v-model="registerForm.email"
-                placeholder="请输入邮箱（作为唯一登录账号）"
-                autocomplete="email"
-              />
-            </el-form-item>
+            <template v-if="registerStep === 0">
+              <el-form-item label="邮箱" required>
+                <el-input
+                  v-model="registerForm.email"
+                  placeholder="请输入邮箱（作为唯一登录账号）"
+                  autocomplete="email"
+                />
+              </el-form-item>
 
-            <el-form-item label="昵称（可选）">
-              <el-input
-                v-model="registerForm.displayName"
-                placeholder="家长称呼"
-                :prefix-icon="UserFilled"
-              />
-            </el-form-item>
+              <el-form-item label="昵称（可选）">
+                <el-input
+                  v-model="registerForm.displayName"
+                  placeholder="家长称呼"
+                  :prefix-icon="UserFilled"
+                />
+              </el-form-item>
 
-            <el-form-item label="密码" required>
-              <el-input
-                v-model="registerForm.password"
-                type="password"
-                placeholder="至少 8 位"
-                :prefix-icon="Lock"
-                show-password
-                autocomplete="new-password"
-              />
-            </el-form-item>
+              <el-form-item label="密码" required>
+                <el-input
+                  v-model="registerForm.password"
+                  type="password"
+                  placeholder="至少 8 位，含字母与数字"
+                  :prefix-icon="Lock"
+                  show-password
+                  autocomplete="new-password"
+                />
+              </el-form-item>
 
-            <el-form-item label="确认密码" required>
-              <el-input
-                v-model="registerForm.confirmPassword"
-                type="password"
-                placeholder="再次输入密码"
-                :prefix-icon="Lock"
-                show-password
-                autocomplete="new-password"
-              />
-            </el-form-item>
+              <el-form-item label="确认密码" required>
+                <el-input
+                  v-model="registerForm.confirmPassword"
+                  type="password"
+                  placeholder="再次输入密码"
+                  :prefix-icon="Lock"
+                  show-password
+                  autocomplete="new-password"
+                />
+              </el-form-item>
+            </template>
+
+            <template v-else>
+              <p class="flow-hint">验证码已发送至 <b>{{ registerForm.email }}</b>，5 分钟内有效</p>
+              <el-form-item label="邮箱验证码" required>
+                <el-input
+                  v-model="registerForm.code"
+                  placeholder="6 位验证码"
+                  maxlength="6"
+                  style="letter-spacing: 4px"
+                />
+              </el-form-item>
+            </template>
 
             <el-alert
               v-if="registerError"
@@ -478,25 +532,93 @@ onBeforeUnmount(() => {
                 style="width: 100%"
                 @click="handleRegister"
               >
-                {{ registerLoading ? '注册中...' : '注册并登录' }}
+                {{ registerLoading ? '处理中...' : registerStep === 0 ? '获取验证码' : '注册并登录' }}
               </el-button>
             </el-form-item>
+
+            <div v-if="registerStep === 1" class="resend-row">
+              <el-button
+                text
+                type="primary"
+                :disabled="sectionCountdowns.register > 0"
+                @click="authApi.emailCode(registerForm.email, 'register').then(() => { startSectionCountdown('register'); ElMessage.success('验证码已重新发送') }).catch((e: any) => ElMessage.error(e.response?.data?.error || '发送失败'))"
+              >
+                {{ sectionCountdowns.register > 0 ? `${sectionCountdowns.register} 秒后可重发` : '重新发送验证码' }}
+              </el-button>
+              <el-button text @click="registerStep = 0">返回修改</el-button>
+            </div>
           </el-form>
 
-          <!-- 忘记密码入口（需求 12） -->
+          <!-- 忘记密码 / 注册入口 -->
           <div class="login-extra">
-            <!-- [TASK-PRELAUNCH-P1-FIX] 移除已废弃的 el-link underline 属性，用 CSS 控制下划线 -->
             <el-link type="primary" class="no-underline-link" @click="openResetFlow">忘记密码？</el-link>
             <el-link
               type="primary"
               class="no-underline-link"
               style="margin-left: 16px"
-              @click="registerMode = !registerMode; registerError = ''"
+              @click="toggleRegister"
             >
               {{ registerMode ? '已有账号？返回登录' : '没有账号？立即注册' }}
             </el-link>
           </div>
+        </el-tab-pane>
 
+        <!-- ===== 验证码登录 ===== -->
+        <el-tab-pane label="验证码登录" name="code">
+          <el-form
+            :model="codeLoginForm"
+            label-position="top"
+            size="large"
+            class="login-form"
+            @submit.prevent="handleCodeLogin"
+          >
+            <el-form-item label="邮箱" required>
+              <el-input
+                v-model="codeLoginForm.email"
+                placeholder="请输入注册邮箱"
+                autocomplete="email"
+              />
+            </el-form-item>
+
+            <el-form-item label="验证码" required>
+              <div class="code-row">
+                <el-input
+                  v-model="codeLoginForm.code"
+                  placeholder="6 位验证码"
+                  maxlength="6"
+                  style="letter-spacing: 4px"
+                />
+                <el-button
+                  :disabled="sectionCountdowns.codelogin > 0"
+                  :loading="codeLoginLoading && !codeLoginForm.code"
+                  @click="sendLoginCode"
+                >
+                  {{ sectionCountdowns.codelogin > 0 ? `${sectionCountdowns.codelogin} 秒` : '获取验证码' }}
+                </el-button>
+              </div>
+            </el-form-item>
+
+            <el-alert
+              v-if="codeLoginError"
+              :title="codeLoginError"
+              type="error"
+              show-icon
+              :closable="true"
+              @close="codeLoginError = ''"
+              style="margin-bottom: 12px"
+            />
+
+            <el-form-item>
+              <el-button
+                type="primary"
+                :loading="codeLoginLoading"
+                style="width: 100%"
+                @click="handleCodeLogin"
+              >
+                {{ codeLoginLoading ? '登录中...' : '登 录' }}
+              </el-button>
+            </el-form-item>
+          </el-form>
         </el-tab-pane>
 
         <!-- ===== 扫码登录（需求 10） ===== -->
@@ -534,42 +656,51 @@ onBeforeUnmount(() => {
         </el-tab-pane>
       </el-tabs>
 
-      <!-- ===== 忘记密码流程（需求 12） ===== -->
+      <!-- ===== 找回密码流程（两步：邮箱 → 验证码+新密码） ===== -->
       <div v-else class="reset-flow">
-        <!-- 步骤 1：输入账号 -->
+        <!-- 步骤 1：输入邮箱 -->
         <template v-if="resetStep === 1">
           <h3 class="reset-title">找回密码</h3>
-          <p class="reset-hint">输入需要重置密码的家长账号，用已登录的小趴菜 APP 扫码确认身份</p>
-          <el-input v-model="resetUsername" placeholder="家长账号" size="large" />
-          <el-button type="primary" size="large" style="width: 100%; margin-top: 16px" @click="startReset">
-            下一步
+          <p class="reset-hint">输入注册邮箱，我们将发送重置验证码</p>
+          <el-input v-model="resetForm.email" placeholder="注册邮箱" size="large" />
+          <el-alert
+            v-if="resetError"
+            :title="resetError"
+            type="error"
+            show-icon
+            :closable="true"
+            @close="resetError = ''"
+            style="margin-top: 12px"
+          />
+          <el-button
+            type="primary"
+            size="large"
+            style="width: 100%; margin-top: 16px"
+            :loading="resetLoading"
+            @click="startReset"
+          >
+            获取验证码
           </el-button>
         </template>
 
-        <!-- 步骤 2：扫码确认身份 -->
+        <!-- 步骤 2：验证码 + 新密码 -->
         <template v-else-if="resetStep === 2">
-          <h3 class="reset-title">扫码确认身份</h3>
-          <p class="reset-hint">请使用已登录的小趴菜家长端 APP 扫描二维码</p>
-          <img :src="resetDataUrl" alt="重置密码二维码" class="qr-img" />
-          <p class="qr-countdown">
-            二维码有效期剩余 <b>{{ formatCountdown(resetCountdown) }}</b>
-          </p>
-          <div v-if="resetStatus === 'expired'" class="reset-expired">
-            <p>二维码已过期</p>
-            <el-button type="primary" size="small" @click="startReset">重新生成</el-button>
-          </div>
-        </template>
-
-        <!-- 步骤 3：设置新密码 -->
-        <template v-else-if="resetStep === 3">
           <h3 class="reset-title">设置新密码</h3>
-          <p class="reset-hint">身份已确认，请设置新的登录密码（至少 8 位）</p>
+          <p class="reset-hint">验证码已发送至 <b>{{ resetForm.email }}</b>，5 分钟内有效</p>
+          <el-input
+            v-model="resetForm.code"
+            placeholder="6 位验证码"
+            maxlength="6"
+            size="large"
+            style="letter-spacing: 4px"
+          />
           <el-input
             v-model="resetForm.newPassword"
             type="password"
             show-password
-            placeholder="新密码（至少 8 位）"
+            placeholder="新密码（至少 8 位，含字母与数字）"
             size="large"
+            style="margin-top: 12px"
           />
           <el-input
             v-model="resetForm.confirmPassword"
@@ -579,15 +710,34 @@ onBeforeUnmount(() => {
             size="large"
             style="margin-top: 12px"
           />
+          <el-alert
+            v-if="resetError"
+            :title="resetError"
+            type="error"
+            show-icon
+            :closable="true"
+            @close="resetError = ''"
+            style="margin-top: 12px"
+          />
           <el-button
             type="primary"
             size="large"
             style="width: 100%; margin-top: 16px"
-            :loading="resetSubmitting"
+            :loading="resetLoading"
             @click="submitReset"
           >
             提交新密码
           </el-button>
+          <div class="resend-row">
+            <el-button
+              text
+              type="primary"
+              :disabled="sectionCountdowns.reset > 0"
+              @click="startReset"
+            >
+              {{ sectionCountdowns.reset > 0 ? `${sectionCountdowns.reset} 秒后可重发` : '重新发送验证码' }}
+            </el-button>
+          </div>
         </template>
 
         <!-- 返回登录 -->
@@ -666,22 +816,33 @@ onBeforeUnmount(() => {
   text-decoration: none;
 }
 
-.demo-accounts {
-  text-align: center;
-  margin-top: 8px;
+/* 验证码输入行（输入框 + 获取按钮） */
+.code-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
 }
 
-.demo-hint {
-  font-size: 12px;
-  color: var(--el-text-color-placeholder);
-  margin: 0 0 4px;
+.code-row .el-input {
+  flex: 1;
 }
 
-.demo-buttons {
+.code-row .el-button {
+  flex-shrink: 0;
+}
+
+/* 两步流程提示与重发行 */
+.flow-hint {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  margin: 0 0 12px;
+}
+
+.resend-row {
   display: flex;
   justify-content: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: -8px;
 }
 
 /* ===== 扫码登录区域 ===== */
@@ -747,18 +908,6 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-secondary);
   margin: 0 0 16px;
   text-align: center;
-}
-
-.reset-flow .qr-img {
-  display: block;
-  margin: 0 auto;
-}
-
-.reset-expired {
-  text-align: center;
-  color: var(--el-color-danger);
-  font-size: 13px;
-  margin-top: 8px;
 }
 
 .reset-flow .el-button.is-text {

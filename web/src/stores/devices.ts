@@ -33,6 +33,8 @@ export const useDeviceStore = defineStore('devices', () => {
   const error = ref<string | null>(null)
   // [TASK-PRELAUNCH-P4] 最后成功刷新时间（页面展示“最后刷新 HH:mm:ss”）
   const lastRefreshAt = ref<string | null>(null)
+  // [TASK-ACCOUNT-V1] 设备总数（服务端返回；>10 台前端预警，不阻断）
+  const deviceCount = ref(0)
 
   // ---- getters ----
   const onlineCount = computed(() => devices.value.filter(d => d.status === 'online').length)
@@ -45,7 +47,9 @@ export const useDeviceStore = defineStore('devices', () => {
     error.value = null
     try {
       const res = await deviceApi.list()
-      devices.value = res.data
+      // [TASK-ACCOUNT-V1] List 响应为 { devices, deviceCount }；兼容旧数组格式
+      devices.value = Array.isArray(res.data) ? res.data : (res.data.devices ?? [])
+      deviceCount.value = Array.isArray(res.data) ? res.data.length : (res.data.deviceCount ?? devices.value.length)
       lastRefreshAt.value = new Date().toISOString()
     } catch (e: any) {
       // [TASK-PRELAUNCH-P4] 移除 Mock 兜底：API 失败显示错误态 + 重试，绝不渲染假设备（需求 7 第 3 条）
@@ -55,9 +59,11 @@ export const useDeviceStore = defineStore('devices', () => {
     }
   }
 
-  async function unpairDevice(deviceId: number) {
-    await deviceApi.unpair(deviceId)
+  // [TASK-ACCOUNT-V1] 解绑需携带密码二次验证签发的 X-Action-Token
+  async function unpairDevice(deviceId: number, actionToken: string) {
+    await deviceApi.unpair(deviceId, actionToken)
     devices.value = devices.value.filter(d => d.id !== deviceId)
+    deviceCount.value = Math.max(0, deviceCount.value - 1)
   }
 
   function updateDeviceStatus(deviceId: number, status: Device['status']) {
@@ -76,7 +82,7 @@ export const useDeviceStore = defineStore('devices', () => {
   }
 
   return {
-    devices, loading, error, lastRefreshAt,
+    devices, loading, error, lastRefreshAt, deviceCount,
     onlineCount, totalCount, offlineDevices,
     fetchDevices, unpairDevice, updateDeviceStatus, applyResetLocally,
   }

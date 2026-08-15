@@ -65,8 +65,21 @@ export default apiClient
 export const authApi = {
   login: (username: string, password: string) =>
     apiClient.post('/auth/login', { username, password }),
-  register: (email: string, password: string, displayName?: string) =>
-    apiClient.post('/auth/register', { email, password, displayName }),
+  // [TASK-ACCOUNT-V1] 邮箱验证码：purpose ∈ register | login | reset_password
+  emailCode: (email: string, purpose: 'register' | 'login' | 'reset_password') =>
+    apiClient.post('/auth/email-code', { email, purpose }),
+  // [TASK-ACCOUNT-V1] 注册需验证码（先调 emailCode 获取）
+  register: (email: string, code: string, password: string, displayName?: string) =>
+    apiClient.post('/auth/register', { email, code, password, displayName }),
+  // [TASK-ACCOUNT-V1] 验证码登录（辅助登录方式）
+  codeLogin: (email: string, code: string) =>
+    apiClient.post('/auth/login/code', { email, code }),
+  // [TASK-ACCOUNT-V1] 找回密码（邮箱验证码 + 新密码，成功后吊销全部 refresh token）
+  passwordReset: (email: string, code: string, newPassword: string) =>
+    apiClient.post('/auth/password-reset', { email, code, newPassword }),
+  // [TASK-ACCOUNT-V1] 登录态密码二次验证 → 一次性 actionToken（解绑前置）
+  verifyPassword: (password: string) =>
+    apiClient.post('/auth/verify-password', { password }),
   // [SEC-K5] 空 body（{}）：[ApiController] 对空 body 的 [FromBody] 会 400，传空对象走 Cookie 吊销
   logout: () => apiClient.post('/auth/logout', {}),
   refresh: () => apiClient.post('/auth/refresh'),
@@ -81,28 +94,22 @@ export const pairingApi = {
   bindingQr: () => apiClient.post('/pairing/binding-qr'),
 }
 
-// ==================== 扫码登录 / 忘记密码 Ticket（OPT12 需求 10/12） ====================
+// ==================== 扫码登录 Ticket（OPT12 需求 10；reset-ticket 已随 ACCOUNT-V1 退役） ====================
 export const ticketApi = {
   // 生成扫码登录 Ticket（未登录可调用，90 秒有效）
   createLogin: (clientId?: string) =>
     apiClient.post('/auth/login-ticket', { clientId }),
   // 轮询扫码登录状态（pending/confirmed/expired，confirmed 时首次返回 JWT）
   pollLogin: (ticket: string) => apiClient.get(`/auth/login-ticket/${ticket}`),
-  // 生成重置密码 Ticket（未登录可调用，10 分钟有效）
-  createReset: (username: string) =>
-    apiClient.post('/auth/reset-ticket', { username }),
-  // 轮询重置 Ticket 状态（pending/confirmed/expired）
-  pollReset: (ticket: string) => apiClient.get(`/auth/reset-ticket/${ticket}`),
-  // 设置新密码（需 Ticket 已确认，成功后吊销全部 refresh token）
-  resetPassword: (ticket: string, newPassword: string) =>
-    apiClient.post(`/auth/reset-ticket/${ticket}/reset`, { newPassword }),
 }
 
 // ==================== 设备 ====================
 export const deviceApi = {
   list: () => apiClient.get('/devices'),
   get: (id: number) => apiClient.get(`/devices/${id}`),
-  unpair: (id: number) => apiClient.delete(`/devices/${id}`),
+  // [TASK-ACCOUNT-V1] 解绑需携带密码二次验证签发的 X-Action-Token
+  unpair: (id: number, actionToken: string) =>
+    apiClient.delete(`/devices/${id}`, { headers: { 'X-Action-Token': actionToken } }),
   generatePairingCode: () => apiClient.post('/devices/pairing-code'),
   pair: (code: string, ip: string) =>
     apiClient.post('/devices/pair', { pairingCode: code, ipAddress: ip }),
@@ -193,6 +200,16 @@ export const relayApi = {
 export const adminSystemApi = {
   get: () => apiClient.get('/admin/system'),
   save: (data: any) => apiClient.put('/admin/system', data),
+}
+
+// ==================== 管理端：邮件设置（[TASK-ACCOUNT-V1-MAILCONFIG]，仅 admin） ====================
+export const mailConfigApi = {
+  // Secret 脱敏回显（「已设置」/「」），永不返回明文
+  get: () => apiClient.get('/admin/mail-config'),
+  // Secret 字段留空 = 保持不变；保存即热生效
+  save: (data: any) => apiClient.put('/admin/mail-config', data),
+  // 发送测试邮件（使用当前已保存配置）
+  test: (to: string) => apiClient.post('/admin/mail-config/test', { to }),
 }
 
 // ==================== 管理端：数据管理 ====================

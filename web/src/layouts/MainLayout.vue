@@ -9,7 +9,7 @@ import { useIsMobile } from '@/composables/useIsMobile'
 import {
   Odometer, Monitor, Setting, Notification, DataAnalysis, Tools,
   UserFilled, DocumentChecked, SetUp, FolderOpened, FirstAidKit, Connection,
-  Expand, Fold, Moon, Sunny, SwitchButton, MoreFilled, Download,
+  Message, Expand, Fold, Moon, Sunny, SwitchButton, MoreFilled, Download,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -41,6 +41,8 @@ const adminMenuItems: MenuItem[] = [
   { path: '/admin/devices', title: '设备管理', icon: Monitor, role: 'admin' },
   { path: '/admin/audit', title: '审计日志', icon: DocumentChecked, role: 'admin' },
   { path: '/admin/system', title: '系统设置', icon: SetUp, role: 'admin' },
+  // [TASK-ACCOUNT-V1-MAILCONFIG] 邮件设置：验证码邮件通道（DirectMail/SMTP）
+  { path: '/admin/mail-config', title: '邮件设置', icon: Message, role: 'admin' },
   { path: '/admin/data', title: '数据管理', icon: FolderOpened, role: 'admin' },
   { path: '/admin/diagnostics', title: '故障诊断', icon: FirstAidKit, role: 'admin' },
   { path: '/admin/relay-sessions', title: '云端中继', icon: Connection, role: 'admin' },
