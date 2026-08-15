@@ -210,15 +210,23 @@ public class DevicesController : ControllerBase
         var deviceName = device.DeviceName;
 
         // [TASK-MILESTONE-V3] A12 关联数据全清（按删除依赖序）
-        await _db.AnnouncementDeliveries.Where(d => d.DeviceId == id).ExecuteDeleteAsync();
-        await _db.Policies.Where(p => p.DeviceId == id).ExecuteDeleteAsync();
-        await _db.UsageRecords.Where(r => r.DeviceId == id).ExecuteDeleteAsync();
-        await _db.DailySummaries.Where(s => s.DeviceId == id).ExecuteDeleteAsync();
-        await _db.PairingInfos.Where(p => p.DeviceId == id).ExecuteDeleteAsync();
+        // [TASK-MILESTONE-V3-REQ14] 用 RemoveRange 替代 ExecuteDelete：生产 SQLite 等价，
+        // 且 EF InMemory 测试提供程序可执行（ExecuteDelete 不被 InMemory 支持，测试长期红灯）
+        var deliveries = await _db.AnnouncementDeliveries.Where(d => d.DeviceId == id).ToListAsync();
+        var policies = await _db.Policies.Where(p => p.DeviceId == id).ToListAsync();
+        var usageRecords = await _db.UsageRecords.Where(r => r.DeviceId == id).ToListAsync();
+        var summaries = await _db.DailySummaries.Where(s => s.DeviceId == id).ToListAsync();
+        var pairings = await _db.PairingInfos.Where(p => p.DeviceId == id).ToListAsync();
         // 中继会话与诊断记录以 device_id 字符串关联
-        await _db.RelaySessions.Where(r => r.DeviceId == deviceIdStr).ExecuteDeleteAsync();
-        await _db.Diagnostics.Where(d => d.DeviceId == deviceIdStr).ExecuteDeleteAsync();
-
+        var relaySessions = await _db.RelaySessions.Where(r => r.DeviceId == deviceIdStr).ToListAsync();
+        var diagnostics = await _db.Diagnostics.Where(d => d.DeviceId == deviceIdStr).ToListAsync();
+        _db.AnnouncementDeliveries.RemoveRange(deliveries);
+        _db.Policies.RemoveRange(policies);
+        _db.UsageRecords.RemoveRange(usageRecords);
+        _db.DailySummaries.RemoveRange(summaries);
+        _db.PairingInfos.RemoveRange(pairings);
+        _db.RelaySessions.RemoveRange(relaySessions);
+        _db.Diagnostics.RemoveRange(diagnostics);
         _db.Devices.Remove(device);
         await _db.SaveChangesAsync();
 

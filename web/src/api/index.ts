@@ -196,6 +196,12 @@ export const relayApi = {
   sessions: (params?: any) => apiClient.get('/relay/sessions', { params }),
 }
 
+// ==================== 运行日志（TASK-MILESTONE-V3 需求 14） ====================
+export const logsApi = {
+  // 列表：普通家长仅本账号；admin 全部 + accountId/level/from/to/limit/offset 筛选
+  list: (params?: any) => apiClient.get('/logs', { params }),
+}
+
 // ==================== 管理端：系统配置 ====================
 export const adminSystemApi = {
   get: () => apiClient.get('/admin/system'),

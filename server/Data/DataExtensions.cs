@@ -211,6 +211,32 @@ public static class DataExtensions
             logger.LogInformation("[DB] 已补齐 announcement_tombstones 表");
         }
 
+        // [TASK-MILESTONE-V3] 需求 14：客户端运行日志表（账号级归属，保留 7 天）
+        var hasAppLogs = await db.Database.SqlQueryRaw<long>(
+            "SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name='app_logs'"
+        ).FirstOrDefaultAsync() > 0;
+        if (!hasAppLogs)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE "app_logs" (
+                    "Id" INTEGER PRIMARY KEY AUTOINCREMENT,
+                    "AccountId" INTEGER NOT NULL,
+                    "Level" TEXT NOT NULL DEFAULT 'info',
+                    "Tag" TEXT NOT NULL DEFAULT '',
+                    "Message" TEXT NOT NULL DEFAULT '',
+                    "Client" TEXT NULL,
+                    "CreatedAt" TEXT NOT NULL DEFAULT (datetime('now')),
+                    "ReceivedAt" TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS "IX_app_logs_AccountId_ReceivedAt"
+                    ON "app_logs" ("AccountId", "ReceivedAt");
+                CREATE INDEX IF NOT EXISTS "IX_app_logs_ReceivedAt"
+                    ON "app_logs" ("ReceivedAt");
+                """);
+            logger.LogInformation("[DB] 已补齐 app_logs 表");
+        }
+
         // [SEC-P1] 清理 RefreshTokens 明文列：历史行置空（验证仅走 TokenHash），
         // 防止库文件被窃后明文 token 直接可用（红线 R4.3）
         await PurgePlaintextRefreshTokensAsync(db, logger);

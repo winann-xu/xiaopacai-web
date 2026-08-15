@@ -29,6 +29,8 @@ public class AppDbContext : DbContext
     public DbSet<MailConfig> MailConfigs => Set<MailConfig>();
     // [TASK-MILESTONE-V3] B5 公告删除墓碑（客户端清除本地公告，见 docs/adr/）
     public DbSet<AnnouncementTombstone> AnnouncementTombstones => Set<AnnouncementTombstone>();
+    // [TASK-MILESTONE-V3] 需求 14：客户端上传的运行日志（账号级归属，保留 7 天）
+    public DbSet<AppLogEntry> AppLogEntries => Set<AppLogEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -206,6 +208,14 @@ public class AppDbContext : DbContext
         {
             e.HasIndex(t => new { t.CreatedBy, t.DeletedAt });
             e.Property(t => t.DeletedAt).HasDefaultValueSql("datetime('now')");
+        });
+
+        // ---- AppLogEntries（[TASK-MILESTONE-V3] 需求 14：运行日志，账号级 + 7 天保留） ----
+        modelBuilder.Entity<AppLogEntry>(e =>
+        {
+            e.HasIndex(l => new { l.AccountId, l.ReceivedAt });
+            e.HasIndex(l => l.ReceivedAt);
+            e.Property(l => l.ReceivedAt).HasDefaultValueSql("datetime('now')");
         });
     }
 }

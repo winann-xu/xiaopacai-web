@@ -12,6 +12,7 @@ import {
   Odometer, Monitor, Setting, Notification, DataAnalysis, Tools,
   UserFilled, DocumentChecked, SetUp, FolderOpened, FirstAidKit, Connection,
   Message, Expand, Fold, Moon, Sunny, SwitchButton, MoreFilled, Download,
+  Document,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -35,6 +36,8 @@ const userMenuItems: MenuItem[] = [
   { path: '/policies', title: '策略配置', icon: Setting },
   { path: '/announcements', title: '公告管理', icon: Notification },
   { path: '/reports', title: '使用报告', icon: DataAnalysis },
+  // [TASK-MILESTONE-V3] 需求 14：运行日志（家长仅本账号，admin 进管理后台账号日志）
+  { path: '/logs', title: '运行日志', icon: Document },
   { path: '/settings', title: '设置', icon: Tools },
 ]
 
@@ -48,6 +51,8 @@ const adminMenuItems: MenuItem[] = [
   { path: '/admin/data', title: '数据管理', icon: FolderOpened, role: 'admin' },
   { path: '/admin/diagnostics', title: '故障诊断', icon: FirstAidKit, role: 'admin' },
   { path: '/admin/relay-sessions', title: '云端中继', icon: Connection, role: 'admin' },
+  // [TASK-MILESTONE-V3] 需求 14：账号日志（admin 全部账号，可按账号筛选）
+  { path: '/admin/logs', title: '账号日志', icon: Document, role: 'admin' },
 ]
 
 const isAdmin = computed(() => auth.isAdmin)

@@ -201,8 +201,8 @@ builder.Services.AddSingleton<P2pMessageHandler>();
 builder.Services.AddSingleton<P2pListenerService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<P2pListenerService>());
 // [TASK-MILESTONE-V3] B2/B10 公告送达补偿（60 秒未 displayed 重推，见 docs/adr/）
-builder.Services.AddSingleton<Services.AnnouncementCompensationService>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<Services.AnnouncementCompensationService>());
+builder.Services.AddSingleton<XiaopacaiWeb.Services.AnnouncementCompensationService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<XiaopacaiWeb.Services.AnnouncementCompensationService>());
 
 var app = builder.Build();
 

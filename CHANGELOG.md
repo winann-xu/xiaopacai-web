@@ -18,6 +18,15 @@
   - B6 紧急未确认公告重连必补推（不限于最近 3 条）
   - B11 公告广播账号隔离（仅发布者账号设备，同步/心跳/补偿同口径）
   - B13 公告归属账号：列表/详情/送达明细/紧急统计均按账号过滤（修复任意家长可读任意公告 id 的越权读取）
+- 需求 14：应用运行日志上传与查看（ADR 0014）
+  - 新增 `app_logs` 表（账号级归属 + ReceivedAt 服务端时间索引，7 天保留按 ReceivedAt 清理）
+  - 新增 `/api/logs`：POST 上传（ParentOrAdmin，单批 ≤500、级别白名单归一化、
+    入库二次脱敏、Message 1000/Tag 64/Client 64 截断、客户端时间钳制、限流 30/小时）、
+    GET 列表（家长强制本账号；admin 全部 + accountId/level/from/to 筛选，limit 钳制 1-1000）
+  - 新增 `AppLogSanitizer`：与 Android 端完全一致的 4 条脱敏正则（密码/令牌赋值、
+    验证码、JWT、64 位 hex），服务端入库兜底
+  - 前端日志页 LogsPage（家长 `/logs`「运行日志」+ admin `/admin/logs`「账号日志」单组件双路由）：
+    级别/时间范围筛选、admin 账号筛选、级别色标表格、分页、7 天保留与脱敏说明
 
 ### 变更
 - 策略 GET 返回 `version`；PUT 兼容旧页面（不传 expectedVersion 不校验）
@@ -33,6 +42,13 @@
 
 ### 修复
 - 公告详情/送达明细接口补归属校验（此前任意家长可读任意公告 id）
+- 需求 14 顺带修复（交付阻塞项，见 ADR 0014 第 9 节）：
+  - Program.cs 顶层语句 `Services.AnnouncementCompensationService` 无法解析兄弟命名空间前缀
+    （需求 2 遗留，服务端自此无法编译）→ 全限定 `XiaopacaiWeb.Services.AnnouncementCompensationService`
+  - DevicesController.Unpair 的 `ExecuteDeleteAsync` 不被 EF InMemory 测试提供程序支持
+    （生产 SQLite 支持）→ 改为 load + `RemoveRange`，行为不变（A12 硬删除语义）
+  - DeviceAccessTests 两条测试仍断言旧软解绑语义（清 OwnerUserId 留行）→
+    按 A12（ADR 0010）硬删除语义重写
 
 ---
 

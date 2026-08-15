@@ -246,13 +246,26 @@ public class DeviceAccessTests
     }
 
     [Fact]
-    public async Task Devices_Unpair_OwnDevice_ClearsOwnerAndPairCode()
+    public async Task Devices_Unpair_OwnDevice_HardDeletesDeviceAndRelatedData()
     {
-        // [TASK-PRELAUNCH-FIX-SCAN] 解绑即释放归属：清空 OwnerUserId 与 PairCode，
-        // 使任意账号凭新 pending 配对码可重新绑定
+        // [TASK-MILESTONE-V3] A12（ADR 0010）解绑硬删除：设备行 + 策略 + 公告送达 +
+        // 使用记录/汇总 + 中继会话 + 配对信息全清（换绑全新设备身份）
         var db = CreateInMemoryDbContext();
         var (own, _) = await SeedTwoDevices(db);
-        own.PairCode = "111111";
+        db.Policies.Add(new Policy { Id = 1, DeviceId = own.Id });
+        db.PairingInfos.Add(new PairingInfo { Id = 1, DeviceId = own.Id, PairCode = "111111" });
+        db.UsageRecords.Add(new UsageRecord
+        {
+            Id = 1, DeviceId = own.Id, AppPackage = "com.example.app", AppName = "示例",
+        });
+        db.AnnouncementDeliveries.Add(new AnnouncementDelivery
+        {
+            Id = 1, AnnouncementId = 99, DeviceId = own.Id,
+        });
+        db.DailySummaries.Add(new DailySummary
+        {
+            Id = 1, DeviceId = own.Id, SummaryDate = "2026-08-15",
+        });
         await db.SaveChangesAsync();
 
         var (handler, p2p) = CreateP2pServices(db);
@@ -265,17 +278,19 @@ public class DeviceAccessTests
         var result = await controller.Unpair(own.Id);
 
         Assert.IsType<OkObjectResult>(result);
-        var updated = await db.Devices.FindAsync(own.Id);
-        Assert.Equal("unpaired", updated!.PairStatus);
-        Assert.Null(updated.OwnerUserId);
-        Assert.Null(updated.PairCode);
+        Assert.Null(await db.Devices.FindAsync(own.Id));
+        Assert.Empty(db.Policies.Where(p => p.DeviceId == own.Id));
+        Assert.Empty(db.PairingInfos.Where(p => p.DeviceId == own.Id));
+        Assert.Empty(db.UsageRecords.Where(r => r.DeviceId == own.Id));
+        Assert.Empty(db.AnnouncementDeliveries.Where(d => d.DeviceId == own.Id));
+        Assert.Empty(db.DailySummaries.Where(s => s.DeviceId == own.Id));
     }
 
     [Fact]
-    public async Task Devices_List_ReturnsOwnerAccount_AndUnpairClearsIt()
+    public async Task Devices_List_ReturnsOwnerAccount_AndUnpairRemovesDevice()
     {
         // [TASK-PRELAUNCH-FIX-SCAN] 设备列表/详情返回绑定账号（跨账号扫码排查）；
-        // 解绑清空归属后 ownerAccount 为 null
+        // [TASK-MILESTONE-V3] A12 解绑硬删除：解绑后设备行消失（此前软清空归属的语义已废弃）
         var db = CreateInMemoryDbContext();
         db.Users.Add(new User { Id = 1, Username = "parent1" });
         db.Devices.Add(new Device
@@ -300,7 +315,7 @@ public class DeviceAccessTests
         var first = devices.Cast<object>().First();
         Assert.Equal("parent1", first.GetType().GetProperty("ownerAccount")!.GetValue(first));
 
-        // 解绑后归属清空 → 管理员视角 ownerAccount 为 null
+        // 解绑后设备行删除 → 管理员视角列表为空（deviceCount 0）
         SetActionTokenHeader(controller, tokens, userId: 1);
         await controller.Unpair(1);
         SetHttpContext(controller, Principal(99, "admin"));
@@ -308,8 +323,8 @@ public class DeviceAccessTests
         var payload2 = ok2.Value!;
         var devices2 = Assert.IsAssignableFrom<System.Collections.IEnumerable>(
             payload2.GetType().GetProperty("devices")!.GetValue(payload2));
-        var first2 = devices2.Cast<object>().First();
-        Assert.Null(first2.GetType().GetProperty("ownerAccount")!.GetValue(first2));
+        Assert.Equal(0, (int)payload2.GetType().GetProperty("deviceCount")!.GetValue(payload2)!);
+        Assert.Empty(devices2);
     }
 
     // ==================== PoliciesController ====================

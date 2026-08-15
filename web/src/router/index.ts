@@ -19,6 +19,7 @@ const MailConfigPage = () => import('@/views/admin/MailConfigPage.vue')
 const DataManagementPage = () => import('@/views/admin/DataManagementPage.vue')
 const DiagnosticsView = () => import('@/views/admin/DiagnosticsView.vue')
 const RelaySessionsView = () => import('@/views/admin/RelaySessionsView.vue')
+const LogsPage = () => import('@/views/logs/LogsPage.vue')
 const NotFoundPage = () => import('@/views/auth/NotFoundPage.vue')
 const DownloadPage = () => import('@/views/public/DownloadPage.vue')
 
@@ -29,6 +30,8 @@ const userRoutes: RouteRecordRaw[] = [
   { path: 'policies', name: 'policies', component: PoliciesPage, meta: { title: '策略配置', icon: 'Setting' } },
   { path: 'announcements', name: 'announcements', component: AnnouncementsPage, meta: { title: '公告管理', icon: 'Notification' } },
   { path: 'reports', name: 'reports', component: ReportsPage, meta: { title: '使用报告', icon: 'DataAnalysis' } },
+  // [TASK-MILESTONE-V3] 需求 14：运行日志（普通家长仅本账号，服务端过滤）
+  { path: 'logs', name: 'logs', component: LogsPage, meta: { title: '运行日志', icon: 'Document' } },
   { path: 'settings', name: 'settings', component: SettingsPage, meta: { title: '设置', icon: 'Tools' } },
 ]
 
@@ -42,6 +45,8 @@ const adminRoutes: RouteRecordRaw[] = [
   { path: 'admin/data', name: 'adminData', component: DataManagementPage, meta: { title: '数据管理', icon: 'FolderOpened', role: 'admin' } },
   { path: 'admin/diagnostics', name: 'adminDiagnostics', component: DiagnosticsView, meta: { title: '故障诊断', icon: 'FirstAidKit', role: 'admin' } },
   { path: 'admin/relay-sessions', name: 'adminRelaySessions', component: RelaySessionsView, meta: { title: '云端中继', icon: 'Connection', role: 'admin' } },
+  // [TASK-MILESTONE-V3] 需求 14：账号日志（admin 全部账号，可按账号筛选）
+  { path: 'admin/logs', name: 'adminLogs', component: LogsPage, meta: { title: '账号日志', icon: 'Document', role: 'admin' } },
 ]
 
 const router = createRouter({
