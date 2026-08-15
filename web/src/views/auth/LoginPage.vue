@@ -811,27 +811,6 @@ onBeforeUnmount(() => {
   margin: -4px 0 8px;
 }
 
-/* 网页管理入口（IP + 域名双地址） */
-.web-console-links {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--el-border-color-lighter);
-}
-
-.web-console-label {
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
-}
-
-.web-console-sep {
-  color: var(--el-text-color-secondary);
-}
-
 /* [TASK-PRELAUNCH-P1-FIX] 替代 el-link 废弃的 underline 属性 */
 .no-underline-link :deep(.el-link__inner) {
   text-decoration: none;
