@@ -27,6 +27,9 @@
 - 需求 5（ADR 0012，仅 Android）：上滑结束进程后管控失效修复——补 GuardianAlarmReceiver
   清单声明（存量漏注册）、上滑 5 秒系统侧恢复闹钟、心跳杀进程检测与通知、
   管控生效标记快速重放、能力边界如实说明（OEM_KEEPALIVE.md + 权限引导页）
+- 需求 10/11（ADR 0013，仅 Android）：家长端策略/公告/报告与 Web 双向同步——
+  Android 消费既有 /api/devices、/api/policies（expectedVersion/409）、/api/announcements、
+  /api/reports 接口，服务端无代码改动
 
 ### 修复
 - 公告详情/送达明细接口补归属校验（此前任意家长可读任意公告 id）
