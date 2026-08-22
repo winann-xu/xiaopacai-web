@@ -117,6 +117,10 @@
 5. 发布：确认 minVersionCode 设置符合预期（=versionCode 即全员强制）。发布即 P2P 推送，**不可撤回**（回滚见 §2）。
 6. 旧版本 APK 保留在 downloads 目录（发布历史留档）；磁盘紧张时可清理 draft 已覆盖的同名文件之外的旧版本文件（仅运维人工操作，接口不提供删除）。
 
+> **部署前置（Nginx 反代）**：`client_max_body_size` 默认 1MB，会拦截 APK 上传（413）。
+> 生产已配置 `client_max_body_size 200m;`（/etc/nginx/sites-enabled/xiaopacai-https），
+> 新环境部署时需同样配置，否则 admin 上传接口不可用。
+
 ## 6. 测试与门禁
 
 - server：`dotnet test`（tests 项目）306/306；新增 `AppUpdateTableMappingTests` 覆盖 EnsureCreated 既有库 DDL 与 EF 模型共用同一张表、ABI JSON 解析容错。
