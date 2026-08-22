@@ -55,7 +55,10 @@ public class UpdatesController : ControllerBase
             return BadRequest(new { error = "platform 暂仅支持 android（windows 预留中）" });
         if (string.IsNullOrWhiteSpace(abi) || !SupportedAbis.Contains(abi))
             return BadRequest(new { error = "abi 必须为 arm64-v8a / armeabi-v7a / x86_64" });
-        if (versionCode <= 0)
+        // 语义约定（docs/app-update-v1.md §1）：versionCode=0 表示「下载中心/无客户端上下文」，
+        // 恒返回最新已发布版本（force 按 minVersionCode > 0 计算，页面不使用该字段）；
+        // 客户端检查必须传真实 versionCode（>0），防降级判定依赖该值。
+        if (versionCode < 0)
             return BadRequest(new { error = "versionCode 非法" });
 
         // 取 platform=android 且已发布的最新版本（versionCode 最大，天然防降级）
@@ -64,7 +67,8 @@ public class UpdatesController : ControllerBase
             .OrderByDescending(u => u.VersionCode)
             .FirstOrDefaultAsync();
 
-        if (latest == null || latest.VersionCode <= versionCode)
+        // versionCode=0：下载中心场景，恒返回最新已发布版本信息（无更新时 hasUpdate=false）
+        if (latest == null || (versionCode > 0 && latest.VersionCode <= versionCode))
         {
             return Ok(new
             {
