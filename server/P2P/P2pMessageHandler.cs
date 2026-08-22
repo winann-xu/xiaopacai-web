@@ -1211,6 +1211,44 @@ public class P2pMessageHandler
     }
 
     /// <summary>
+    /// [TASK-APP-UPDATE-V1] D2：广播 update_available 到全部在线设备（不限账号）。
+    /// 推送仅为「触发信号 + 摘要」，客户端收到后应再调 /api/update/check 拉取完整清单
+    /// （url/sha256/changelog 不入推送载荷，减小广播体量、避免摘要与清单不一致）。
+    /// </summary>
+    public async Task<int> PushUpdateAvailable(AppUpdate update, P2pListenerService? p2pService)
+    {
+        if (p2pService == null) return 0;
+
+        var json = BuildUpdateAvailableJson(update);
+        var pushed = await p2pService.BroadcastToAll(json);
+        _logger.LogInformation("[P2P-Update] update_available 已广播 {Count} 台在线设备: v{Version}({Code})",
+            pushed, update.VersionName, update.VersionCode);
+        return pushed;
+    }
+
+    /// <summary>
+    /// update_available 消息体：{ updateId, versionCode, versionName, minVersionCode, publishedAt }
+    /// </summary>
+    public string BuildUpdateAvailableJson(AppUpdate update)
+    {
+        var message = new Dictionary<string, object>
+        {
+            ["type"] = P2pMessageType.UpdateAvailable,
+            ["payload"] = new Dictionary<string, object>
+            {
+                ["update_id"] = update.Id,
+                ["version_code"] = update.VersionCode,
+                ["version_name"] = update.VersionName,
+                ["min_version_code"] = update.MinVersionCode,
+                ["published_at"] = update.PublishedAt.HasValue
+                    ? new DateTimeOffset(update.PublishedAt.Value).ToUnixTimeSeconds()
+                    : 0L,
+            },
+        };
+        return JsonSerializer.Serialize(message);
+    }
+
+    /// <summary>
     /// [TASK-PRELAUNCH-P3] 送达记录 upsert：推送成功一次 push_count++（见 docs/adr/0004）
     /// </summary>
     private async Task RecordDeliveryPushAsync(int announcementId, int deviceDbId)

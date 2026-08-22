@@ -266,6 +266,39 @@ public static class DataExtensions
             logger.LogInformation("[DB] 已补齐 guard_events 表");
         }
 
+        // [TASK-APP-UPDATE-V1] App 更新清单表（表名/列名与 AppUpdate 的 ToTable("app_updates") 映射一致）
+        var hasAppUpdates = await db.Database.SqlQueryRaw<long>(
+            "SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name='app_updates'"
+        ).FirstOrDefaultAsync() > 0;
+        if (!hasAppUpdates)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE "app_updates" (
+                    "Id" INTEGER PRIMARY KEY AUTOINCREMENT,
+                    "Platform" TEXT NOT NULL DEFAULT 'android',
+                    "VersionName" TEXT NOT NULL,
+                    "VersionCode" INTEGER NOT NULL,
+                    "MinVersionCode" INTEGER NOT NULL,
+                    "AbiUrls" TEXT NOT NULL DEFAULT '',
+                    "AbiSha256" TEXT NOT NULL DEFAULT '',
+                    "SizeBytes" INTEGER NOT NULL DEFAULT 0,
+                    "Changelog" TEXT NOT NULL DEFAULT '',
+                    "Status" TEXT NOT NULL DEFAULT 'draft',
+                    "Channel" TEXT NOT NULL DEFAULT 'stable',
+                    "PublishedAt" TEXT NULL,
+                    "CreatedBy" INTEGER NOT NULL,
+                    "CreatedAt" TEXT NOT NULL DEFAULT (datetime('now')),
+                    "UpdatedAt" TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS "IX_app_updates_Platform_Status"
+                    ON "app_updates" ("Platform", "Status");
+                CREATE INDEX IF NOT EXISTS "IX_app_updates_VersionCode"
+                    ON "app_updates" ("VersionCode");
+                """);
+            logger.LogInformation("[DB] 已补齐 app_updates 表");
+        }
+
         // [SEC-P1] 清理 RefreshTokens 明文列：历史行置空（验证仅走 TokenHash），
         // 防止库文件被窃后明文 token 直接可用（红线 R4.3）
         await PurgePlaintextRefreshTokensAsync(db, logger);

@@ -20,6 +20,9 @@ using IPNetwork = Microsoft.AspNetCore.HttpOverrides.IPNetwork;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// [TASK-APP-UPDATE-V1] APK 上传支持：请求体上限 150MB（单 APK ~25MB × 三 ABI 有余量）
+builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 150L * 1024 * 1024);
+
 // ========== 服务注册 ==========
 
 // ---- 控制器 + JSON 序列化 ----

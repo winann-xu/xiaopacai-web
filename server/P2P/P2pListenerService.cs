@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -94,6 +95,21 @@ public class P2pListenerService : IHostedService
             _sessions.TryRemove(deviceId, out _);
             return false;
         }
+    }
+
+    /// <summary>
+    /// [TASK-APP-UPDATE-V1] D2：广播消息到全部在线设备（不限账号，更新通知口径）
+    /// 返回成功送达的会话数。
+    /// </summary>
+    public async Task<int> BroadcastToAll(string messageJson)
+    {
+        var pushed = 0;
+        foreach (var deviceId in _sessions.Keys.ToArray())
+        {
+            if (await SendToDevice(deviceId, messageJson))
+                pushed++;
+        }
+        return pushed;
     }
 
     // ========== IHostedService ==========

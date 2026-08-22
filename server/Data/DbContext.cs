@@ -33,6 +33,8 @@ public class AppDbContext : DbContext
     public DbSet<AppLogEntry> AppLogEntries => Set<AppLogEntry>();
     // [TASK-HARDENING-V1.1.1] Bug1-D/1-B：守护失守事件 + 健康度快照（账号级归属：按设备归属校验）
     public DbSet<GuardEvent> GuardEvents => Set<GuardEvent>();
+    // [TASK-APP-UPDATE-V1] App 更新清单
+    public DbSet<AppUpdate> AppUpdates => Set<AppUpdate>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -235,6 +237,18 @@ public class AppDbContext : DbContext
             e.Property(g => g.Reason).HasMaxLength(128);
             e.Property(g => g.RestoredReason).HasMaxLength(128);
             e.Property(g => g.ReceivedAt).HasDefaultValueSql("datetime('now')");
+        });
+
+        // ---- AppUpdates（[TASK-APP-UPDATE-V1] 更新清单） ----
+        // 与 GuardEvents 同理：显式 ToTable("app_updates")，与 DataExtensions 建表 DDL 同名
+        modelBuilder.Entity<AppUpdate>(e =>
+        {
+            e.ToTable("app_updates");
+            e.HasIndex(u => new { u.Platform, u.Status });
+            e.HasIndex(u => u.VersionCode);
+            e.Property(u => u.Changelog).HasColumnType("TEXT");
+            e.Property(u => u.CreatedAt).HasDefaultValueSql("datetime('now')");
+            e.Property(u => u.UpdatedAt).HasDefaultValueSql("datetime('now')");
         });
     }
 }

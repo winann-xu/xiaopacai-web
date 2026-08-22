@@ -27,6 +27,8 @@ public static class P2pMessageType
     public const string LimitReset = "limit_reset";
     // [TASK-MILESTONE-V3] B5 公告删除：清除客户端本地公告记录（多端一致）
     public const string AnnouncementClear = "announcement_clear";
+    // [TASK-APP-UPDATE-V1] 更新可用通知：admin 发布后广播全部在线设备（客户端收到后触发检查）
+    public const string UpdateAvailable = "update_available";
 }
 
 /// <summary>
