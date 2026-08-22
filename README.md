@@ -4,6 +4,9 @@
 **日期：** 2026-08-10  
 **许可：** Apache-2.0  
 
+> 📚 完整系统说明书（图文并茂）：[SYSTEM_MANUAL.md](docs/SYSTEM_MANUAL.md)  
+> 🛠 管理员运维手册：[ADMIN_OPS_MANUAL.md](https://github.com/winann-xu/xiaopacai/blob/main/docs/ADMIN_OPS_MANUAL.md)（位于 xiaopacai 仓库）
+
 ## 项目简介
 
 小趴菜 Web 3.0 是儿童守护系统的网页端，在 2.0（Windows 家长端 + Android 儿童端）基础上新增 **完整 Web 家长端 + 管理后端**，通过 P2P TLS 协议直接对接已有 Android 儿童端 APK。
