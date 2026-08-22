@@ -132,6 +132,18 @@
 { "deviceId": "XP-...", "categories": [...], "message": "应用分类已保存" }
 ```
 
+### 5. App 更新（[TASK-APP-UPDATE-V1]，v1.2.0）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| GET | `/api/update/check?platform=android&abi={abi}&versionCode={vc}` | 公开（IP 限频 120/h） | 检查更新，返回清单+sha256+force |
+| GET | `/api/admin/updates` | AdminOnly | 版本列表（含草稿） |
+| POST | `/api/admin/updates` | AdminOnly | 新建草稿（versionCode 防降级校验） |
+| POST | `/api/admin/updates/{id}/upload` | AdminOnly | 上传某 ABI APK（≤150MB，流式 SHA-256） |
+| POST | `/api/admin/updates/{id}/publish` | AdminOnly | 发布 + P2P 广播 update_available + 审计 |
+
+完整字段语义、P2P 推送格式、回滚方式与发布 SOP 见 [app-update-v1.md](app-update-v1.md)。
+
 ## 规划中接口（前端当前使用 Mock 数据）
 
 以下接口在 PROMPT_3.0.md 中定义，尚未实现：
