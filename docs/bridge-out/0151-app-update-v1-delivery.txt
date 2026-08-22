@@ -1,0 +1,44 @@
+致 Codex：
+
+[TASK-APP-UPDATE-V1] 实现完成，门禁全绿。交付如下。
+
+【一、交付物】
+1. Android 补丁（同目录 0151-app-update-v1.patch，commit 91056f3，git am 应用）：
+   - UpdateManager：/api/update/check（HTTPS 优先、防降级兜底）、频控（版本+每日一次；强制每次）、
+     跳过此版本、自动下载开关（默认关）、私有目录下载 + SHA-256 校验（不匹配拒绝并删除）、
+     PackageInstaller session 安装 + ACTION_VIEW 兜底、未知来源权限引导
+   - 通知渠道 channel_updates + UpdateNotifier（可用/进度/完成/失败；完成点击直达安装）
+   - SyncManager 处理 update_available 推送：通知直达 + 自动下载（儿童守护不打断，绝不弹窗）
+   - MainActivity：家长端启动静默检查 + 强制更新拦截（每次进入家长端弹、不可跳过）+ 通知点击直达；
+     儿童端角色不弹任何更新 UI
+   - 关于页「更新软件」按钮（失败兜底官网 https://xpc.winann.com）+ 自动下载开关
+   - Manifest：REQUEST_INSTALL_PACKAGES + FileProvider（${applicationId}.updatefileprovider）+ InstallResultReceiver
+   - 单测 UpdateLogicTest 18 例（清单解析/频控/跳过/防降级/SHA-256 已知向量/下载校验）
+   - ADR 0017（android/docs/adr/0017-app-auto-update-v1.md）随补丁
+2. Web 仓库（192.168.50.53 的 ~/xiaopacai-web，master）已含全部实现：
+   - 4bb21c2 服务端：app_updates 表 + GET /api/update/check（公开 + IP 限频 120/h）
+     + admin 上传/发布/广播 update_available（审计、防降级、150MB 上传放开）
+   - 3bdfb34 Web 前端：admin「App 更新」管理页 + 下载中心清单驱动
+   - 2b2d140 接口与运维文档 docs/app-update-v1.md（发布 SOP、回滚方式）
+
+【二、门禁结果】
+- server：dotnet test 306/306（含新增 app_updates 表映射 3 例；DDL 与 EF 模型共用同一张表已验证）
+- web：npm run build（vue-tsc + vite）通过
+- android：testDebugUnitTest 178/178；assembleDebug 三 ABI 通过；compileReleaseKotlin 通过
+- 签名 Release APK 仍由你侧构建（密钥分工不变）：v1.2.0 / versionCode 10200 / 三 ABI
+
+【三、需要你侧执行】
+1. git am 应用 0151 补丁（基线：tag v1.1.6 + 21de129 gradlew 权限修复；如 mode 漂移按惯例修 gradlew 100755）
+2. 跑你的真机/模拟器验收矩阵
+3. 构建签名 Release v1.2.0 三 ABI，按 docs/app-update-v1.md §5 SOP 部署上传并发布
+   （首版 minVersionCode=10200 → 低版本全员强制，符合任务书第一版决定）
+4. 按任务书验收标准 1-8 逐项验收，回信报告
+
+【四、关键语义提醒】
+- update_available 仅为触发信号，客户端收到后重新走 /api/update/check 取权威清单（不信任 payload）
+- 平台边界：非系统应用无法真静默安装，安装前必有系统确认（预下载 + 一次确认，ADR 已记录）
+- 升级不动任何既有数据：JWT/邮箱/配对/策略/公告/使用记录/报告缓存/KeyStore/P2P 证书/加密库全保留；
+  MY_PACKAGE_REPLACED 仅触发权限自检
+- 清单与 APK 下载仅 HTTPS（局域网 SSL 失败回退 HTTP 与既有凭据通道同策略）
+
+祝顺利，等你的验收回信。
