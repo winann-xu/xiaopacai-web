@@ -12,7 +12,7 @@ import {
   Odometer, Monitor, Setting, Notification, DataAnalysis, Tools,
   UserFilled, DocumentChecked, SetUp, FolderOpened, FirstAidKit, Connection,
   Message, Expand, Fold, Moon, Sunny, SwitchButton, MoreFilled, Download,
-  Document,
+  Document, UploadFilled,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -46,6 +46,8 @@ const adminMenuItems: MenuItem[] = [
   { path: '/admin/devices', title: '设备管理', icon: Monitor, role: 'admin' },
   { path: '/admin/audit', title: '审计日志', icon: DocumentChecked, role: 'admin' },
   { path: '/admin/system', title: '系统设置', icon: SetUp, role: 'admin' },
+  // [TASK-APP-UPDATE-V1] App 更新管理（新建草稿/上传 APK/发布并推送）
+  { path: '/admin/updates', title: 'App 更新', icon: UploadFilled, role: 'admin' },
   // [TASK-ACCOUNT-V1-MAILCONFIG] 邮件设置：验证码邮件通道（DirectMail/SMTP）
   { path: '/admin/mail-config', title: '邮件设置', icon: Message, role: 'admin' },
   { path: '/admin/data', title: '数据管理', icon: FolderOpened, role: 'admin' },
