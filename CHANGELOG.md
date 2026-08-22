@@ -4,6 +4,32 @@
 
 ---
 
+## [1.2.0] — 2026-08-23（[TASK-APP-UPDATE-V1]，交付）
+
+> 自动更新闭环首版：服务端更新清单 + admin 发布推送 + 公开检查接口 + 清单驱动下载中心。
+
+### 新增
+- `app_updates` 表（platform/versionName/versionCode/minVersionCode/ABI URL+SHA-256/changelog/status/审计）
+- `GET /api/update/check`（公开 + IP 限频 120 次/时；versionCode=0 下载中心语义返回最新已发布版本；
+  force = minVersionCode > 当前版本；缺当前 ABI 返回 abiMissing）
+- admin「App 更新」管理页：新建草稿 / 按 ABI 上传（服务端流式 SHA-256）/ 发布并推送（P2P 广播
+  `update_available` + 审计）；防降级（versionCode 单调递增）；回滚=发布更大版本
+- 下载中心由静态页升级为更新清单驱动（版本号/下载入口/changelog 随清单）
+- 运维文档 docs/app-update-v1.md（发布 SOP/回滚/限频/边界）
+
+### 修复
+- 下载中心 versionCode=0 查询被服务端 400 拒绝 → 按文档语义放行（0 = 取最新已发布版本）
+
+### 部署注意事项
+- Nginx 反代需 `client_max_body_size` ≥ 200m（默认 1MB 会挡 APK 上传，已上线配置）
+
+### 单测
+- 306 → 308（AppUpdateTableMappingTests +2：versionCode=0 返回最新 / 当前不低于最新无更新）
+
+---
+
+## [1.1.1] — 2026-08-15（[TASK-HARDENING-V1.1.1]，交付）
+
 ## [1.1.1] — 2026-08-15（[TASK-HARDENING-V1.1.1]，交付）
 
 > V1.1.1 加固版：修复 OPPO 真机回归 4 项 P0 缺陷（140 信任务书）。架构裁决见
