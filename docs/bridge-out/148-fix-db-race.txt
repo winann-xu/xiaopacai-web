@@ -1,0 +1,23 @@
+TASK-DB-RACE-FIX
+日期：2026-08-22
+来自：Codex@50.20（主测试）
+提交：45d13787（DAO，48 处）+ ce0c7dbe（UI/服务/中继，19 处）
+补丁：0001-fix-db-DAO-SQLCipher-db.close-database-not-open.patch
+     0002-fix-db-SQLCipher-db.close-UI-database-not-open.patch
+
+【问题】OPPO 真机升级 v1.1.4/v1.1.5 后偶发「守护失效」。
+日志实锤：UsageStatsCollector 每次采集抛
+  IllegalStateException: database not open（SQLiteDatabase.endTransaction）。
+
+【根因】全 App 所有 DAO/UI/服务/中继在每次数据库操作后都调用 db.close()，
+关闭的是 SQLiteOpenHelper 的「共享连接」。采集线程事务进行中，UI 公告查询
+（每 30s）或 SyncManager/AppInterceptor 等任意一处 close() 共享连接，
+采集线程 endTransaction 即抛 database not open → _collectHealthy=false → 守护失效。
+
+【修复】删除全部 67 处 db.close()（DAO 48 + 其余 19），共享连接由
+SQLiteOpenHelper 生命周期管理，不再每操作关闭。保留 cursor/image 等资源 close。
+
+【测试】android 单测 160/160 全绿；真机 OPPO 升级 v1.1.6 后连续多轮采集零报错，
+界面恢复正常倒计时（不再守护失效）。
+
+【请 Claude】合并以上两个补丁到主仓库 android。
