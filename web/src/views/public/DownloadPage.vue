@@ -16,20 +16,33 @@
       <p class="dl-sub">小趴菜守护 · 家长监控客户端（Android / Windows / iOS 陆续上线）</p>
 
       <div class="dl-grid">
-        <el-card class="dl-card" shadow="hover">
+        <el-card class="dl-card" shadow="hover" v-loading="loading">
           <div class="dl-icon">📱</div>
           <h3>Android 客户端</h3>
           <p class="dl-desc">儿童守护 / 家长端二合一<br />Android 8.0 及以上</p>
-          <p class="dl-meta">按手机芯片选择；绝大多数手机选 arm64-v8a</p>
-<el-button type="primary" size="large" class="dl-btn" @click="download('/downloads/XiaopacaiParent-1.1.0-arm64-v8a.apk')">
-            下载 APK（arm64-v8a · 推荐）
-          </el-button>
-<el-button size="large" class="dl-btn dl-btn-sub" @click="download('/downloads/XiaopacaiParent-1.1.0-armeabi-v7a.apk')">
-            下载 APK（armeabi-v7a）
-          </el-button>
-<el-button size="large" class="dl-btn dl-btn-sub" @click="download('/downloads/XiaopacaiParent-1.1.0-x86_64.apk')">
-            下载 APK（x86_64 · 模拟器）
-          </el-button>
+          <template v-if="latest">
+            <p class="dl-meta">
+              最新版本 <b>v{{ latest.versionName }}</b>
+              <span v-if="latest.minVersionCode"> · 低于 v{{ codeToVersion(latest.minVersionCode) }} 将强制更新</span>
+            </p>
+            <p v-if="latest.changelog" class="dl-changelog">{{ latest.changelog }}</p>
+            <el-button
+              v-for="abi in ABIS"
+              :key="abi"
+              :type="abi === 'arm64-v8a' ? 'primary' : ''"
+              size="large"
+              class="dl-btn"
+              :class="{ 'dl-btn-sub': abi !== 'arm64-v8a' }"
+              :disabled="!urls[abi]"
+              @click="download(urls[abi])"
+            >
+              下载 APK（{{ abi }}{{ abi === 'arm64-v8a' ? ' · 推荐' : abi === 'x86_64' ? ' · 模拟器' : '' }}）
+            </el-button>
+            <p class="dl-meta">按手机芯片选择；安装前客户端会自动校验 SHA-256</p>
+          </template>
+          <template v-else-if="!loading">
+            <p class="dl-meta">暂未发布新版本，请稍后再来</p>
+          </template>
         </el-card>
 
         <el-card class="dl-card dl-card-disabled" shadow="hover">
@@ -68,16 +81,57 @@
 
 <script setup lang="ts">
 // 小趴菜 Web 3.0 — 下载中心（登录前后均可访问）
+// [TASK-APP-UPDATE-V1] B2：由静态页升级为「更新清单驱动」——versionCode=0 查询最新已发布版本，
+// 展示版本号/更新说明/各 ABI 下载入口；清单为空时明确提示未发布。
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { updateApi } from '@/api'
+
+const ABIS = ['arm64-v8a', 'armeabi-v7a', 'x86_64'] as const
 
 const router = useRouter()
 const loggedIn = ref(false)
+const loading = ref(false)
+const latest = ref<{ versionName: string; minVersionCode: number; changelog: string } | null>(null)
+const urls = ref<Record<string, string>>({})
 
-onMounted(() => {
+onMounted(async () => {
   // [SEC-K5] 登录态由 httpOnly Cookie 的 logged_in 标记判断（token 不再存 localStorage）
   loggedIn.value = document.cookie.split(';').some(c => c.trim().startsWith('logged_in='))
+  loading.value = true
+  try {
+    // 三个 ABI 并行检查（versionCode=0 → 恒返回最新已发布版本）
+    const results = await Promise.allSettled(
+      ABIS.map(abi => updateApi.check('android', abi, 0)),
+    )
+    let newest: any = null
+    results.forEach((r, i) => {
+      if (r.status !== 'fulfilled') return
+      const d = r.value.data
+      if (!d.hasUpdate || !d.url) return
+      urls.value[ABIS[i]] = d.url
+      if (!newest || d.latestVersionCode > newest.latestVersionCode) newest = d
+    })
+    if (newest) {
+      latest.value = {
+        versionName: newest.latestVersionName,
+        minVersionCode: newest.minVersionCode,
+        changelog: newest.changelog,
+      }
+    }
+  } catch {
+    // 检查失败保持「未发布」呈现，不阻塞页面
+  } finally {
+    loading.value = false
+  }
 })
+
+function codeToVersion(code: number) {
+  const major = Math.floor(code / 10000)
+  const minor = Math.floor((code % 10000) / 100)
+  const patch = code % 100
+  return `${major}.${minor}.${patch}`
+}
 
 function go(path: string) {
   router.push(path)
@@ -180,6 +234,17 @@ function download(url: string) {
   color: var(--el-text-color-placeholder);
   font-size: 12px;
   margin: 0 0 18px;
+}
+
+.dl-changelog {
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  text-align: left;
+  white-space: pre-line;
+  background: var(--el-fill-color-light);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0 0 14px;
 }
 
 .dl-btn {

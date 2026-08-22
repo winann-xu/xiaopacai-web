@@ -236,6 +236,26 @@ export const healthApi = {
   check: () => apiClient.get('/health'),
 }
 
+// ==================== 更新清单（[TASK-APP-UPDATE-V1]） ====================
+export const updateApi = {
+  // 公开检查（设备侧；无鉴权 + IP 限频）
+  check: (platform: string, abi: string, versionCode: number) =>
+    apiClient.get('/update/check', { params: { platform, abi, versionCode } }),
+  // admin：清单列表
+  list: () => apiClient.get('/admin/updates'),
+  // admin：创建草稿（服务端校验 versionCode 单调递增防降级）
+  create: (data: any) => apiClient.post('/admin/updates', data),
+  // admin：按 ABI 上传 APK（服务端计算 SHA-256 入库）
+  upload: (id: number, abi: string, file: File) => {
+    const form = new FormData()
+    form.append('abi', abi)
+    form.append('file', file)
+    return apiClient.post(`/admin/updates/${id}/upload`, form, { timeout: 600000 })
+  },
+  // admin：发布并广播 update_available
+  publish: (id: number) => apiClient.post(`/admin/updates/${id}/publish`),
+}
+
 // ==================== 守护事件与健康度（[TASK-HARDENING-V1.1.1] Bug1-D/1-B） ====================
 export const guardEventsApi = {
   // 上传守护事件（家长端 App 调用；Web 侧为只读，保留封装以备调试/后续写入场景）
