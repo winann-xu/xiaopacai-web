@@ -153,7 +153,14 @@
       ]
     }
   },
-  "last_updated": "2026-08-14",
+  "rebind_gate": {
+    "task": "TASK-REBIND-GATE",
+    "version": "v1.3.1",
+    "status": "deployed-and-published",
+    "completed_at": "2026-08-24",
+    "summary": "换绑必须先在原家长端解绑：GET /api/pairing/status + P2P 握手跨账号配对码拒绝 + verify 归属防护；Android v1.3.4 儿童端换绑前置检查；Web 318/Android 247/Windows 15 全绿；旧服务器已部署，下载中心 v1.3.4 强推。"
+  },
+  "last_updated": "2026-08-24",
   "note": "深夜深度验收：局域网1:1/一拖二/Windows互联/Web中继全链路（双儿童在线、中继转发1499字节到家长端、诊断、分类API）通过；隐私边界审计完成。Codex 修复：900b8da（SQLite 翻译）、ebc48fe（静态文件）、4e9f574（已有设备重连关联配对码，修复 owner 绑定导致中继路由失效）。dotnet 178/178。遗留：Web P2P 未处理 diagnostics_report；relay/register 重复会话行（建议 upsert）。",
   "prelaunch": {
     "current_phase": "P4-fix",
