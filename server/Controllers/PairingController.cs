@@ -138,6 +138,45 @@ public class PairingController : ControllerBase
     }
 
     /// <summary>
+    /// GET /api/pairing/status?deviceId=xxx — 查询设备当前绑定状态（儿童端换绑前置检查）
+    /// 返回 { found, bound, pairStatus, ownerAccount }：
+    /// - bound = PairStatus == "paired"（设备行存在即视为绑定中；解绑为硬删除，行不存在）；
+    /// - ownerAccount 仅对设备归属账号本人或 admin 返回，避免跨账号泄露归属邮箱。
+    /// </summary>
+    [HttpGet("status")]
+    public async Task<IActionResult> Status([FromQuery] string? deviceId)
+    {
+        var clientIp = HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!RequestRateLimiter.Allow($"pairing-status:{clientIp}", 60, 60))
+            return StatusCode(429, new { error = "操作过于频繁，请稍后再试" });
+
+        if (string.IsNullOrWhiteSpace(deviceId))
+            return BadRequest(new { error = "deviceId 不能为空" });
+
+        var device = await _db.Devices
+            .FirstOrDefaultAsync(d => d.DeviceId == deviceId.Trim());
+        if (device == null)
+            return Ok(new { found = false, bound = false, pairStatus = (string?)null, ownerAccount = (string?)null });
+
+        var currentUserId = GetUserId()?.ToString();
+        var isAdmin = User.IsInRole("admin");
+        var isOwner = !string.IsNullOrEmpty(currentUserId) &&
+                      string.Equals(device.OwnerUserId, currentUserId, StringComparison.Ordinal);
+
+        string? ownerAccount = null;
+        if ((isOwner || isAdmin) && int.TryParse(device.OwnerUserId, out var ownerId))
+            ownerAccount = (await _db.Users.FindAsync(ownerId))?.Username;
+
+        return Ok(new
+        {
+            found = true,
+            bound = device.PairStatus == "paired",
+            pairStatus = device.PairStatus,
+            ownerAccount = ownerAccount,
+        });
+    }
+
+    /// <summary>
     /// POST /api/pairing/verify — 验证配对码并绑定设备（手动 IP 配对流程）
     /// 服务端校验配对码，确认后绑定设备
     /// </summary>
@@ -194,28 +233,43 @@ public class PairingController : ControllerBase
         }
         else
         {
-            // 使用请求中的设备信息创建新设备
-            device = new Device
+            // [TASK-REBIND-GATE] 归属防护：请求携带的 device_id 已存在时不得重复建档。
+            // 归属他人 → 403 拒绝换绑；归属本人/无归属 → 复用已有设备行，避免唯一索引冲突。
+            var existing = !string.IsNullOrEmpty(request.DeviceId)
+                ? await _db.Devices.FirstOrDefaultAsync(d => d.DeviceId == request.DeviceId)
+                : null;
+            if (existing != null)
             {
-                DeviceId = request.DeviceId ?? $"XP-{Guid.NewGuid():N}"[..14],
-                DeviceName = request.DeviceName ?? "未知设备",
-                Platform = request.Platform ?? "android",
-                IpAddress = request.IpAddress,
-                PairCode = request.PairCode,
-                PairStatus = "paired",
-                OnlineStatus = "offline",
-            };
-            _db.Devices.Add(device);
-            await _db.SaveChangesAsync();
+                if (!string.IsNullOrEmpty(existing.OwnerUserId) &&
+                    existing.OwnerUserId != currentUserId && !User.IsInRole("admin"))
+                    return StatusCode(403, new { error = "设备已被其他账号绑定，请先解绑" });
+                device = existing;
+            }
+            else
+            {
+                // 使用请求中的设备信息创建新设备
+                device = new Device
+                {
+                    DeviceId = request.DeviceId ?? $"XP-{Guid.NewGuid():N}"[..14],
+                    DeviceName = request.DeviceName ?? "未知设备",
+                    Platform = request.Platform ?? "android",
+                    IpAddress = request.IpAddress,
+                    PairCode = request.PairCode,
+                    PairStatus = "paired",
+                    OnlineStatus = "offline",
+                };
+                _db.Devices.Add(device);
+                await _db.SaveChangesAsync();
 
-            // 创建默认策略
-            var policy = new Policy
-            {
-                DeviceId = device.Id,
-                DailyLimitMinutes = 120,
-                OvertimeAction = "full_lock",
-            };
-            _db.Policies.Add(policy);
+                // 创建默认策略
+                var policy = new Policy
+                {
+                    DeviceId = device.Id,
+                    DailyLimitMinutes = 120,
+                    OvertimeAction = "full_lock",
+                };
+                _db.Policies.Add(policy);
+            }
         }
 
         // 更新配对信息

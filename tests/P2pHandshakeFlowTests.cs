@@ -450,11 +450,11 @@ public class P2pHandshakeFlowTests : IDisposable
     }
 
     [Fact]
-    public async Task Handshake_PairedReconnectWithStalePairCode_IgnoredAndAccepted()
+    public async Task Handshake_PairedReconnectWithCrossOwnerPendingCode_Rejected()
     {
-        // 生产根因回归：已配对设备断线重连仍携带旧配对码（甚至是他账号签发的 pending 码）时，
-        // 必须按证书指纹直接放行、忽略配对码——旧行为在此触发"配对码归属不匹配"误拒，
-        // 误拒→无限重试→K3 IP 封禁是阿里云生产 117 根因的放大链
+        // [TASK-REBIND-GATE] 已配对设备携带他人账号签发的 pending 配对码 = 跨账号换绑尝试，
+        // 必须确定性拒绝 device_owned_by_other（不计数限速，避免重试雪崩）；
+        // 归属与指纹不允许被配对码逻辑触碰。
         var db = CreateDb();
         db.PairingInfos.Add(new PairingInfo
         {
@@ -484,11 +484,82 @@ public class P2pHandshakeFlowTests : IDisposable
             new HandshakeRequest { DeviceId = "reconnect-dev", PairCode = "123456" },
             peerFingerprint: "fp-reconnect", remoteEndPoint: "10.255.250.100:1234");
 
-        Assert.True(response.Ok);
+        Assert.False(response.Ok);
+        Assert.Equal("device_owned_by_other", response.ErrorCode);
+        Assert.Contains("解绑", response.Error);
+
         // 归属与指纹不被配对码逻辑触碰
         var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "reconnect-dev");
         Assert.Equal("1", updated.OwnerUserId);
         Assert.Equal("fp-reconnect", updated.CertFingerprint);
+        Assert.Equal("offline", updated.OnlineStatus);
+    }
+
+    [Fact]
+    public async Task Handshake_PairedReconnectWithoutCode_Accepted()
+    {
+        // 断线重连不携码：仅按证书指纹放行，归属不变（回归旧 117 场景的放行语义）。
+        var db = CreateDb();
+        db.Devices.Add(new Device
+        {
+            DeviceId = "reconnect-dev",
+            DeviceName = "重连设备",
+            Platform = "android",
+            PairStatus = "paired",
+            OnlineStatus = "offline",
+            CertFingerprint = "fp-reconnect",
+            OwnerUserId = "1",
+        });
+        await db.SaveChangesAsync();
+
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "reconnect-dev" },
+            peerFingerprint: "fp-reconnect", remoteEndPoint: "10.255.250.100:1234");
+
+        Assert.True(response.Ok);
+        var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "reconnect-dev");
+        Assert.Equal("1", updated.OwnerUserId);
+        Assert.Equal("online", updated.OnlineStatus);
+    }
+
+    [Fact]
+    public async Task Handshake_PairedReconnectWithSameOwnerPendingCode_Accepted()
+    {
+        // 已配对设备携带本人账号签发的 pending 码 = 正常重连/刷新，仍按指纹放行。
+        var db = CreateDb();
+        db.PairingInfos.Add(new PairingInfo
+        {
+            DeviceId = 0,
+            PairCode = "123456",
+            PairMethod = "manual",
+            PairStatus = "pending",
+            OwnerUserId = "1", // 与设备归属一致
+            ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+            CreatedAt = DateTime.UtcNow,
+        });
+        db.Devices.Add(new Device
+        {
+            DeviceId = "reconnect-dev",
+            DeviceName = "重连设备",
+            Platform = "android",
+            PairStatus = "paired",
+            OnlineStatus = "offline",
+            CertFingerprint = "fp-reconnect",
+            OwnerUserId = "1",
+        });
+        await db.SaveChangesAsync();
+
+        var handler = CreateHandler();
+
+        var (response, _, _, _) = await handler.HandleHandshake(
+            new HandshakeRequest { DeviceId = "reconnect-dev", PairCode = "123456" },
+            peerFingerprint: "fp-reconnect", remoteEndPoint: "10.255.250.100:1234");
+
+        Assert.True(response.Ok);
+        var updated = await CreateDb().Devices.SingleAsync(d => d.DeviceId == "reconnect-dev");
+        Assert.Equal("1", updated.OwnerUserId);
         Assert.Equal("online", updated.OnlineStatus);
     }
 

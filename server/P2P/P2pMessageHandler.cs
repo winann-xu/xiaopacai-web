@@ -342,6 +342,29 @@ public class P2pMessageHandler
                 countFailure: false), null, null, device.Id);
         }
 
+        // [TASK-REBIND-GATE] 跨账号换绑拦截（第二道防线）：已配对设备携带他账号签发的
+        // pending 配对码 = 换绑尝试 → 确定性拒绝 device_owned_by_other（不计数限速）。
+        // 断线重连不携码或携同账号码仍按证书指纹放行，不影响重连链路。
+        if (!string.IsNullOrEmpty(req.PairCode))
+        {
+            var rebindCode = await db.PairingInfos
+                .Where(p => p.PairCode == req.PairCode && p.PairStatus == "pending")
+                .OrderByDescending(p => p.CreatedAt)
+                .FirstOrDefaultAsync();
+            if (rebindCode != null && rebindCode.ExpiresAt >= DateTime.UtcNow &&
+                !string.IsNullOrEmpty(device.OwnerUserId) &&
+                (string.IsNullOrEmpty(rebindCode.OwnerUserId) ||
+                 !string.Equals(rebindCode.OwnerUserId, device.OwnerUserId, StringComparison.Ordinal)))
+            {
+                _logger.LogWarning(
+                    "[P2P-Handshake][REBIND-GATE] 已配对设备携他账号配对码，拒绝换绑: {DeviceId} owner={Owner} codeOwner={CodeOwner}",
+                    req.DeviceId, device.OwnerUserId, rebindCode.OwnerUserId);
+                return (await RejectHandshakeAsync(db, req.DeviceId, remoteEndPoint,
+                    "设备已被其他账号绑定，请先解绑", device.PairStatus, req.PairCode,
+                    "device_owned_by_other", countFailure: false), null, null, device.Id);
+            }
+        }
+
         // 更新状态
         device.OnlineStatus = "online";
         device.LastSeenAt = DateTime.UtcNow;

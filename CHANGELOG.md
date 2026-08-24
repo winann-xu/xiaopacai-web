@@ -4,6 +4,29 @@
 
 ---
 
+## [1.3.1] — 2026-08-24（[TASK-REBIND-GATE]，换绑必须先在原家长端解绑）
+
+> 真机复现：儿童端已绑定家长 A 后，扫家长 B 的二维码即可“无障碍”换绑到 B，
+> 且 A 名下旧绑定悬挂（生产审计确认 3ba70a6d→9d86b673 之间无任何解绑记录）。
+> 根因：儿童端换绑只检查本地残留，确认后重置 device_id 以全新身份绑定，服务端无法关联旧绑定。
+
+### 新增
+- `GET /api/pairing/status?deviceId=xxx`：查询设备当前绑定状态（found/bound/pairStatus/ownerAccount）；
+  儿童端换绑前置检查使用；ownerAccount 仅对归属账号本人或 admin 返回，避免跨账号泄露。
+
+### 修复
+- P2P 握手：已配对设备携带**他人账号签发的 pending 配对码**时确定性拒绝
+  `device_owned_by_other`（不计数限速）；不携码/同账号码仍按证书指纹放行，断线重连不受影响
+- `/api/pairing/verify`：请求携带的 device_id 已存在且归属他人 → 403 拒绝换绑；
+  归属本人/无归属时复用已有设备行，避免唯一索引冲突（原行为可能 500）
+
+### 单测
+- P2P 握手：跨账号码拒绝 / 无码放行 / 同账号码放行三例
+- PairingController：status 查询四例 + verify 归属防护两例
+- 全量 Web 单测 318/318 通过
+
+---
+
 ## [1.3.0] — 2026-08-24（[TASK-UPDATE-CHANNEL]，特别版独立渠道）
 
 > 为 ColorOS 等限制机型增加「特别版（special）」独立分发渠道，与正式版（stable）在

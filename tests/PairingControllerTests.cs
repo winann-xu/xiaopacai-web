@@ -51,6 +51,28 @@ public class PairingControllerTests
     }
 
     /// <summary>
+    /// 以指定角色/用户身份创建控制器（默认测试为 admin；归属防护测试需要普通家长身份）
+    /// </summary>
+    private static PairingController CreateControllerAs(AppDbContext db, string role, string userId)
+    {
+        var certService = new XiaopacaiWeb.P2P.P2pCertificateService(
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build(),
+            NullLogger<XiaopacaiWeb.P2P.P2pCertificateService>.Instance);
+        var controller = new PairingController(db, NullLogger<PairingController>.Instance, certService);
+        var principal = new System.Security.Claims.ClaimsPrincipal(
+            new System.Security.Claims.ClaimsIdentity(new[]
+            {
+                new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, role),
+                new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, userId),
+            }, "test"));
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = principal },
+        };
+        return controller;
+    }
+
+    /// <summary>
     /// 读取匿名对象属性（控制器返回匿名类型，无法直接强转）
     /// </summary>
     private static T? GetAnonValue<T>(object obj, string propertyName)
@@ -343,5 +365,138 @@ public class PairingControllerTests
         var result = await controller.CancelPairCode(new CancelPairCodeRequest { PairCode = "000000" });
 
         Assert.IsType<OkObjectResult>(result);
+    }
+
+    // ==================== 绑定状态查询（儿童端换绑前置检查） ====================
+
+    [Fact]
+    public async Task Status_UnknownDevice_ReturnsFoundFalseAndBoundFalse()
+    {
+        var db = CreateInMemoryDbContext();
+        var controller = CreateController(db);
+
+        var result = await controller.Status("no-such-device");
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.False(GetAnonValue<bool>(ok.Value!, "found"));
+        Assert.False(GetAnonValue<bool>(ok.Value!, "bound"));
+    }
+
+    [Fact]
+    public async Task Status_BoundDevice_ReturnsBoundTrueAndPairStatus()
+    {
+        var db = CreateInMemoryDbContext();
+        db.Devices.Add(new Device
+        {
+            DeviceId = "bound-dev",
+            DeviceName = "已绑定设备",
+            Platform = "android",
+            PairStatus = "paired",
+            OwnerUserId = "1",
+        });
+        await db.SaveChangesAsync();
+        var controller = CreateController(db);
+
+        var result = await controller.Status("bound-dev");
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.True(GetAnonValue<bool>(ok.Value!, "found"));
+        Assert.True(GetAnonValue<bool>(ok.Value!, "bound"));
+        Assert.Equal("paired", GetAnonValue<string>(ok.Value!, "pairStatus"));
+    }
+
+    [Fact]
+    public async Task Status_UnboundDevice_ReturnsBoundFalse()
+    {
+        var db = CreateInMemoryDbContext();
+        db.Devices.Add(new Device
+        {
+            DeviceId = "unbound-dev",
+            DeviceName = "未绑定设备",
+            Platform = "android",
+            PairStatus = "unpaired",
+        });
+        await db.SaveChangesAsync();
+        var controller = CreateController(db);
+
+        var result = await controller.Status("unbound-dev");
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.True(GetAnonValue<bool>(ok.Value!, "found"));
+        Assert.False(GetAnonValue<bool>(ok.Value!, "bound"));
+    }
+
+    [Fact]
+    public async Task Status_MissingDeviceId_ReturnsBadRequest()
+    {
+        var db = CreateInMemoryDbContext();
+        var controller = CreateController(db);
+
+        var result = await controller.Status(null);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+    }
+
+    // ==================== 归属防护：换绑必须先在原家长端解绑 ====================
+
+    [Fact]
+    public async Task VerifyPairCode_DeviceIdOwnedByOther_Returns403()
+    {
+        var db = CreateInMemoryDbContext();
+        await SeedPairingCode(db, "888999");
+        db.Devices.Add(new Device
+        {
+            DeviceId = "other-owned-dev",
+            DeviceName = "他人设备",
+            Platform = "android",
+            PairStatus = "paired",
+            OwnerUserId = "2",
+        });
+        await db.SaveChangesAsync();
+        // 普通家长身份（非 admin），归属防护应生效
+        var controller = CreateControllerAs(db, "parent", "1");
+
+        var result = await controller.VerifyPairCode(new VerifyPairCodeRequest
+        {
+            PairCode = "888999",
+            DeviceId = "other-owned-dev",
+        });
+
+        var forbidden = Assert.IsType<Microsoft.AspNetCore.Mvc.ObjectResult>(result);
+        Assert.Equal(403, forbidden.StatusCode);
+        // 设备行未被改动
+        var device = await db.Devices.SingleAsync();
+        Assert.Equal("paired", device.PairStatus);
+        Assert.Equal("2", device.OwnerUserId);
+    }
+
+    [Fact]
+    public async Task VerifyPairCode_ExistingDeviceId_OwnDevice_ReusesRow()
+    {
+        var db = CreateInMemoryDbContext();
+        await SeedPairingCode(db, "888998");
+        db.Devices.Add(new Device
+        {
+            DeviceId = "own-dev",
+            DeviceName = "本人设备",
+            Platform = "android",
+            PairStatus = "unpaired",
+        });
+        await db.SaveChangesAsync();
+        var controller = CreateControllerAs(db, "parent", "1");
+
+        var result = await controller.VerifyPairCode(new VerifyPairCodeRequest
+        {
+            PairCode = "888998",
+            DeviceId = "own-dev",
+            DeviceName = "本人设备",
+        });
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Equal("own-dev", GetAnonValue<string>(ok.Value!, "deviceId"));
+        Assert.Equal(1, await db.Devices.CountAsync());
+        var updated = await db.Devices.SingleAsync();
+        Assert.Equal("paired", updated.PairStatus);
+        Assert.Equal("1", updated.OwnerUserId);
     }
 }
