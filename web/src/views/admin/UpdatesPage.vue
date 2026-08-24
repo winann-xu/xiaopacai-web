@@ -36,6 +36,7 @@ const createForm = reactive({
   versionCode: 0,
   minVersionCode: 0,
   changelog: '',
+  channel: 'stable',
 })
 
 async function load() {
@@ -57,6 +58,7 @@ function openCreate() {
   createForm.versionCode = 0
   createForm.minVersionCode = 0
   createForm.changelog = ''
+  createForm.channel = 'stable'
   createVisible.value = true
 }
 
@@ -157,6 +159,13 @@ function fmtTime(iso: string | null | undefined) {
             <div class="form-tip">code {{ row.versionCode }} / min {{ row.minVersionCode }}</div>
           </template>
         </el-table-column>
+        <el-table-column label="渠道" width="100">
+          <template #default="{ row }: { row: UpdateItem }">
+            <el-tag :type="row.channel === 'special' ? 'warning' : 'success'" size="small">
+              {{ row.channel === 'special' ? '特别版' : '正式版' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }: { row: UpdateItem }">
             <el-tag :type="row.status === 'published' ? 'success' : 'info'" size="small">
@@ -231,6 +240,16 @@ function fmtTime(iso: string | null | undefined) {
         </el-form-item>
         <el-form-item label="更新说明">
           <el-input v-model="createForm.changelog" type="textarea" :rows="4" placeholder="将展示在客户端更新对话框" />
+        </el-form-item>
+        <el-form-item label="分发渠道">
+          <el-radio-group v-model="createForm.channel">
+            <el-radio-button label="stable">正式版</el-radio-button>
+            <el-radio-button label="special">特别版</el-radio-button>
+          </el-radio-group>
+          <div class="form-tip">
+            正式版：正式签名，常规更新线；特别版：testkey 签名（ColorOS 等限制机型专用），
+            两渠道签名不同、互不覆盖，推送也按渠道隔离。
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>

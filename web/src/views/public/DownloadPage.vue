@@ -20,12 +20,12 @@
           <div class="dl-icon">📱</div>
           <h3>Android 客户端</h3>
           <p class="dl-desc">儿童守护 / 家长端二合一<br />Android 8.0 及以上</p>
-          <template v-if="latest">
+          <template v-if="stableLatest">
             <p class="dl-meta">
-              最新版本 <b>v{{ latest.versionName }}</b>
-              <span v-if="latest.minVersionCode"> · 低于 v{{ codeToVersion(latest.minVersionCode) }} 将强制更新</span>
+              最新版本 <b>v{{ stableLatest.versionName }}</b>
+              <span v-if="stableLatest.minVersionCode"> · 低于 v{{ codeToVersion(stableLatest.minVersionCode) }} 将强制更新</span>
             </p>
-            <p v-if="latest.changelog" class="dl-changelog">{{ latest.changelog }}</p>
+            <p v-if="stableLatest.changelog" class="dl-changelog">{{ stableLatest.changelog }}</p>
             <el-button
               v-for="abi in ABIS"
               :key="abi"
@@ -33,8 +33,8 @@
               size="large"
               class="dl-btn"
               :class="{ 'dl-btn-sub': abi !== 'arm64-v8a' }"
-              :disabled="!urls[abi]"
-              @click="download(urls[abi])"
+              :disabled="!stableUrls[abi]"
+              @click="download(stableUrls[abi])"
             >
               下载 APK（{{ abi }}{{ abi === 'arm64-v8a' ? ' · 推荐' : abi === 'x86_64' ? ' · 模拟器' : '' }}）
             </el-button>
@@ -43,6 +43,33 @@
           <template v-else-if="!loading">
             <p class="dl-meta">暂未发布新版本，请稍后再来</p>
           </template>
+        </el-card>
+
+        <el-card v-if="specialLatest" class="dl-card dl-card-special" shadow="hover">
+          <div class="dl-icon">🛡️</div>
+          <h3>特别版（限制机型专用）</h3>
+          <p class="dl-desc">
+            ColorOS 等限制第三方 Device Owner 的机型<br />testkey 签名 · 强管制模式可用
+          </p>
+          <p class="dl-meta">
+            最新版本 <b>v{{ specialLatest.versionName }}</b>
+          </p>
+          <p v-if="specialLatest.changelog" class="dl-changelog">{{ specialLatest.changelog }}</p>
+          <el-button
+            v-for="abi in ABIS"
+            :key="abi"
+            type="warning"
+            size="large"
+            class="dl-btn"
+            :disabled="!specialUrls[abi]"
+            @click="download(specialUrls[abi])"
+          >
+            下载特别版（{{ abi }}）
+          </el-button>
+          <p class="dl-meta dl-warn">
+            特别版与正式版签名不同，两者不能互相覆盖安装；切换渠道需先卸载再装。
+            特别版后续更新只走特别版渠道，自动升级不会串到正式版。
+          </p>
         </el-card>
 
         <el-card class="dl-card dl-card-disabled" shadow="hover">
@@ -92,39 +119,56 @@ const ABIS = ['arm64-v8a', 'armeabi-v7a', 'x86_64'] as const
 const router = useRouter()
 const loggedIn = ref(false)
 const loading = ref(false)
-const latest = ref<{ versionName: string; minVersionCode: number; changelog: string } | null>(null)
-const urls = ref<Record<string, string>>({})
+interface ChannelInfo { versionName: string; minVersionCode: number; changelog: string }
+const stableLatest = ref<ChannelInfo | null>(null)
+const specialLatest = ref<ChannelInfo | null>(null)
+const stableUrls = ref<Record<string, string>>({})
+const specialUrls = ref<Record<string, string>>({})
 
 onMounted(async () => {
   // [SEC-K5] 登录态由 httpOnly Cookie 的 logged_in 标记判断（token 不再存 localStorage）
   loggedIn.value = document.cookie.split(';').some(c => c.trim().startsWith('logged_in='))
   loading.value = true
   try {
-    // 三个 ABI 并行检查（versionCode=0 → 恒返回最新已发布版本）
-    const results = await Promise.allSettled(
-      ABIS.map(abi => updateApi.check('android', abi, 0)),
-    )
-    let newest: any = null
-    results.forEach((r, i) => {
-      if (r.status !== 'fulfilled') return
-      const d = r.value.data
-      if (!d.hasUpdate || !d.url) return
-      urls.value[ABIS[i]] = d.url
-      if (!newest || d.latestVersionCode > newest.latestVersionCode) newest = d
-    })
-    if (newest) {
-      latest.value = {
-        versionName: newest.latestVersionName,
-        minVersionCode: newest.minVersionCode,
-        changelog: newest.changelog,
-      }
-    }
+    // [TASK-UPDATE-CHANNEL] 正式版与特别版各自独立查询（versionCode=0 → 恒返回该渠道最新已发布版本）
+    const [stable, special] = await Promise.all([
+      loadChannel('stable'),
+      loadChannel('special'),
+    ])
+    stableLatest.value = stable.latest
+    stableUrls.value = stable.urls
+    specialLatest.value = special.latest
+    specialUrls.value = special.urls
   } catch {
     // 检查失败保持「未发布」呈现，不阻塞页面
   } finally {
     loading.value = false
   }
 })
+
+async function loadChannel(channel: 'stable' | 'special') {
+  const urls: Record<string, string> = {}
+  let latest: ChannelInfo | null = null
+  let latestCode = -1
+  const results = await Promise.allSettled(
+    ABIS.map(abi => updateApi.check('android', abi, 0, channel)),
+  )
+  results.forEach((r, i) => {
+    if (r.status !== 'fulfilled') return
+    const d = r.value.data
+    if (!d.hasUpdate || !d.url) return
+    urls[ABIS[i]] = d.url
+    if (d.latestVersionCode > latestCode) {
+      latestCode = d.latestVersionCode
+      latest = {
+        versionName: d.latestVersionName,
+        minVersionCode: d.minVersionCode,
+        changelog: d.changelog,
+      }
+    }
+  })
+  return { latest, urls }
+}
 
 function codeToVersion(code: number) {
   const major = Math.floor(code / 10000)
@@ -201,6 +245,15 @@ function download(url: string) {
 
 .dl-card {
   border-radius: 12px;
+}
+
+.dl-card-special {
+  border: 1px solid var(--el-color-warning);
+}
+
+.dl-warn {
+  color: var(--el-color-warning);
+  margin-top: 8px;
 }
 
 /* 未上线卡片：整体降饱和，明确"期待上线"状态 */

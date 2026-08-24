@@ -4,6 +4,34 @@
 
 ---
 
+## [1.3.0] — 2026-08-24（[TASK-UPDATE-CHANNEL]，特别版独立渠道）
+
+> 为 ColorOS 等限制机型增加「特别版（special）」独立分发渠道，与正式版（stable）在
+> 检查、下载、推送、升级四环节全部隔离；自动升级与服务器推送绝不跨渠道串线。
+
+### 新增
+- `/api/update/check` 支持 `channel`（stable 缺省 / special），仅在本渠道内返回最新版本；
+  响应新增 `channel` 字段；非法渠道返回 400
+- admin 新建版本可选择渠道（stable/special），防降级按渠道内比较；发布广播的
+  `update_available` 载荷携带 `channel`
+- 下载中心新增「特别版（限制机型专用）」独立卡片（独立查询、独立下载、签名切换警告）
+- admin 更新列表展示渠道标签
+
+### 配套客户端（xiaopacai android）
+- 构建期内建 `BuildConfig.UPDATE_CHANNEL`（release/debug=stable，strictTestkey=special），
+  检查请求携带本机渠道
+- 安装前新增签名一致性自检：更新包签名证书与本机不一致即拒绝安装（渠道隔离兜底）
+- 服务端推送携带 channel 时与本机渠道比对，不一致直接忽略
+
+### 上线数据
+- 特别版 v1.3.3-testkey（versionCode 10304，channel=special）三 ABI 已上传并发布
+  （SHA-256：arm64 78414f7d… / v7a c0eb3bf7… / x86_64 4907e571…）
+
+### 单测
+- 308 → 312（渠道隔离 +4：stable/special 互不串线、缺省 channel、非法 channel 400）
+
+---
+
 ## [1.2.0] — 2026-08-23（[TASK-APP-UPDATE-V1]，交付）
 
 > 自动更新闭环首版：服务端更新清单 + admin 发布推送 + 公开检查接口 + 清单驱动下载中心。

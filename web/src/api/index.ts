@@ -239,8 +239,9 @@ export const healthApi = {
 // ==================== 更新清单（[TASK-APP-UPDATE-V1]） ====================
 export const updateApi = {
   // 公开检查（设备侧；无鉴权 + IP 限频）
-  check: (platform: string, abi: string, versionCode: number) =>
-    apiClient.get('/update/check', { params: { platform, abi, versionCode } }),
+  // [TASK-UPDATE-CHANNEL] channel：stable（正式）/ special（特别版）；缺省时服务端按 stable 处理
+  check: (platform: string, abi: string, versionCode: number, channel?: string) =>
+    apiClient.get('/update/check', { params: { platform, abi, versionCode, channel } }),
   // admin：清单列表
   list: () => apiClient.get('/admin/updates'),
   // admin：创建草稿（服务端校验 versionCode 单调递增防降级）

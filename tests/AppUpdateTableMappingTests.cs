@@ -127,7 +127,7 @@ public class AppUpdateTableMappingTests
         var (conn, db, controller) = await CreateCheckFixtureAsync();
         try
         {
-            var result = await controller.Check("android", "arm64-v8a", 0) as OkObjectResult;
+            var result = await controller.Check("android", "arm64-v8a", 0, "stable") as OkObjectResult;
             Assert.NotNull(result);
             var value = result!.Value!;
             var hasUpdate = value.GetType().GetProperty("hasUpdate")?.GetValue(value);
@@ -148,7 +148,7 @@ public class AppUpdateTableMappingTests
         var (conn, db, controller) = await CreateCheckFixtureAsync();
         try
         {
-            var result = await controller.Check("android", "arm64-v8a", 10200) as OkObjectResult;
+            var result = await controller.Check("android", "arm64-v8a", 10200, "stable") as OkObjectResult;
             Assert.NotNull(result);
             var value = result!.Value!;
             var hasUpdate = value.GetType().GetProperty("hasUpdate")?.GetValue(value);
@@ -160,4 +160,74 @@ public class AppUpdateTableMappingTests
             await conn.DisposeAsync();
         }
     }
+
+    // =====================================================================
+    // [TASK-UPDATE-CHANNEL] 渠道隔离语义回归：
+    // - 缺省 channel → stable（旧客户端兼容）；
+    // - stable 设备只见 stable 最新版，special 设备只见 special 最新版，互不串线；
+    // - 非法 channel → 400。
+    // =====================================================================
+    [Fact]
+    public async Task Check_ChannelIsolation_StableAndSpecialNeverMix()
+    {
+        var (conn, db, controller) = await CreateCheckFixtureAsync();
+        try
+        {
+            // stable 1.2.0(10200) 已由 fixture 建好；再建 special 1.3.3-testkey(10304)
+            db.AppUpdates.Add(new AppUpdate
+            {
+                Platform = "android",
+                VersionName = "1.3.3-testkey",
+                VersionCode = 10304,
+                MinVersionCode = 10304,
+                AbiUrls = "{\"arm64-v8a\":\"/downloads/XiaopacaiParent-1.3.3-testkey-arm64-v8a.apk\"}",
+                AbiSha256 = "{\"arm64-v8a\":\"edfab919c51ae65375726dba0f036217e533a5ee01e18f275b09785b56f69c0f\"}",
+                Changelog = "ColorOS 特别版",
+                Status = "published",
+                PublishedAt = DateTime.UtcNow,
+                Channel = "special",
+                CreatedBy = 1,
+            });
+            await db.SaveChangesAsync();
+
+            var stable = await controller.Check("android", "arm64-v8a", 0, "stable") as OkObjectResult;
+            var special = await controller.Check("android", "arm64-v8a", 0, "special") as OkObjectResult;
+            var legacyDefault = await controller.Check("android", "arm64-v8a", 0, null) as OkObjectResult;
+
+            Assert.NotNull(stable);
+            Assert.Equal(10200, GetProp(stable!.Value!, "latestVersionCode"));
+            Assert.Equal("stable", GetProp(stable!.Value!, "channel"));
+
+            Assert.NotNull(special);
+            Assert.Equal(10304, GetProp(special!.Value!, "latestVersionCode"));
+            Assert.Equal("special", GetProp(special!.Value!, "channel"));
+
+            Assert.NotNull(legacyDefault);
+            Assert.Equal(10200, GetProp(legacyDefault!.Value!, "latestVersionCode"));
+        }
+        finally
+        {
+            await db.DisposeAsync();
+            await conn.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Check_InvalidChannel_BadRequest()
+    {
+        var (conn, db, controller) = await CreateCheckFixtureAsync();
+        try
+        {
+            var result = await controller.Check("android", "arm64-v8a", 0, "beta");
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+        finally
+        {
+            await db.DisposeAsync();
+            await conn.DisposeAsync();
+        }
+    }
+
+    private static object? GetProp(object value, string name) =>
+        value.GetType().GetProperty(name)?.GetValue(value);
 }

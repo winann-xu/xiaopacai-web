@@ -73,7 +73,8 @@ public class AdminUpdatesController : ControllerBase
 
     /// <summary>
     /// POST /api/admin/updates — 创建草稿清单
-    /// 防降级：versionCode 必须大于既有最大 versionCode（单调递增，ADR 0017 安全红线 3）。
+    /// [TASK-UPDATE-CHANNEL] 防降级按渠道内比较：versionCode 必须大于该渠道既有最大
+    /// versionCode（单调递增，ADR 0017 安全红线 3）；stable/special 相互独立。
     /// </summary>
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] UpdateSaveRequest request)
@@ -85,11 +86,16 @@ public class AdminUpdatesController : ControllerBase
         if (request.MinVersionCode < 0)
             return BadRequest(new { error = "minVersionCode 非法" });
 
+        var channelKey = string.IsNullOrWhiteSpace(request.Channel) ? "stable" : request.Channel.Trim();
+        if (!UpdatesController.SupportedChannels.Contains(channelKey))
+            return BadRequest(new { error = "channel 必须为 stable / special" });
+
         var maxExisting = await _db.AppUpdates
+            .Where(u => u.Channel == channelKey)
             .MaxAsync(u => (int?)u.VersionCode) ?? 0;
         if (request.VersionCode <= maxExisting)
         {
-            return BadRequest(new { error = $"禁止降级：versionCode 必须大于现有最大版本 {maxExisting}" });
+            return BadRequest(new { error = $"禁止降级：渠道 {channelKey} 内 versionCode 必须大于现有最大版本 {maxExisting}" });
         }
 
         var item = new AppUpdate
@@ -100,14 +106,14 @@ public class AdminUpdatesController : ControllerBase
             MinVersionCode = request.MinVersionCode == 0 ? request.VersionCode : request.MinVersionCode,
             Changelog = request.Changelog ?? "",
             Status = "draft",
-            Channel = "stable",
+            Channel = channelKey,
             CreatedBy = GetUserId() ?? 0,
         };
         _db.AppUpdates.Add(item);
         await _db.SaveChangesAsync();
 
         await AuditAsync("update.create", item.Id,
-            $"{{\"versionName\":\"{item.VersionName}\",\"versionCode\":{item.VersionCode},\"minVersionCode\":{item.MinVersionCode}}}");
+            $"{{\"versionName\":\"{item.VersionName}\",\"versionCode\":{item.VersionCode},\"minVersionCode\":{item.MinVersionCode},\"channel\":\"{item.Channel}\"}}");
         return Ok(new { item.Id });
     }
 
@@ -234,4 +240,6 @@ public class UpdateSaveRequest
     public int VersionCode { get; set; }
     public int MinVersionCode { get; set; }
     public string? Changelog { get; set; }
+    /// <summary>[TASK-UPDATE-CHANNEL] 分发渠道：stable（默认）/ special（特别版）</summary>
+    public string? Channel { get; set; }
 }

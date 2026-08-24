@@ -21,6 +21,16 @@ public class UpdatesController : ControllerBase
         "arm64-v8a", "armeabi-v7a", "x86_64",
     };
 
+    /// <summary>
+    /// [TASK-UPDATE-CHANNEL] 支持的分发渠道白名单：
+    /// stable=正式签名线（默认）；special=特别版（ColorOS 等限制机型的 testkey 签名专用线）。
+    /// 客户端必须携带自身构建渠道，服务端仅在该渠道内查找最新版本，杜绝跨签名下发。
+    /// </summary>
+    internal static readonly HashSet<string> SupportedChannels = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "stable", "special",
+    };
+
     private readonly AppDbContext _db;
     private readonly ILogger<UpdatesController> _logger;
 
@@ -31,17 +41,19 @@ public class UpdatesController : ControllerBase
     }
 
     /// <summary>
-    /// GET /api/update/check?platform=android&abi=arm64-v8a&versionCode=10200
+    /// GET /api/update/check?platform=android&abi=arm64-v8a&versionCode=10200&channel=stable
     /// 返回 { hasUpdate, latestVersionCode, latestVersionName, minVersionCode, force,
-    ///        url, sha256, sizeBytes, changelog, publishedAt, abiMissing }
+    ///        url, sha256, sizeBytes, changelog, publishedAt, abiMissing, channel }
     /// force = minVersionCode &gt; 当前 versionCode（强制更新阈值判定，ADR 0017 D1）。
     /// 无当前 ABI 包时 abiMissing=true，客户端提示「暂不支持本设备」（任务书 A1）。
+    /// channel 缺省为 stable（旧客户端兼容）；客户端仅会收到本渠道的版本，签名不匹配由端侧兜底拦截。
     /// </summary>
     [HttpGet("check")]
     public async Task<IActionResult> Check(
         [FromQuery] string platform,
         [FromQuery] string abi,
-        [FromQuery] int versionCode)
+        [FromQuery] int versionCode,
+        [FromQuery] string? channel)
     {
         // 限频：120 次/小时/IP（防启动风暴与接口滥用；本机/回环不限）
         var clientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -55,15 +67,18 @@ public class UpdatesController : ControllerBase
             return BadRequest(new { error = "platform 暂仅支持 android（windows 预留中）" });
         if (string.IsNullOrWhiteSpace(abi) || !SupportedAbis.Contains(abi))
             return BadRequest(new { error = "abi 必须为 arm64-v8a / armeabi-v7a / x86_64" });
+        var channelKey = string.IsNullOrWhiteSpace(channel) ? "stable" : channel.Trim();
+        if (!SupportedChannels.Contains(channelKey))
+            return BadRequest(new { error = "channel 必须为 stable / special" });
         // 语义约定（docs/app-update-v1.md §1）：versionCode=0 表示「下载中心/无客户端上下文」，
         // 恒返回最新已发布版本（force 按 minVersionCode > 0 计算，页面不使用该字段）；
         // 客户端检查必须传真实 versionCode（>0），防降级判定依赖该值。
         if (versionCode < 0)
             return BadRequest(new { error = "versionCode 非法" });
 
-        // 取 platform=android 且已发布的最新版本（versionCode 最大，天然防降级）
+        // [TASK-UPDATE-CHANNEL] 仅在本渠道内取已发布的最新版本（versionCode 最大，天然防降级）
         var latest = await _db.AppUpdates.AsNoTracking()
-            .Where(u => u.Platform == "android" && u.Status == "published")
+            .Where(u => u.Platform == "android" && u.Status == "published" && u.Channel == channelKey)
             .OrderByDescending(u => u.VersionCode)
             .FirstOrDefaultAsync();
 
@@ -93,6 +108,7 @@ public class UpdatesController : ControllerBase
                 force = latest.MinVersionCode > versionCode,
                 abiMissing = true,
                 publishedAt = latest.PublishedAt,
+                channel = latest.Channel,
             });
         }
 
@@ -109,6 +125,7 @@ public class UpdatesController : ControllerBase
             sizeBytes = latest.SizeBytes,
             changelog = latest.Changelog,
             publishedAt = latest.PublishedAt,
+            channel = latest.Channel,
         });
     }
 

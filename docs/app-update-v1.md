@@ -14,6 +14,7 @@
 | platform | 是 | 固定 `android`（本期仅 android；其他值返回 400） |
 | abi | 是 | `arm64-v8a` / `armeabi-v7a` / `x86_64`，其他值返回 400 |
 | versionCode | 是 | 客户端当前版本码（下载中心传 0 = 恒返回最新已发布版本） |
+| channel | 否 | `stable`（正式签名线，缺省）/ `special`（特别版·testkey 签名线）；其他值返回 400。仅在该渠道内返回最新版本，**跨渠道永不互相推送**（防跨签名覆盖） |
 
 响应 200（JSON）：
 

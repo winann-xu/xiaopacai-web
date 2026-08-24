@@ -1227,7 +1227,7 @@ public class P2pMessageHandler
     }
 
     /// <summary>
-    /// update_available 消息体：{ updateId, versionCode, versionName, minVersionCode, publishedAt }
+    /// update_available 消息体：{ updateId, versionCode, versionName, minVersionCode, publishedAt, channel }
     /// </summary>
     public string BuildUpdateAvailableJson(AppUpdate update)
     {
@@ -1240,6 +1240,7 @@ public class P2pMessageHandler
                 ["version_code"] = update.VersionCode,
                 ["version_name"] = update.VersionName,
                 ["min_version_code"] = update.MinVersionCode,
+                ["channel"] = update.Channel,
                 ["published_at"] = update.PublishedAt.HasValue
                     ? new DateTimeOffset(update.PublishedAt.Value).ToUnixTimeSeconds()
                     : 0L,

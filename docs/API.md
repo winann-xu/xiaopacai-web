@@ -136,7 +136,7 @@
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |------|------|------|------|
-| GET | `/api/update/check?platform=android&abi={abi}&versionCode={vc}` | 公开（IP 限频 120/h） | 检查更新，返回清单+sha256+force |
+| GET | `/api/update/check?platform=android&abi={abi}&versionCode={vc}&channel={stable\|special}` | 公开（IP 限频 120/h） | 检查更新（按渠道隔离），返回清单+sha256+force+channel |
 | GET | `/api/admin/updates` | AdminOnly | 版本列表（含草稿） |
 | POST | `/api/admin/updates` | AdminOnly | 新建草稿（versionCode 防降级校验） |
 | POST | `/api/admin/updates/{id}/upload` | AdminOnly | 上传某 ABI APK（≤150MB，流式 SHA-256） |
