@@ -338,4 +338,59 @@ public class JwtServiceTests
         Assert.All(user1Tokens, t => Assert.True(t.IsRevoked));
         Assert.All(user2Tokens, t => Assert.False(t.IsRevoked));
     }
+
+    // ==================== 设备级 Token 集成测试 ====================
+
+    [Fact]
+    public void TryValidateDeviceToken_RealToken_SubMappedToNameIdentifier_ReturnsTrue()
+    {
+        var config = CreateConfig();
+        var service = new JwtService(config, CreateDb());
+
+        var (token, _) = service.GenerateDeviceToken("device-001");
+
+        Assert.True(service.TryValidateDeviceToken(token, "device-001", "device_api"));
+    }
+
+    [Fact]
+    public void TryValidateDeviceToken_RealToken_WrongDeviceId_ReturnsFalse()
+    {
+        var config = CreateConfig();
+        var service = new JwtService(config, CreateDb());
+
+        var (token, _) = service.GenerateDeviceToken("device-001");
+
+        Assert.False(service.TryValidateDeviceToken(token, "device-002", "device_api"));
+    }
+
+    [Fact]
+    public void TryValidateDeviceToken_RealToken_MissingScope_ReturnsFalse()
+    {
+        var config = CreateConfig();
+        var service = new JwtService(config, CreateDb());
+
+        var (token, _) = service.GenerateDeviceToken("device-001");
+
+        Assert.False(service.TryValidateDeviceToken(token, "device-001", "admin"));
+    }
+
+    [Fact]
+    public void TryValidateDeviceToken_GarbageToken_ReturnsFalse()
+    {
+        var config = CreateConfig();
+        var service = new JwtService(config, CreateDb());
+
+        Assert.False(service.TryValidateDeviceToken("not-a-jwt", "device-001", "device_api"));
+    }
+
+    [Fact]
+    public void TryValidateDeviceToken_UserToken_ReturnsFalse()
+    {
+        var config = CreateConfig();
+        var service = new JwtService(config, CreateDb());
+
+        var (accessToken, _, _, _) = service.GenerateTokens(42, "testuser", "parent");
+
+        Assert.False(service.TryValidateDeviceToken(accessToken, "42", "device_api"));
+    }
 }

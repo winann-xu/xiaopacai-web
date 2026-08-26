@@ -53,3 +53,6 @@ logs/
 # ========== 发布产物 ==========
 build/server/
 !build/.gitkeep
+server/wwwroot/
+server/wwwroot.bak-*/
+*.tar.gz

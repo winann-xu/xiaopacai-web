@@ -173,7 +173,7 @@ public class JwtService : IJwtService
         {
             new Claim(JwtRegisteredClaimNames.Sub, deviceId),
             new Claim(ClaimTypes.Role, "device"),
-            new Claim("scope", "diagnostics usage_report"),
+            new Claim("scope", "diagnostics usage_report device_api"),
             new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
         };
 
@@ -212,8 +212,9 @@ public class JwtService : IJwtService
                     ClockSkew = TimeSpan.FromMinutes(1),
                 }, out _);
 
-            // sub 必须与上报设备 ID 一致
-            if (principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value != expectedDeviceId)
+            var sub = principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value
+                ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (sub != expectedDeviceId)
                 return false;
 
             // role 必须是 device（拒绝用户 Token 冒充设备上报）

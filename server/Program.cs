@@ -196,6 +196,7 @@ builder.Services.AddAuthorization(opts =>
 {
     opts.AddPolicy("AdminOnly", policy => policy.RequireRole("admin"));
     opts.AddPolicy("ParentOrAdmin", policy => policy.RequireRole("admin", "parent"));
+    opts.AddPolicy("DeviceOnly", policy => policy.RequireRole("device"));
 });
 
 // ========== P2P 服务（P4 阶段） ==========
