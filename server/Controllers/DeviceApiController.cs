@@ -466,6 +466,55 @@ public class DeviceApiController : ControllerBase
         return UpgradeCheck();
     }
 
+    /// <summary>
+    /// [V2.0] 设备端拉取已发布公告（P2P 移除后的云端替代通道）。
+    /// 范围：status=published + 目标为全部/本设备 + 有效期内 + 归属本设备家长或管理员创建。
+    /// </summary>
+    [HttpGet("announcements")]
+    [Authorize]
+    public async Task<IActionResult> Announcements()
+    {
+        var deviceId = GetDeviceIdFromToken();
+        if (deviceId == null)
+            return Unauthorized(new { error = "无效的设备令牌" });
+
+        var device = await _db.Devices.FirstOrDefaultAsync(d => d.DeviceId == deviceId);
+        if (device == null)
+            return NotFound(new { error = "设备不存在" });
+
+        var ownerId = int.TryParse(device.OwnerUserId, out var oid) ? oid : 0;
+        var now = DateTime.UtcNow;
+
+        var list = await _db.Announcements
+            .Include(a => a.Creator)
+            .Where(a => a.Status == "published"
+                && (a.TargetDeviceId == null || a.TargetDeviceId == device.Id)
+                && (a.ValidFrom == null || a.ValidFrom <= now)
+                && (a.ValidUntil == null || a.ValidUntil > now)
+                && (a.CreatedBy == ownerId || a.Creator.Role == "admin"))
+            .OrderByDescending(a => a.PublishedAt)
+            .Select(a => new
+            {
+                id = a.Id,
+                title = a.Title,
+                content = a.Content,
+                priority = a.Priority,
+                version = a.Version,
+                publishedAt = a.PublishedAt != null
+                    ? new DateTimeOffset(a.PublishedAt.Value).ToUnixTimeSeconds() : (long?)null,
+                expiresAt = a.ValidUntil != null
+                    ? new DateTimeOffset(a.ValidUntil.Value).ToUnixTimeSeconds() : (long?)null,
+                acknowledgedAt = _db.AnnouncementDeliveries
+                    .Where(d => d.AnnouncementId == a.Id && d.DeviceId == device.Id)
+                    .Select(d => d.AcknowledgedAt != null
+                        ? new DateTimeOffset(d.AcknowledgedAt.Value).ToUnixTimeSeconds() : (long?)null)
+                    .FirstOrDefault(),
+            })
+            .ToListAsync();
+
+        return Ok(new { announcements = list });
+    }
+
     private string? GetDeviceIdFromToken()
     {
         var sub = User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value
