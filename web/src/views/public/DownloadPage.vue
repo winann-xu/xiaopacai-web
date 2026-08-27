@@ -2,7 +2,7 @@
   <div class="download-page">
     <header class="dl-header">
       <div class="dl-brand">
-        <span class="dl-logo">🐤</span>
+        <span class="dl-logo">🛡️</span>
         <span class="dl-title">小趴菜 · 下载中心</span>
       </div>
       <div class="dl-actions">
@@ -16,10 +16,11 @@
       <p class="dl-sub">小趴菜守护 · 家长监控客户端（Android 陆续上线更多平台）</p>
 
       <div class="dl-grid">
+        <!-- [V2.0] 每阵营只保留一个最新版本：Android 正式版（arm64-v8a） -->
         <el-card class="dl-card" shadow="hover" v-loading="loading">
           <div class="dl-icon">📱</div>
           <h3>Android 客户端</h3>
-          <p class="dl-desc">儿童守护 / 家长端二合一<br />Android 8.0 及以上</p>
+          <p class="dl-desc">儿童守护 / 家长端二合一<br />适配最新安卓系统（arm64-v8a）</p>
           <template v-if="stableLatest">
             <p class="dl-meta">
               最新版本 <b>v{{ stableLatest.versionName }}</b>
@@ -27,22 +28,45 @@
             </p>
             <p v-if="stableLatest.changelog" class="dl-changelog">{{ stableLatest.changelog }}</p>
             <el-button
-              v-for="abi in ABIS"
-              :key="abi"
-              :type="abi === 'arm64-v8a' ? 'primary' : ''"
+              type="primary"
               size="large"
               class="dl-btn"
-              :class="{ 'dl-btn-sub': abi !== 'arm64-v8a' }"
-              :disabled="!stableUrls[abi]"
-              @click="download(stableUrls[abi])"
+              :disabled="!stableUrls['arm64-v8a']"
+              @click="download(stableUrls['arm64-v8a'])"
             >
-              下载 APK（{{ abi }}{{ abi === 'arm64-v8a' ? ' · 推荐' : abi === 'x86_64' ? ' · 模拟器' : '' }}）
+              下载 APK（arm64-v8a · 推荐）
             </el-button>
-            <p class="dl-meta">按手机芯片选择；安装前客户端会自动校验 SHA-256</p>
+            <p class="dl-meta">安装前客户端会自动校验 SHA-256</p>
           </template>
           <template v-else-if="!loading">
             <p class="dl-meta">暂未发布新版本，请稍后再来</p>
           </template>
+        </el-card>
+
+        <!-- [V2.0] 特别版 = 独立阵营（限制机型专用），同样只保留 arm64-v8a -->
+        <el-card v-if="specialLatest" class="dl-card dl-card-special" shadow="hover">
+          <div class="dl-icon">🛡️</div>
+          <h3>特别版（限制机型专用）</h3>
+          <p class="dl-desc">
+            ColorOS 等限制第三方 Device Owner 的机型<br />testkey 签名 · 强管制模式可用
+          </p>
+          <p class="dl-meta">
+            最新版本 <b>v{{ specialLatest.versionName }}</b>
+          </p>
+          <p v-if="specialLatest.changelog" class="dl-changelog">{{ specialLatest.changelog }}</p>
+          <el-button
+            type="warning"
+            size="large"
+            class="dl-btn"
+            :disabled="!specialUrls['arm64-v8a']"
+            @click="download(specialUrls['arm64-v8a'])"
+          >
+            下载特别版（arm64-v8a）
+          </el-button>
+          <p class="dl-meta dl-warn">
+            特别版与正式版签名不同，两者不能互相覆盖安装；切换渠道需先卸载再装。
+            特别版后续更新只走特别版渠道，自动升级不会串到正式版。
+          </p>
         </el-card>
 
         <el-card class="dl-card dl-card-disabled" shadow="hover">
@@ -54,9 +78,9 @@
         </el-card>
 
         <el-card class="dl-card" shadow="hover">
-          <div class="dl-icon">🛠️</div>
+          <div class="dl-icon">🖥️</div>
           <h3>电脑一键授权脚本</h3>
-          <p class="dl-desc">孩子手机快速开通守护权限<br />Windows · 双击运行 · 约30秒</p>
+          <p class="dl-desc">孩子手机快速开通守护权限<br />Windows · 双击运行 · 约 30 秒</p>
           <p class="dl-meta">BAT · 使用方法见小趴菜家长端首页</p>
           <el-button type="success" size="large" class="dl-btn" @click="download('/downloads/xiaopacai-adb-grant.bat')">
             下载脚本
@@ -72,27 +96,40 @@
 </template>
 
 <script setup lang="ts">
+// 小趴菜 Web 3.0 — 下载中心（登录前后均可访问）
+// [V2.0] 每阵营只保留一个最新版本：Android 正式版与特别版各为独立阵营，
+// 均只展示 arm64-v8a（适配最新安卓系统）单个下载入口；其余 ABI 不再分发。
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { updateApi } from '@/api'
 
-const ABIS = ['arm64-v8a', 'armeabi-v7a', 'x86_64'] as const
+const ABIS = ['arm64-v8a'] as const
 
 const router = useRouter()
 const loggedIn = ref(false)
 const loading = ref(false)
 interface ChannelInfo { versionName: string; minVersionCode: number; changelog: string }
 const stableLatest = ref<ChannelInfo | null>(null)
+const specialLatest = ref<ChannelInfo | null>(null)
 const stableUrls = ref<Record<string, string>>({})
+const specialUrls = ref<Record<string, string>>({})
 
 onMounted(async () => {
+  // [SEC-K5] 登录态由 httpOnly Cookie 的 logged_in 标记判断（token 不再存 localStorage）
   loggedIn.value = document.cookie.split(';').some(c => c.trim().startsWith('logged_in='))
   loading.value = true
   try {
-    const stable = await loadChannel('stable')
+    // 正式版与特别版各自独立查询（versionCode=0 → 恒返回该渠道最新已发布版本）
+    const [stable, special] = await Promise.all([
+      loadChannel('stable'),
+      loadChannel('special'),
+    ])
     stableLatest.value = stable.latest
     stableUrls.value = stable.urls
+    specialLatest.value = special.latest
+    specialUrls.value = special.urls
   } catch {
+    // 检查失败保持「未发布」呈现，不阻塞页面
   } finally {
     loading.value = false
   }
@@ -134,6 +171,7 @@ function go(path: string) {
 }
 
 function download(url: string) {
+  // 走浏览器直接下载（静态文件由后端托管）
   window.open(url, '_blank')
 }
 </script>
@@ -198,6 +236,15 @@ function download(url: string) {
   border-radius: 12px;
 }
 
+.dl-card-special {
+  border: 1px solid var(--el-color-warning);
+}
+
+.dl-warn {
+  color: var(--el-color-warning);
+  margin-top: 8px;
+}
+
 .dl-card-disabled {
   opacity: 0.72;
 }
@@ -245,11 +292,6 @@ function download(url: string) {
   width: 100%;
   margin-bottom: 8px;
 }
-.dl-btn-sub {
-  background: var(--el-fill-color-light);
-  border-color: var(--el-border-color);
-  color: var(--el-text-color-regular);
-}
 
 .dl-footer {
   margin-top: 40px;
@@ -257,6 +299,7 @@ function download(url: string) {
   color: var(--el-text-color-placeholder);
 }
 
+/* 移动端适配：单列卡片、缩小标题与边距、按钮触控区 ≥ 44px */
 @media (max-width: 768px) {
   .dl-header {
     padding: 12px 16px;
