@@ -135,3 +135,13 @@ public class DeviceEmergencyReleaseRequest
 
     public int? DurationMinutes { get; set; }
 }
+
+/// <summary>
+/// [V2.0.5] 儿童端扫码/输入配对码绑定请求
+/// </summary>
+public class DeviceBindWithCodeRequest
+{
+    [Required]
+    [MaxLength(16)]
+    public string PairCode { get; set; } = string.Empty;
+}

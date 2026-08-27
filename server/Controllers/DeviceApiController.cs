@@ -37,6 +37,13 @@ public class DeviceApiController : ControllerBase
         var existing = await _db.Devices.FirstOrDefaultAsync(d => d.DeviceId == request.DeviceId);
         if (existing != null)
         {
+            // [V2.0.5] 未绑定设备允许匿名再注册拿令牌（绑定流程：先注册→再绑定；已归属设备必须走既有令牌）
+            if (string.IsNullOrEmpty(existing.OwnerUserId) && existing.PairStatus != "paired")
+            {
+                var (unboundToken, _) = _jwt.GenerateDeviceToken(existing.DeviceId);
+                return Ok(new { token = unboundToken });
+            }
+
             if (string.IsNullOrWhiteSpace(request.ExistingToken))
                 return Conflict(new { error = "设备已注册，需提供既有令牌方可重新获取", code = "device_already_registered" });
 
@@ -513,6 +520,61 @@ public class DeviceApiController : ControllerBase
             .ToListAsync();
 
         return Ok(new { announcements = list });
+    }
+
+    /// <summary>
+    /// [V2.0.5] 儿童端扫码/输入配对码绑定：设备令牌 + 家长在 Web 生成的配对码 → 绑定到该家长账号。
+    /// P2P 移除后，原「扫码走中继」改为 HTTPS 直连绑定；配对码 5 分钟有效。
+    /// </summary>
+    [HttpPost("bind-with-code")]
+    [Authorize]
+    public async Task<IActionResult> BindWithCode([FromBody] DeviceBindWithCodeRequest request)
+    {
+        var deviceId = GetDeviceIdFromToken();
+        if (deviceId == null)
+            return Unauthorized(new { error = "无效的设备令牌" });
+
+        if (string.IsNullOrWhiteSpace(request.PairCode))
+            return BadRequest(new { error = "配对码必填" });
+
+        var pairingInfo = await _db.PairingInfos
+            .Where(p => p.PairCode == request.PairCode.Trim() && p.PairStatus == "pending")
+            .OrderByDescending(p => p.CreatedAt)
+            .FirstOrDefaultAsync();
+
+        if (pairingInfo == null)
+            return BadRequest(new { error = "配对码无效" });
+
+        if (pairingInfo.ExpiresAt < DateTime.UtcNow)
+        {
+            pairingInfo.PairStatus = "expired";
+            await _db.SaveChangesAsync();
+            return BadRequest(new { error = "配对码已过期，请在 Web 端重新生成" });
+        }
+
+        if (string.IsNullOrEmpty(pairingInfo.OwnerUserId))
+            return StatusCode(403, new { error = "配对码无归属账号" });
+
+        var device = await _db.Devices.FirstOrDefaultAsync(d => d.DeviceId == deviceId);
+        if (device == null)
+            return NotFound(new { error = "设备不存在" });
+
+        // [TASK-REBIND-GATE] 换绑门禁：已绑定其它账号必须先在 Web 端解绑
+        if (!string.IsNullOrEmpty(device.OwnerUserId) && device.OwnerUserId != pairingInfo.OwnerUserId)
+            return StatusCode(403, new { error = "该设备已绑定其它账号，请在 Web 端解绑后再绑定", code = "device_owned_by_other" });
+
+        device.OwnerUserId = pairingInfo.OwnerUserId;
+        device.PairStatus = "paired";
+        pairingInfo.PairStatus = "used";
+        await _db.SaveChangesAsync();
+
+        var ownerEmail = await _db.Users
+            .Where(u => u.Id.ToString() == pairingInfo.OwnerUserId)
+            .Select(u => u.Email)
+            .FirstOrDefaultAsync();
+
+        _logger.LogInformation("[DeviceApi] 扫码/配对码绑定: {DeviceId} -> owner={Owner}", device.DeviceId, pairingInfo.OwnerUserId);
+        return Ok(new { success = true, ownerEmail = ownerEmail ?? "" });
     }
 
     private string? GetDeviceIdFromToken()
