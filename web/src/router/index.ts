@@ -18,7 +18,6 @@ const SystemConfigPage = () => import('@/views/admin/SystemConfigPage.vue')
 const MailConfigPage = () => import('@/views/admin/MailConfigPage.vue')
 const DataManagementPage = () => import('@/views/admin/DataManagementPage.vue')
 const DiagnosticsView = () => import('@/views/admin/DiagnosticsView.vue')
-const RelaySessionsView = () => import('@/views/admin/RelaySessionsView.vue')
 const UpdatesPage = () => import('@/views/admin/UpdatesPage.vue')
 const LogsPage = () => import('@/views/logs/LogsPage.vue')
 const NotFoundPage = () => import('@/views/auth/NotFoundPage.vue')
@@ -45,7 +44,6 @@ const adminRoutes: RouteRecordRaw[] = [
   { path: 'admin/mail-config', name: 'adminMailConfig', component: MailConfigPage, meta: { title: '邮件设置', icon: 'Message', role: 'admin' } },
   { path: 'admin/data', name: 'adminData', component: DataManagementPage, meta: { title: '数据管理', icon: 'FolderOpened', role: 'admin' } },
   { path: 'admin/diagnostics', name: 'adminDiagnostics', component: DiagnosticsView, meta: { title: '故障诊断', icon: 'FirstAidKit', role: 'admin' } },
-  { path: 'admin/relay-sessions', name: 'adminRelaySessions', component: RelaySessionsView, meta: { title: '云端中继', icon: 'Connection', role: 'admin' } },
   // [TASK-APP-UPDATE-V1] App 更新管理
   { path: 'admin/updates', name: 'adminUpdates', component: UpdatesPage, meta: { title: 'App 更新', icon: 'UploadFilled', role: 'admin' } },
   // [TASK-MILESTONE-V3] 需求 14：账号日志（admin 全部账号，可按账号筛选）

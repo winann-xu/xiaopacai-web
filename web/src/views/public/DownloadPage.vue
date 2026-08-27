@@ -13,7 +13,7 @@
 
     <main class="dl-main">
       <h1 class="dl-heading">下载最新客户端</h1>
-      <p class="dl-sub">小趴菜守护 · 家长监控客户端（Android / Windows / iOS 陆续上线）</p>
+      <p class="dl-sub">小趴菜守护 · 家长监控客户端（Android 陆续上线更多平台）</p>
 
       <div class="dl-grid">
         <el-card class="dl-card" shadow="hover" v-loading="loading">
@@ -45,41 +45,6 @@
           </template>
         </el-card>
 
-        <el-card v-if="specialLatest" class="dl-card dl-card-special" shadow="hover">
-          <div class="dl-icon">🛡️</div>
-          <h3>特别版（限制机型专用）</h3>
-          <p class="dl-desc">
-            ColorOS 等限制第三方 Device Owner 的机型<br />testkey 签名 · 强管制模式可用
-          </p>
-          <p class="dl-meta">
-            最新版本 <b>v{{ specialLatest.versionName }}</b>
-          </p>
-          <p v-if="specialLatest.changelog" class="dl-changelog">{{ specialLatest.changelog }}</p>
-          <el-button
-            v-for="abi in ABIS"
-            :key="abi"
-            type="warning"
-            size="large"
-            class="dl-btn"
-            :disabled="!specialUrls[abi]"
-            @click="download(specialUrls[abi])"
-          >
-            下载特别版（{{ abi }}）
-          </el-button>
-          <p class="dl-meta dl-warn">
-            特别版与正式版签名不同，两者不能互相覆盖安装；切换渠道需先卸载再装。
-            特别版后续更新只走特别版渠道，自动升级不会串到正式版。
-          </p>
-        </el-card>
-
-        <el-card class="dl-card dl-card-disabled" shadow="hover">
-          <div class="dl-icon">💻</div>
-          <h3>Windows 桌面端</h3>
-          <p class="dl-desc">家长端桌面客户端<br />即将上线，敬请期待</p>
-          <p class="dl-meta">期待上线</p>
-          <el-button size="large" class="dl-btn" disabled>期待上线</el-button>
-        </el-card>
-
         <el-card class="dl-card dl-card-disabled" shadow="hover">
           <div class="dl-icon">🍎</div>
           <h3>iOS 客户端</h3>
@@ -100,16 +65,13 @@
       </div>
 
       <footer class="dl-footer">
-        <span>小趴菜 · 开源免费 · 本地优先 · 数据不上云</span>
+        <span>小趴菜 · 开源免费 · 安全守护</span>
       </footer>
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
-// 小趴菜 Web 3.0 — 下载中心（登录前后均可访问）
-// [TASK-APP-UPDATE-V1] B2：由静态页升级为「更新清单驱动」——versionCode=0 查询最新已发布版本，
-// 展示版本号/更新说明/各 ABI 下载入口；清单为空时明确提示未发布。
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { updateApi } from '@/api'
@@ -121,26 +83,16 @@ const loggedIn = ref(false)
 const loading = ref(false)
 interface ChannelInfo { versionName: string; minVersionCode: number; changelog: string }
 const stableLatest = ref<ChannelInfo | null>(null)
-const specialLatest = ref<ChannelInfo | null>(null)
 const stableUrls = ref<Record<string, string>>({})
-const specialUrls = ref<Record<string, string>>({})
 
 onMounted(async () => {
-  // [SEC-K5] 登录态由 httpOnly Cookie 的 logged_in 标记判断（token 不再存 localStorage）
   loggedIn.value = document.cookie.split(';').some(c => c.trim().startsWith('logged_in='))
   loading.value = true
   try {
-    // [TASK-UPDATE-CHANNEL] 正式版与特别版各自独立查询（versionCode=0 → 恒返回该渠道最新已发布版本）
-    const [stable, special] = await Promise.all([
-      loadChannel('stable'),
-      loadChannel('special'),
-    ])
+    const stable = await loadChannel('stable')
     stableLatest.value = stable.latest
     stableUrls.value = stable.urls
-    specialLatest.value = special.latest
-    specialUrls.value = special.urls
   } catch {
-    // 检查失败保持「未发布」呈现，不阻塞页面
   } finally {
     loading.value = false
   }
@@ -182,7 +134,6 @@ function go(path: string) {
 }
 
 function download(url: string) {
-  // 走浏览器直接下载（静态文件由后端托管）
   window.open(url, '_blank')
 }
 </script>
@@ -247,16 +198,6 @@ function download(url: string) {
   border-radius: 12px;
 }
 
-.dl-card-special {
-  border: 1px solid var(--el-color-warning);
-}
-
-.dl-warn {
-  color: var(--el-color-warning);
-  margin-top: 8px;
-}
-
-/* 未上线卡片：整体降饱和，明确"期待上线"状态 */
 .dl-card-disabled {
   opacity: 0.72;
 }
@@ -316,7 +257,6 @@ function download(url: string) {
   color: var(--el-text-color-placeholder);
 }
 
-/* 移动端适配：单列卡片、缩小标题与边距、按钮触控区 ≥44px */
 @media (max-width: 768px) {
   .dl-header {
     padding: 12px 16px;

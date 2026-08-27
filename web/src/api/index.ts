@@ -190,12 +190,6 @@ export const adminDiagnosticsApi = {
     apiClient.get('/admin/diagnostics/export', { params, responseType: 'blob' }),
 }
 
-// ==================== 管理端：云端中继会话（OPT12 需求 3） ====================
-export const relayApi = {
-  // 中继会话列表（status/role 筛选）
-  sessions: (params?: any) => apiClient.get('/relay/sessions', { params }),
-}
-
 // ==================== 运行日志（TASK-MILESTONE-V3 需求 14） ====================
 export const logsApi = {
   // 列表：普通家长仅本账号；admin 全部 + accountId/level/from/to/limit/offset 筛选

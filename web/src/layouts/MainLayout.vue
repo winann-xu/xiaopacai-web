@@ -10,7 +10,7 @@ import { useIsMobile } from '@/composables/useIsMobile'
 import { APP_VERSION } from '@/config/version'
 import {
   Odometer, Monitor, Setting, Notification, DataAnalysis, Tools,
-  UserFilled, DocumentChecked, SetUp, FolderOpened, FirstAidKit, Connection,
+  UserFilled, DocumentChecked, SetUp, FolderOpened, FirstAidKit,
   Message, Expand, Fold, Moon, Sunny, SwitchButton, MoreFilled, Download,
   Document, UploadFilled,
 } from '@element-plus/icons-vue'
@@ -52,7 +52,6 @@ const adminMenuItems: MenuItem[] = [
   { path: '/admin/mail-config', title: '邮件设置', icon: Message, role: 'admin' },
   { path: '/admin/data', title: '数据管理', icon: FolderOpened, role: 'admin' },
   { path: '/admin/diagnostics', title: '故障诊断', icon: FirstAidKit, role: 'admin' },
-  { path: '/admin/relay-sessions', title: '云端中继', icon: Connection, role: 'admin' },
   // [TASK-MILESTONE-V3] 需求 14：账号日志（admin 全部账号，可按账号筛选）
   { path: '/admin/logs', title: '账号日志', icon: Document, role: 'admin' },
 ]
