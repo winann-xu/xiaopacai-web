@@ -17,6 +17,19 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
+// [V2.0.1-FIX] 登录后安全跳转：redirect 指向已删除/不存在的路由时回退仪表盘，
+// 避免登录成功却落到 404 页（如旧版 /admin/relay-sessions 书签）。
+function safeRedirect(fallback = '/dashboard') {
+  const target = (route.query.redirect as string) || fallback
+  try {
+    const resolved = router.resolve(target)
+    const hasRoute = resolved.matched.length > 0 && resolved.name !== 'notFound'
+    return hasRoute ? target : fallback
+  } catch {
+    return fallback
+  }
+}
+
 // ==================== 密码登录（仅邮箱） ====================
 const loginForm = reactive({
   username: '', // [TASK-ACCOUNT-V1] 值即邮箱（服务端仅接受邮箱）
@@ -49,7 +62,7 @@ async function handleLogin() {
     // 保存角色到 localStorage（路由守卫用）
     localStorage.setItem('user_role', auth.user?.role || 'parent')
     ElMessage.success('登录成功')
-    const redirect = (route.query.redirect as string) || '/dashboard'
+    const redirect = safeRedirect()
     router.push(redirect)
   } catch (e: any) {
     const msg = e.response?.data?.error || e.response?.data?.message || '登录失败，请检查邮箱和密码'
@@ -110,7 +123,7 @@ async function handleRegister() {
     await auth.loginWithAuthResponse(res.data)
     localStorage.setItem('user_role', auth.user?.role || 'parent')
     ElMessage.success('注册成功，已自动登录')
-    const redirect = (route.query.redirect as string) || '/dashboard'
+    const redirect = safeRedirect()
     router.push(redirect)
   } catch (e: any) {
     const msg = e.response?.data?.error || '注册失败，请稍后重试'
@@ -159,7 +172,7 @@ async function handleCodeLogin() {
     await auth.loginWithAuthResponse(res.data)
     localStorage.setItem('user_role', auth.user?.role || 'parent')
     ElMessage.success('登录成功')
-    const redirect = (route.query.redirect as string) || '/dashboard'
+    const redirect = safeRedirect()
     router.push(redirect)
   } catch (e: any) {
     const msg = e.response?.data?.error || '验证码登录失败'
@@ -306,7 +319,7 @@ async function pollQrLogin() {
         await auth.loginWithAuthResponse(data.auth)
         localStorage.setItem('user_role', auth.user?.role || 'parent')
         ElMessage.success('扫码登录成功')
-        const redirect = (route.query.redirect as string) || '/dashboard'
+        const redirect = safeRedirect()
         router.push(redirect)
       } else {
         // 异常兜底：凭证缺失（如账号被停用），引导刷新重试
