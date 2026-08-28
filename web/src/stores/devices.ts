@@ -66,6 +66,13 @@ export const useDeviceStore = defineStore('devices', () => {
     deviceCount.value = Math.max(0, deviceCount.value - 1)
   }
 
+  // [TASK-WEB-POLISH] 重命名/自定义设备名称
+  async function renameDevice(deviceId: number, name: string) {
+    await deviceApi.rename(deviceId, name)
+    const device = devices.value.find(d => d.id === deviceId)
+    if (device) device.name = name
+  }
+
   function updateDeviceStatus(deviceId: number, status: Device['status']) {
     const device = devices.value.find(d => d.id === deviceId)
     if (device) device.status = status
@@ -84,6 +91,6 @@ export const useDeviceStore = defineStore('devices', () => {
   return {
     devices, loading, error, lastRefreshAt, deviceCount,
     onlineCount, totalCount, offlineDevices,
-    fetchDevices, unpairDevice, updateDeviceStatus, applyResetLocally,
+    fetchDevices, unpairDevice, renameDevice, updateDeviceStatus, applyResetLocally,
   }
 })

@@ -12,6 +12,8 @@ export interface Announcement {
   validUntil: string
   createdAt: string
   publishedAt?: string
+  // [TASK-WEB-POLISH] 创建账号（管理员区分公告来源）
+  creatorAccount?: string | null
 }
 
 export const useAnnouncementStore = defineStore('announcements', () => {

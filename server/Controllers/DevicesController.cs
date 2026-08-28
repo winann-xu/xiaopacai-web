@@ -179,6 +179,36 @@ public class DevicesController : ControllerBase
     }
 
     /// <summary>
+    /// PUT /api/devices/{id}/name — 重命名/自定义设备名称（家长区分多台设备）
+    /// [SEC-K2] 家长仅可重命名自己绑定的设备，管理员可重命名任意设备。
+    /// </summary>
+    [HttpPut("{id:int}/name")]
+    public async Task<IActionResult> Rename(int id, [FromBody] DeviceRenameRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+            return BadRequest(new { error = "设备名称不能为空" });
+        var name = request.Name.Trim();
+        if (name.Length > 64)
+            return BadRequest(new { error = "设备名称过长（最多 64 字）" });
+
+        var (access, device) = await DeviceAccess.CheckAsync(_db, id, User);
+        if (access == DeviceAccessResult.NotFound)
+            return NotFound(new { error = "设备不存在" });
+        if (access == DeviceAccessResult.Forbidden)
+            return StatusCode(403, new { error = "无权访问该设备" });
+
+        var oldName = device!.DeviceName;
+        device.DeviceName = name;
+        device.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        await AuditAsync("device.rename", "Device", device.Id,
+            $"{{\"deviceId\":\"{device.DeviceId}\",\"old\":\"{oldName}\",\"new\":\"{name}\"}}");
+
+        return Ok(new { id = device.Id, name = device.DeviceName, message = "设备名称已更新" });
+    }
+
+    /// <summary>
     /// DELETE /api/devices/{id} — 解绑设备
     /// [TASK-ACCOUNT-V1] A5：必须携带 X-Action-Token（POST /api/auth/verify-password 签发，
     /// 5 分钟单次有效、绑定 userId）；无/过期/跨账号一律 401。
@@ -520,4 +550,12 @@ public class ManualPairRequest
     [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? IpAddress { get; set; }
     [System.ComponentModel.DataAnnotations.MaxLength(64)] public string? DeviceName { get; set; }
     [System.ComponentModel.DataAnnotations.MaxLength(32)] public string? Platform { get; set; }
+}
+
+/// <summary>
+/// 设备重命名请求
+/// </summary>
+public class DeviceRenameRequest
+{
+    [System.ComponentModel.DataAnnotations.MaxLength(64)] public string Name { get; set; } = string.Empty;
 }

@@ -77,7 +77,10 @@ const filteredDevices = computed(() => {
   if (!searchText.value) return deviceStore.devices
   const q = searchText.value.toLowerCase()
   return deviceStore.devices.filter(d =>
-    d.name.toLowerCase().includes(q) || d.deviceId.toLowerCase().includes(q) || d.ipAddress.includes(q))
+    d.name.toLowerCase().includes(q) ||
+    d.deviceId.toLowerCase().includes(q) ||
+    (d.ipAddress || '').toLowerCase().includes(q) ||
+    (d.ownerAccount || '').toLowerCase().includes(q))
 })
 
 onMounted(() => {
@@ -202,6 +205,27 @@ async function handleResetLimit(device: Device) {
   }
 }
 
+// [TASK-WEB-POLISH] 重命名/自定义设备名称（家长区分多台设备）
+async function handleRename(device: Device) {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `为设备「${device.name}」输入新的名称`,
+      '重命名设备',
+      {
+        inputValue: device.name,
+        inputPattern: /\S+/,
+        inputErrorMessage: '名称不能为空',
+        confirmButtonText: '保存',
+        cancelButtonText: '取消',
+      })
+    await deviceStore.renameDevice(device.id, value)
+    ElMessage.success('已重命名')
+  } catch (e: any) {
+    if (e === 'cancel' || e === 'close') return
+    ElMessage.error(e.response?.data?.error || '重命名失败')
+  }
+}
+
 function statusTagType(s: string) { return s === 'online' ? 'success' : s === 'reconnecting' ? 'warning' : 'info' }
 function statusText(s: string) { return s === 'online' ? '在线' : s === 'reconnecting' ? '重连中' : '离线' }
 function fmtTime(iso?: string | null) { return iso ? new Date(iso).toLocaleString('zh-CN') : '—' }
@@ -309,6 +333,7 @@ function reasonLabel(r?: string | null) { return r ? (REASON_LABELS[r] || r) : '
         </div>
         <div class="card-actions">
           <el-button size="small" text type="primary" @click.stop="showDetail(device)">详情</el-button>
+          <el-button size="small" text @click.stop="handleRename(device)">重命名</el-button>
           <el-button size="small" text type="warning" :loading="resettingId === device.id"
             @click.stop="handleResetLimit(device)">重置限额</el-button>
           <el-button size="small" text type="danger" @click.stop="handleUnpair(device)">解绑</el-button>

@@ -49,6 +49,7 @@ public class AnnouncementsController : ControllerBase
         }
 
         var items = await query
+            .Include(a => a.Creator)
             .OrderByDescending(a => a.CreatedAt)
             .Take(100)
             .ToListAsync();
@@ -366,6 +367,8 @@ public class AnnouncementsController : ControllerBase
             // [TASK-PRELAUNCH-P3] 去重字段透出（发布代数/内容哈希）
             version = a.Version,
             contentHash = a.ContentHash,
+            // [TASK-WEB-POLISH] 创建账号（管理员在后台区分公告来源；普通家长恒为本人）
+            creatorAccount = a.Creator?.Username,
         };
     }
 

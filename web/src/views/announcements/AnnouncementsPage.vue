@@ -5,7 +5,7 @@ import { useAnnouncementStore, type Announcement } from '@/stores/announcements'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { announcementApi } from '@/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Edit, Delete, Promotion, Remove } from '@element-plus/icons-vue'
+import { Plus, Edit, Delete, Promotion, Remove, Search } from '@element-plus/icons-vue'
 
 const announcementStore = useAnnouncementStore()
 const isMobile = useIsMobile()
@@ -13,6 +13,8 @@ const showEditor = ref(false)
 const editingId = ref<number | null>(null)
 const editForm = ref({ title: '', content: '', priority: 'normal' as 'normal'|'important'|'urgent', validUntil: '' })
 const filterStatus = ref<string>('all')
+const filterPriority = ref<string>('all')
+const searchText = ref('')
 
 // [TASK-PRELAUNCH-P3] 送达与回执：按公告查看每设备推送/显示/确认时间（见 docs/adr/0004）
 interface DeliveryRow {
@@ -39,8 +41,19 @@ const fmtTime = (t: string | null) => t ? new Date(t).toLocaleString('zh-CN', { 
 const ackTag = (t: string | null) => t ? 'success' : 'info'
 const ackText = (t: string | null) => t ? '已确认' : '未确认'
 
-const filteredAnnouncements = computed(() =>
-  filterStatus.value === 'all' ? announcementStore.announcements : announcementStore.announcements.filter(a => a.status === filterStatus.value))
+const filteredAnnouncements = computed(() => {
+  let list = announcementStore.announcements
+  if (filterStatus.value !== 'all') list = list.filter(a => a.status === filterStatus.value)
+  if (filterPriority.value !== 'all') list = list.filter(a => a.priority === filterPriority.value)
+  const q = searchText.value.trim().toLowerCase()
+  if (q) {
+    list = list.filter(a =>
+      a.title.toLowerCase().includes(q) ||
+      a.content.toLowerCase().includes(q) ||
+      (a.creatorAccount || '').toLowerCase().includes(q))
+  }
+  return list
+})
 
 onMounted(async () => {
   try { await announcementStore.fetchAnnouncements() }
@@ -88,9 +101,14 @@ function sText(s: string) { return s==='published'?'已发布':s==='draft'?'草�
     <div class="page-header">
       <h2 class="page-title">公告管理</h2>
       <div class="page-actions">
+        <el-input v-model="searchText" placeholder="搜索标题/内容/账号" :prefix-icon="Search" clearable class="ann-search" />
         <el-select v-model="filterStatus" style="width:100px" size="small">
           <el-option label="全部" value="all"/><el-option label="已发布" value="published"/>
           <el-option label="草稿" value="draft"/><el-option label="已撤回" value="revoked"/>
+        </el-select>
+        <el-select v-model="filterPriority" style="width:100px" size="small">
+          <el-option label="全部等级" value="all"/><el-option label="普通" value="normal"/>
+          <el-option label="重要" value="important"/><el-option label="紧急" value="urgent"/>
         </el-select>
         <el-button type="primary" :icon="Plus" @click="openCreate">新建公告</el-button>
       </div>
@@ -108,6 +126,7 @@ function sText(s: string) { return s==='published'?'已发布':s==='draft'?'草�
           </div>
           <div class="ann-meta">
             <span>创建：{{ new Date(ann.createdAt).toLocaleString('zh-CN') }}</span>
+            <span v-if="ann.creatorAccount"> · 账号：{{ ann.creatorAccount }}</span>
             <span v-if="ann.publishedAt"> · 发布：{{ new Date(ann.publishedAt).toLocaleString('zh-CN') }}</span>
             <span> · 有效期至：{{ new Date(ann.validUntil).toLocaleString('zh-CN') }}</span>
           </div>
@@ -203,6 +222,7 @@ function sText(s: string) { return s==='published'?'已发布':s==='draft'?'草�
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
 .page-title { font-size: 22px; font-weight: 600; margin: 0; }
 .page-actions { display: flex; gap: 8px; align-items: center; }
+.ann-search { width: 220px; }
 .ann-list { display: flex; flex-direction: column; gap: 14px; }
 .ann-card { transition: transform .2s; }
 .ann-card:hover { transform: translateY(-1px); }
@@ -225,6 +245,7 @@ function sText(s: string) { return s==='published'?'已发布':s==='draft'?'草�
 @media (max-width: 768px) {
   .page-header { flex-direction: column; align-items: stretch; }
   .page-actions { display: flex; flex-wrap: wrap; }
+  .ann-search { width: 100%; }
   .page-actions .el-button { min-height: 44px; }
   .ann-title-row { flex-wrap: wrap; }
   .ann-meta { display: flex; flex-direction: column; gap: 2px; }

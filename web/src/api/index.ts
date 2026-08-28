@@ -110,6 +110,9 @@ export const deviceApi = {
   // [TASK-ACCOUNT-V1] 解绑需携带密码二次验证签发的 X-Action-Token
   unpair: (id: number, actionToken: string) =>
     apiClient.delete(`/devices/${id}`, { headers: { 'X-Action-Token': actionToken } }),
+  // [TASK-WEB-POLISH] 重命名/自定义设备名称
+  rename: (id: number, name: string) =>
+    apiClient.put(`/devices/${id}/name`, { name }),
   generatePairingCode: () => apiClient.post('/devices/pairing-code'),
   pair: (code: string, ip: string) =>
     apiClient.post('/devices/pair', { pairingCode: code, ipAddress: ip }),
