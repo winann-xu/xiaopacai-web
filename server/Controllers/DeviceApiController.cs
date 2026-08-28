@@ -225,7 +225,30 @@ public class DeviceApiController : ControllerBase
             _logger.LogWarning("[DeviceApi] 设备 {DeviceId} 紧急模式激活中", deviceId);
         }
 
-        return Ok(new { success = true, commands });
+        // [方案二] 心跳捎带最新版本号：策略版本 + 公告集签名。
+        // 客户端每 60 秒心跳，仅当版本变化时才全量拉取策略/公告，降低下行流量。
+        var policyVersion = await _db.Policies
+            .Where(p => p.DeviceId == device.Id)
+            .Select(p => (int?)p.Version)
+            .FirstOrDefaultAsync() ?? 0;
+
+        var ownerId = int.TryParse(device.OwnerUserId, out var oid) ? oid : 0;
+        var now = DateTime.UtcNow;
+        var announcementItems = await _db.Announcements
+            .Include(a => a.Creator)
+            .Where(a => a.Status == "published"
+                && (a.TargetDeviceId == null || a.TargetDeviceId == device.Id)
+                && (a.ValidFrom == null || a.ValidFrom <= now)
+                && (a.ValidUntil == null || a.ValidUntil > now)
+                && (a.CreatedBy == ownerId || a.Creator.Role == "admin"))
+            .OrderBy(a => a.Id)
+            .Select(a => new { a.Id, a.Version })
+            .ToListAsync();
+
+        var announcementSignature = string.Join(",",
+            announcementItems.Select(a => $"{a.Id}:{a.Version}"));
+
+        return Ok(new { success = true, commands, policyVersion, announcementSignature });
     }
 
     [HttpGet("emergency-status")]

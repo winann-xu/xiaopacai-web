@@ -192,6 +192,44 @@ public class DeviceApiControllerTests
         Assert.DoesNotContain("pairCode", s, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ===== Heartbeat (版本号条件拉取) =====
+
+    [Fact]
+    public async Task Heartbeat_ReturnsPolicyVersionAndAnnouncementSignature()
+    {
+        var db = CreateDb();
+        db.Users.Add(new User
+        {
+            Id = 10,
+            Username = "owner@x.com",
+            PasswordHash = "h",
+            PasswordSalt = "s",
+            Role = "parent",
+            IsActive = true,
+        });
+        CreateDevice(db, "dev-001", ownerUserId: 10);
+        db.Announcements.Add(new Announcement
+        {
+            Id = 100,
+            Title = "测试公告",
+            Content = "内容",
+            Priority = "normal",
+            Status = "published",
+            Version = 2,
+            CreatedBy = 10,
+            PublishedAt = DateTime.UtcNow,
+        });
+        db.SaveChanges();
+
+        var c = CreateController(db);
+        SetDeviceClaims(c, "dev-001");
+
+        var result = await c.Heartbeat(new DeviceHeartbeatRequest { DeviceId = "dev-001" });
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.True(json.Contains("\"policyVersion\":1") && json.Contains("\"announcementSignature\":\"100:2\""), json);
+    }
+
     // ===== EmergencyRelease =====
 
     [Fact]
