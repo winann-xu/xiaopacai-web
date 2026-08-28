@@ -66,15 +66,11 @@ public class DeviceApiController : ControllerBase
             IsActive = true,
         };
 
+        // [TASK-V208-UNBIND-FIX] 匿名注册不再创建默认策略：
+        // 策略只对已绑定设备有意义。此前注册即建 120 分钟策略，
+        // 导致 Web 解绑后客户端匿名重注册会“自动下发”默认策略并继续管控。
+        // 默认策略改在绑定成功时创建（BindWithCode / PairingController.VerifyPairCode）。
         _db.Devices.Add(device);
-        await _db.SaveChangesAsync();
-
-        _db.Policies.Add(new Policy
-        {
-            DeviceId = device.Id,
-            DailyLimitMinutes = 120,
-            OvertimeAction = "full_lock",
-        });
         await _db.SaveChangesAsync();
 
         var (token, _) = _jwt.GenerateDeviceToken(device.DeviceId);
@@ -98,6 +94,12 @@ public class DeviceApiController : ControllerBase
 
         if (device == null)
             return NotFound(new { error = "设备不存在" });
+
+        // [TASK-V208-UNBIND-FIX] 未绑定（无归属）设备不返回任何策略：
+        // 客户端收到空策略数组会清空本地 policy_cache，解绑后管控随即失效，
+        // 避免“解绑后策略仍下发/生效”。绑定成功后才可拉取策略。
+        if (string.IsNullOrEmpty(device.OwnerUserId))
+            return Ok(new { policies = Array.Empty<object>() });
 
         var policy = device.Policy;
         if (policy == null)
@@ -203,50 +205,57 @@ public class DeviceApiController : ControllerBase
         await _db.SaveChangesAsync();
 
         var commands = new List<object>();
+        var policyVersion = 0;
+        var announcementSignature = "";
 
-        if (device.PairStatus == "unpaired" && !string.IsNullOrEmpty(device.PairCode))
+        // [TASK-V208-UNBIND-FIX] 未绑定设备仅维持心跳（online 状态），
+        // 不返回策略版本/公告签名/下行指令，客户端据此不会拉取任何管控策略。
+        if (!string.IsNullOrEmpty(device.OwnerUserId))
         {
-            commands.Add(new { type = "wait_bind", bindCode = device.PairCode });
-        }
-
-        if (!string.IsNullOrEmpty(device.PendingResetAt?.ToString()))
-        {
-            commands.Add(new
+            if (device.PairStatus == "unpaired" && !string.IsNullOrEmpty(device.PairCode))
             {
-                type = "reset_daily_usage",
-                resetAt = device.PendingResetAt,
-            });
-            device.PendingResetAt = null;
-            await _db.SaveChangesAsync();
+                commands.Add(new { type = "wait_bind", bindCode = device.PairCode });
+            }
+
+            if (!string.IsNullOrEmpty(device.PendingResetAt?.ToString()))
+            {
+                commands.Add(new
+                {
+                    type = "reset_daily_usage",
+                    resetAt = device.PendingResetAt,
+                });
+                device.PendingResetAt = null;
+                await _db.SaveChangesAsync();
+            }
+
+            if (request.EmergencyActive)
+            {
+                _logger.LogWarning("[DeviceApi] 设备 {DeviceId} 紧急模式激活中", deviceId);
+            }
+
+            // [方案二] 心跳捎带最新版本号：策略版本 + 公告集签名。
+            // 客户端每 60 秒心跳，仅当版本变化时才全量拉取策略/公告，降低下行流量。
+            policyVersion = await _db.Policies
+                .Where(p => p.DeviceId == device.Id)
+                .Select(p => (int?)p.Version)
+                .FirstOrDefaultAsync() ?? 0;
+
+            var ownerId = int.TryParse(device.OwnerUserId, out var oid) ? oid : 0;
+            var now = DateTime.UtcNow;
+            var announcementItems = await _db.Announcements
+                .Include(a => a.Creator)
+                .Where(a => a.Status == "published"
+                    && (a.TargetDeviceId == null || a.TargetDeviceId == device.Id)
+                    && (a.ValidFrom == null || a.ValidFrom <= now)
+                    && (a.ValidUntil == null || a.ValidUntil > now)
+                    && (a.CreatedBy == ownerId || a.Creator.Role == "admin"))
+                .OrderBy(a => a.Id)
+                .Select(a => new { a.Id, a.Version })
+                .ToListAsync();
+
+            announcementSignature = string.Join(",",
+                announcementItems.Select(a => $"{a.Id}:{a.Version}"));
         }
-
-        if (request.EmergencyActive)
-        {
-            _logger.LogWarning("[DeviceApi] 设备 {DeviceId} 紧急模式激活中", deviceId);
-        }
-
-        // [方案二] 心跳捎带最新版本号：策略版本 + 公告集签名。
-        // 客户端每 60 秒心跳，仅当版本变化时才全量拉取策略/公告，降低下行流量。
-        var policyVersion = await _db.Policies
-            .Where(p => p.DeviceId == device.Id)
-            .Select(p => (int?)p.Version)
-            .FirstOrDefaultAsync() ?? 0;
-
-        var ownerId = int.TryParse(device.OwnerUserId, out var oid) ? oid : 0;
-        var now = DateTime.UtcNow;
-        var announcementItems = await _db.Announcements
-            .Include(a => a.Creator)
-            .Where(a => a.Status == "published"
-                && (a.TargetDeviceId == null || a.TargetDeviceId == device.Id)
-                && (a.ValidFrom == null || a.ValidFrom <= now)
-                && (a.ValidUntil == null || a.ValidUntil > now)
-                && (a.CreatedBy == ownerId || a.Creator.Role == "admin"))
-            .OrderBy(a => a.Id)
-            .Select(a => new { a.Id, a.Version })
-            .ToListAsync();
-
-        var announcementSignature = string.Join(",",
-            announcementItems.Select(a => $"{a.Id}:{a.Version}"));
 
         return Ok(new { success = true, commands, policyVersion, announcementSignature });
     }
@@ -589,6 +598,18 @@ public class DeviceApiController : ControllerBase
         device.OwnerUserId = pairingInfo.OwnerUserId;
         device.PairStatus = "paired";
         pairingInfo.PairStatus = "used";
+
+        // [TASK-V208-UNBIND-FIX] 绑定成功时确保存在默认策略：
+        // 匿名注册不再建策略，绑定（扫码/配对码）后补建，保证新设备有初始限额。
+        if (!await _db.Policies.AnyAsync(p => p.DeviceId == device.Id))
+        {
+            _db.Policies.Add(new Policy
+            {
+                DeviceId = device.Id,
+                DailyLimitMinutes = 120,
+                OvertimeAction = "full_lock",
+            });
+        }
         await _db.SaveChangesAsync();
 
         var ownerEmail = await _db.Users

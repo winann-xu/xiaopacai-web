@@ -291,6 +291,18 @@ public class PairingController : ControllerBase
             device.OwnerUserId = ownerId;
         device.UpdatedAt = DateTime.UtcNow;
 
+        // [TASK-V208-UNBIND-FIX] 复用已注册设备（匿名注册不再建策略）绑定成功时补建默认策略：
+        // 保证“先注册→再绑定”链路的新设备也有初始限额（120 分钟 / 整机停用）。
+        if (!await _db.Policies.AnyAsync(p => p.DeviceId == device.Id))
+        {
+            _db.Policies.Add(new Policy
+            {
+                DeviceId = device.Id,
+                DailyLimitMinutes = 120,
+                OvertimeAction = "full_lock",
+            });
+        }
+
         await _db.SaveChangesAsync();
 
         // [TASK-OPT-12-P4-DEEPEN] 审计日志：设备配对确认（[SEC-P2] 配对码打码，防审计泄露劫持绑定）

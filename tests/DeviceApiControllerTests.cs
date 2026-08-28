@@ -192,6 +192,114 @@ public class DeviceApiControllerTests
         Assert.DoesNotContain("pairCode", s, StringComparison.OrdinalIgnoreCase);
     }
 
+    // [TASK-V208-UNBIND-FIX] 匿名注册不得创建默认策略（否则解绑后重注册会“自动下发”策略）
+    [Fact]
+    public async Task Register_NewDevice_DoesNotCreateDefaultPolicy()
+    {
+        var db = CreateDb();
+        var jwtMock = CreateJwtMock();
+        jwtMock.Setup(j => j.GenerateDeviceToken(It.IsAny<string>()))
+            .Returns(("t", DateTime.UtcNow.AddHours(24)));
+        var c = CreateController(db, jwtMock);
+
+        await c.Register(new DeviceRegisterRequest { DeviceId = "dev-nopolicy" });
+
+        var device = await db.Devices.FirstOrDefaultAsync(d => d.DeviceId == "dev-nopolicy");
+        Assert.NotNull(device);
+        Assert.False(await db.Policies.AnyAsync(p => p.DeviceId == device!.Id),
+            "匿名注册不应创建默认策略");
+    }
+
+    // ===== GetPolicies（解绑/未绑定设备不返回策略） =====
+
+    [Fact]
+    public async Task GetPolicies_UnboundDevice_ReturnsEmptyPolicies()
+    {
+        var db = CreateDb();
+        // 未绑定设备（OwnerUserId 为空），注册时代建了默认策略也不应下发
+        var device = CreateDevice(db, "dev-ub", ownerUserId: null, pairStatus: "unpaired");
+        var c = CreateController(db);
+        SetDeviceClaims(c, "dev-ub");
+
+        var result = await c.GetPolicies();
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.Contains("\"policies\":[]", json);
+    }
+
+    [Fact]
+    public async Task GetPolicies_BoundDevice_ReturnsPolicy()
+    {
+        var db = CreateDb();
+        CreateDevice(db, "dev-bnd", ownerUserId: 10);
+        var c = CreateController(db);
+        SetDeviceClaims(c, "dev-bnd");
+
+        var result = await c.GetPolicies();
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.Contains("dailyLimitMinutes", json);
+        Assert.Contains("\"policies\":[", json);
+    }
+
+    // ===== Heartbeat（未绑定设备返回 0 版本，不下发任何下行内容） =====
+
+    [Fact]
+    public async Task Heartbeat_UnboundDevice_ReturnsZeroPolicyVersionAndNoCommands()
+    {
+        var db = CreateDb();
+        CreateDevice(db, "dev-hb-ub", ownerUserId: null, pairStatus: "unpaired");
+        var c = CreateController(db);
+        SetDeviceClaims(c, "dev-hb-ub");
+
+        var result = await c.Heartbeat(new DeviceHeartbeatRequest { DeviceId = "dev-hb-ub" });
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.Contains("\"policyVersion\":0", json);
+        Assert.Contains("\"announcementSignature\":\"\"", json);
+        Assert.Contains("\"commands\":[]", json);
+    }
+
+    // ===== BindWithCode（绑定成功补建默认策略） =====
+
+    [Fact]
+    public async Task BindWithCode_BindsDeviceAndCreatesDefaultPolicy()
+    {
+        var db = CreateDb();
+        db.Users.Add(new User
+        {
+            Id = 20,
+            Username = "bindowner@x.com",
+            PasswordHash = "h",
+            PasswordSalt = "s",
+            Role = "parent",
+            IsActive = true,
+        });
+        db.PairingInfos.Add(new PairingInfo
+        {
+            PairCode = "654321",
+            PairStatus = "pending",
+            OwnerUserId = "20",
+            ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+            CreatedAt = DateTime.UtcNow,
+        });
+        // 模拟“匿名注册后无策略”的设备（TASK-V208-UNBIND-FIX 后注册不再建策略）
+        var device = CreateDevice(db, "dev-bc", ownerUserId: null, pairStatus: "unpaired");
+        db.Policies.RemoveRange(db.Policies.Where(p => p.DeviceId == device.Id));
+        db.SaveChanges();
+        var c = CreateController(db);
+        SetDeviceClaims(c, "dev-bc");
+
+        var result = await c.BindWithCode(new DeviceBindWithCodeRequest { PairCode = "654321" });
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Contains("ownerEmail", ok.Value!.ToString()!);
+        Assert.True(await db.Policies.AnyAsync(p => p.DeviceId == device.Id),
+            "绑定成功应补建默认策略（120 分钟 / full_lock）");
+        var bound = await db.Devices.FirstAsync(d => d.DeviceId == "dev-bc");
+        Assert.Equal("20", bound.OwnerUserId);
+        Assert.Equal("paired", bound.PairStatus);
+    }
+
     // ===== Heartbeat (版本号条件拉取) =====
 
     [Fact]
